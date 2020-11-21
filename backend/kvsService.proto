@@ -1,0 +1,28 @@
+service kvsService {
+    rpc kvsPut(putRequest) returns (putResponse) {}
+    rpc kvsGet(getRequest) returns (getResponse) {}
+}
+
+// kvsPut request message
+message putRequest {
+    string row = 1;
+    string col = 2;
+    string value = 3;
+}
+
+// kvsPut response message
+message putResponse {
+    boolean status = 1; // success or error?
+}
+
+// kvsGet request message
+message getRequest {
+    string row = 1;
+    string col = 2;
+}
+
+// kvsGet response message
+message getResponse {
+    boolean status = 1; // success or error?
+    string value = 2;
+}
