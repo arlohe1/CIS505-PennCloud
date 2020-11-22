@@ -1,3 +1,5 @@
+syntax = "proto3";
+
 service kvsService {
     rpc kvsPut(putRequest) returns (putResponse) {}
     rpc kvsGet(getRequest) returns (getResponse) {}
@@ -12,7 +14,7 @@ message putRequest {
 
 // kvsPut response message
 message putResponse {
-    boolean status = 1; // success or error?
+    bool status = 1; // success or error?
 }
 
 // kvsGet request message
@@ -23,6 +25,6 @@ message getRequest {
 
 // kvsGet response message
 message getResponse {
-    boolean status = 1; // success or error?
+    bool status = 1; // success or error?
     string value = 2;
 }
