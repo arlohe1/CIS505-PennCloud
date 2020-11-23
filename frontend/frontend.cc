@@ -57,6 +57,24 @@ void log(std::string str){
 	if(verbose) std::cerr << str << "\n";
 }
 
+void readNBytes(int *client_fd, int n, char * buffer){
+	if(n == 0) return;
+	int message_read = 0;
+	while(message_read < n){
+		int rlen = read(*client_fd, &buffer[message_read], n - message_read);
+		message_read += rlen;
+	}
+}
+
+void writeNBytes(int *client_fd, int n, const char * buffer){
+	if(n == 0) return;
+	int message_wrote = 0;
+	while(message_wrote < n){
+		int rlen = write(*client_fd, &buffer[message_wrote], n - message_wrote);
+		message_wrote += rlen;
+	}
+}
+
 void sigint_handler(int sig){
 	shut_down = true;
 	for(int* f : fd){
@@ -277,8 +295,8 @@ struct http_request parseRequest(int *client_fd){
 			content_length = stoi(req.headers["content-length"]) - req.content.size();
 			log("Trying to read content of length " + req.headers["content-length"]);
 			char buffer[content_length + 1];
-			int rlen = read(*client_fd, &buffer, content_length);
-			buffer[rlen] = 0;
+			readNBytes(client_fd, content_length, buffer);
+			buffer[content_length] = 0;
 			req.content += std::string(buffer);
 		} catch(const std::invalid_argument& ia){
 			log("Invalid number: " + req.headers["content-length"]);
@@ -287,6 +305,7 @@ struct http_request parseRequest(int *client_fd){
 	}
 
 	log("Contents: \n" + req.content);
+	log("Actual content size: " + std::to_string(req.content.size()));
 
 	// Process form or file if necessary
 	if(req.headers.find("content-type") != req.headers.end()){
@@ -340,7 +359,7 @@ void sendResponseToClient(struct http_response &resp, int *client_fd){
 	if(resp.content.compare("") != 0){
 		response += "\r\n" + resp.content;
 	}
-	write(*client_fd, response.data(), response.size());
+	writeNBytes(client_fd, response.size(), response.data());
 	log("Sent: " + response);
 }
 
