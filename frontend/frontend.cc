@@ -37,6 +37,8 @@ struct http_request {
 	std::string type, filepath, version, content;
 	std::map<std::string, std::string> headers;
 	std::map<std::string, std::string> cookies;
+	std::map<std::string, std::string> formData;
+	std::deque<char> file;
 } http_request;
 
 struct http_response {
@@ -91,7 +93,94 @@ std::string lower(std::string str){
 	return lower;
 }
 
+std::string getLineAndDelete(std::string &str){
+	std::string delimiter = "\n";
+	size_t pos = str.find(delimiter);
+	std::string ret = pos == std::string::npos ? std::string(str) : std::string(str.substr(0, pos));
+	if(pos != std::string::npos) {
+		str.erase(0, pos + delimiter.length());
+	} else {
+		str.clear();
+	}
+	return ret;
+}
+
+void removeQuotes(std::string &str){
+	str.erase(remove(str.begin(), str.end(), '\"'), str.end());
+}
+
 /*********************** Http Util function **********************************/
+std::string getBoundary(std::string &type){
+	std::deque<std::string> splt = split(type, ";");
+	for(std::string potent: splt){
+		if(potent.find("boundary") != std::string::npos){
+			std::string boundary = trim(potent.substr(potent.find("=") + 1));
+			return boundary + "\r\n";
+		}
+	}
+	return "";
+}
+
+void processMultiPart(struct http_request &req){
+	log("Processing multipart");
+	std::string boundary = getBoundary(req.headers["content-type"]);
+	std::string content(req.content);
+	std::string segment = "";
+
+	while(trim((segment = content.substr(0, content.find(boundary)))).compare("") != 0){
+		content.erase(0, content.find(boundary) + boundary.length());
+		std::string line ="", fieldname ="", filename ="";
+		bool segment_is_file = false;
+		while(trim((line = getLineAndDelete(segment))).compare("") != 0){
+			if(line.find("application/octet-stream") != std::string::npos) segment_is_file = true;
+			if(lower(line).find("content-disposition") != std::string::npos){
+				std::deque<std::string> data = split((split(line, ":")[1]), ";");
+				for(std::string d : data){
+					if(d.find("filename") != std::string::npos) {
+						filename = trim(split(d, "=")[1]);
+						removeQuotes(filename);
+					} else if(d.find("name") != std::string::npos) {
+						fieldname = trim(split(d, "=")[1]);
+						removeQuotes(fieldname);
+					}
+				}
+			}
+		}
+		segment = (segment.find("--") == std::string::npos) ? segment : segment.substr(0, segment.find("--"));
+		if(segment_is_file){
+			for(char c: segment){
+				req.file.push_back(c);
+			}
+			req.formData["filename"] = filename;
+		} else if(fieldname.compare("") != 0){
+			req.formData[fieldname] = trim(segment);
+		}
+	}
+
+	log("Results of multi-part processing: ");
+	log("File: " + std::string(req.file.begin(), req.file.end()));
+	log("Form data: ");
+	for(std::map<std::string, std::string>::iterator it = req.formData.begin(); it != req.formData.end(); it++){
+		log("Key : " + it->first + " value : " + it->second);
+	}
+}
+
+void processForm(struct http_request &req){
+	std::deque<std::string> queryPairs = split(req.content, "&");
+	for(std::string pair: queryPairs){
+		size_t pos = pair.find("=");
+		std::string key = (pos == std::string::npos) ? pair : pair.substr(0, pos);
+		std::string value = (pos == std::string::npos) ? "" : ((pos + 1 < pair.length()) ? pair.substr(pos + 1) : "");
+
+		req.formData[key] = value;
+	}
+
+	log("Form data: ");
+	for(std::map<std::string, std::string>::iterator it = req.formData.begin(); it != req.formData.end(); it++){
+		log("Key: " + it->first + " Value: " + it->second);
+	}
+	log("End form data");
+}
 
 void processCookies(struct http_request &req){
 	if(req.headers.find("cookie") == req.headers.end()) return;
@@ -134,7 +223,6 @@ struct http_request parseRequest(int *client_fd){
 	bool headers_done = false;
 
 	std::string lines = readLines(client_fd);
-	log("Initial lines: " + lines);
 	size_t newline_pos = lines.find("\n");
 	std::string delimiter = "\n";
 	std::string first_line = lines.substr(0, newline_pos);
@@ -146,7 +234,6 @@ struct http_request parseRequest(int *client_fd){
 		return req;
 	}
 	std::deque<std::string> headr = split(trim(first_line), " ");
-	log("Headr length: " + std::to_string(headr.size()));
 	req.type = trim(headr.at(0));
 	req.filepath = trim(headr.at(1));
 	req.version = trim(headr.at(2));
@@ -169,7 +256,7 @@ struct http_request parseRequest(int *client_fd){
 			headers_done = true;
 			break;
 		}
-		log("Line counting as header: " + line);
+		log("Header: " + line);
 		headr = split(trim(line), ":");
 		if(headr.size() == 0 || headr.at(0).compare(line) == 0) {
 			req.valid = false;
@@ -198,6 +285,14 @@ struct http_request parseRequest(int *client_fd){
 			return req;
 		}
 	}
+
+	log("Contents: \n" + req.content);
+
+	// Process form or file if necessary
+	if(req.headers.find("content-type") != req.headers.end()){
+		if(req.headers["content-type"].find("multipart/form-data") != std::string::npos) processMultiPart(req);
+		if(req.headers["content-type"].find("application/x-www-form-urlencoded") != std::string::npos) processForm(req);
+	}
 	return req;
 }
 
@@ -210,9 +305,14 @@ struct http_response processRequest(struct http_request &req){
 	if(req.filepath.compare("/") == 0){
 		resp.status_code = 200;
 		resp.status ="OK";
-		resp.content="<html><body><form>Username: <br/>"
-				"<input name=\"username\" type=\"text\" /> <br/>"
-				"Password: <br/><input name=\"password\" type=\"password\"/> <br/></form></body></html>";
+		resp.headers["Content-type"]= "text/html";
+		resp.content="<html><body>"
+				"<form action=\"/submitdummy\" enctype=\"multipart/form-data\" method=\"POST\""
+				"<label for =\"username\">Username</label><br/><input name=\"username\" type=\"text\"/><br/>"
+				"<label for=\"password\">Password:</label><br/><input name=\"password\" type=\"password\"/><br/>"
+				"<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
+				"<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
+				"</form></body></html>";
 		resp.headers["Content-length"] = std::to_string(resp.content.size());
 	} else if (req.filepath.compare("/signup") == 0){
 
