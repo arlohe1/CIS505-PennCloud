@@ -459,7 +459,7 @@ void uploadFile(struct http_request req) {
        int socketFD = connectToKVSServer();
        // GET length,user,filepath
        int cmdLength = username.size() + filepath.size() + 2;
-       std::string cmd = "GET " + std::to_string(cmdLength) + "," + username + "," + filepath;
+       std::string cmd = "GET " + std::to_string(cmdLength) + "," + username + "," + filepath + "\r\n";
        char *cmdToSend = strdup(cmd.c_str());
        writeNBytes(&socketFD, cmd.size(), cmdToSend);
        free(cmdToSend);
@@ -472,13 +472,13 @@ void uploadFile(struct http_request req) {
        fileList += "," + kvsCol;
        // PUT length,row,col,value for MODIFIED FILE LIST
        cmdLength = username.size() + filepath.size() + fileList.size() + 3;
-       cmd = "PUT " + std::to_string(cmdLength) + "," + username + "," + filepath + "," + fileList;
+       cmd = "PUT " + std::to_string(cmdLength) + "," + username + "," + filepath + "," + fileList + "\r\n";
        cmdToSend = strdup(cmd.c_str());
-       writeNBytes(&socketFD, cmd.size() + 1, cmdToSend);
+       writeNBytes(&socketFD, cmd.size(), cmdToSend);
        free(cmdToSend);
        // PUT username,kvsCol,filedata
        cmdLength = username.size() + filepath.size() + fileData.size() + 3;
-       cmd = "PUT " + std::to_string(cmdLength) + "," + username + "," + kvsCol + "," + fileData;
+       cmd = "PUT " + std::to_string(cmdLength) + "," + username + "," + kvsCol + "," + fileData + "\r\n";
        cmdToSend = strdup(cmd.c_str());
        writeNBytes(&socketFD, cmd.size(), cmdToSend);
        free(cmdToSend);
