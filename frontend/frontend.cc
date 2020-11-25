@@ -511,7 +511,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.cookies.erase("error");
 				if (req.cookies.find("signuperr") != req.cookies.end()) {
 					signuperr = true;
-					resp.cookies.erase("sign");
+					resp.cookies.erase("signuperr");
 				}
 			}
 			resp.content =
@@ -572,8 +572,7 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare("/login") == 0) {
 		if (req.cookies.find("username") == req.cookies.end()) {
 			if (req.formData["username"] == ""
-					|| getKVS(req.formData["username"], "password")
-							== "no such value") {
+					|| getKVS(req.formData["username"], "password") == "") {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
 				resp.headers["Location"] = "/";
@@ -602,13 +601,13 @@ struct http_response processRequest(struct http_request &req) {
 				if (!isalnum(req.formData["username"][i]))
 					valid = false;
 			}
-			if (!valid) {
+			if (req.formData["username"].size() == 0 || !valid) {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] =
-						"Username must be alphanumeric and not contain any spaces.";
-				resp.cookies["signuperr"] = "testing";
+						"Username is required, and must be alphanumeric and not contain any spaces.";
+				resp.cookies["signuperr"] = "1";
 			} else if (req.formData["password"].size() == 0
 					|| std::all_of(req.formData["password"].begin(),
 							req.formData["password"].end(), isspace)) {
@@ -625,8 +624,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] = "Passwords do not match.";
 				resp.cookies["signuperr"] = "1";
-			} else if (getKVS(req.formData["username"], "password")
-					!= "no such value") {
+			} else if (getKVS(req.formData["username"], "password") != "") {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
 				resp.headers["Location"] = "/";
@@ -662,14 +660,12 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 		response += it->first + ":" + it->second + "\r\n";
 	}
 	if (resp.cookies.size() > 0) {
-		response += "Set-cookie: ";
 		for (std::map<std::string, std::string>::iterator it =
 				resp.cookies.begin(); it != resp.cookies.end(); it++) {
-			response += it->first + "=" + it->second + ";";
+			response += "Set-cookie: ";
+			response += it->first + "=" + it->second + "\r\n";
 		}
-		printf("%s\n", response.c_str());
 	}
-	response += "\r\n";
 	if (resp.content.compare("") != 0) {
 		response += "\r\n" + resp.content;
 	}
