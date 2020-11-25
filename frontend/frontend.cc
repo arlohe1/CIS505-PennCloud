@@ -88,7 +88,7 @@ std::string readKVSResponse(int *client_fd) {
                      rlen = read(*client_fd, responseAfterComma + message_read, contentLength - message_read);
               }
               message_read += rlen;
-              if (!lengthUnknown) {
+              if (lengthUnknown) {
                      char *firstComma = strstr(buffer, ",");
                      if (firstComma != NULL) {
                             char *firstSpace = strstr(buffer, " ");
