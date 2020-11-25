@@ -502,7 +502,8 @@ void* worker(void *arg) {
 							// Acquire mutex for mailbox.
 							if (mailboxes.find(recipients[a])
 									== mailboxes.end()) {
-								pthread_mutex_init(&mailboxes[recipients[a]]);
+								pthread_mutex_init(&mailboxes[recipients[a]],
+								NULL);
 							}
 							pthread_mutex_lock(&mailboxes[recipients[a]]);
 							std::string current = getKVS(recipients[a],
@@ -512,6 +513,8 @@ void* worker(void *arg) {
 								current += data[b];
 							}
 							putKVS(recipients[a], "mailbox", current);
+							printf("%s\n",
+									getKVS(recipients[a], "mailbox").c_str());
 							// Release mutex for mailbox.
 							pthread_mutex_unlock(&mailboxes[recipients[a]]);
 						}
