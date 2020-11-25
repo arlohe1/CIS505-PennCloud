@@ -1,8 +1,8 @@
-TARGETS = kvs_server
+TARGETS = kvServer
 
 all: $(TARGETS)
 
-kvs_server: kvs_server.cc 
+kvServer: kvServer.cc 
 	g++ $^ -lpthread -g -o $@
 pack:
 	rm -f submit-hw4.zip
