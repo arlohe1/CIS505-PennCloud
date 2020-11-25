@@ -73,9 +73,11 @@ std::string readKVSResponse(int *client_fd) {
 				char *numStr = strndup(firstSpace + 1,
 						firstComma - firstSpace - 1);
 				contentLength = strtol(numStr, NULL, 10);
+				printf("%li\n", contentLength);
 				response = std::string(buffer);
+				contentLength += firstComma - buffer + 1;
+				printf("%li,%li\n", contentLength, firstComma - buffer);
 			}
-			contentLength += firstComma - buffer + 1;
 		}
 	}
 	log("Response From Server: " + response);

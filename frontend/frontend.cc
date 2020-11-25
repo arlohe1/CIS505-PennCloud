@@ -104,8 +104,8 @@ std::string readKVSResponse(int *client_fd) {
 						firstComma - firstSpace - 1);
 				contentLength = strtol(numStr, NULL, 10);
 				response = std::string(buffer);
+				contentLength += firstComma - buffer + 1;
 			}
-			contentLength += firstComma - buffer + 1;
 		}
 	}
 	log("Response From Server: " + response);
