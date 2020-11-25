@@ -72,31 +72,40 @@ void readNBytes(int *client_fd, int n, char *buffer) {
        }
 }
 
-char *readGetResponseKVS(int *client_fd) {
+// TODO: confirm that the kvs server returns "+OK" or "-ERR" (ignoring them for now)
+// Returns content from KVS response (anything following length,)
+std::string readKVSResponse(int *client_fd) {
        bool lengthUnknown = true;
        long contentLength = 100;
        int message_read = 0;
        char buffer[100] = "";
-       char *finalCmd = NULL;
+       char *responseAfterComma = NULL;
        while (lengthUnknown || message_read < contentLength) {
               int rlen = 0;
               if (lengthUnknown) {
                      rlen = read(*client_fd, &buffer[message_read], 100 - message_read);
               } else {
-                     rlen = read(*client_fd, finalCmd + message_read, contentLength - message_read);
+                     rlen = read(*client_fd, responseAfterComma + message_read, contentLength - message_read);
               }
               message_read += rlen;
-              char *firstComma = strstr(buffer, ",");
-              if (firstComma != NULL) {
-                     char *firstSpace = strstr(buffer, " ");
-                     lengthUnknown = false;
-                     char *numStr = strndup(firstSpace + 1, firstComma - firstSpace);
-                     contentLength = strtol(numStr, NULL, 10) + (firstComma - buffer);
-                     finalCmd = (char *)malloc(sizeof(char) * contentLength);
-                     strncpy(finalCmd, buffer, message_read);
+              if (lengthUnknown) {
+                     char *firstComma = strstr(buffer, ",");
+                     if (firstComma != NULL) {
+                            char *firstSpace = strstr(buffer, " ");
+                            lengthUnknown = false;
+                            char *numStr = strndup(firstSpace + 1, firstComma - firstSpace);
+                            contentLength = strtol(numStr, NULL, 10) + (firstComma - buffer);
+                            responseAfterComma = (char *)malloc(sizeof(char) * contentLength);
+                            strncpy(responseAfterComma, firstComma + 1, (buffer + message_read) - firstComma);
+                            message_read = (buffer + message_read) - firstComma; // what i've read of content so far
+                     }
               }
        }
-       return finalCmd;
+       std::string finalResponseToReturn(responseAfterComma);
+       free(responseAfterComma);
+       // EXCLUDES OK OR ERR! TODO add this in
+       log("readKVSResponse: " + finalResponseToReturn);
+       return finalResponseToReturn;
 }
 
 char *readIncomingCmdKVS(int *client_fd) {
@@ -184,62 +193,67 @@ std::string getLineAndDelete(std::string &str) {
 
 void removeQuotes(std::string &str) { str.erase(remove(str.begin(), str.end(), '\"'), str.end()); }
 
-int getPortNoFromString(std::string fullServAddr){
-	int port = 0;
-	try{
-		port = stoi(split(trim(fullServAddr), ":")[1]);
-	} catch (const std::invalid_argument &ia) {
-		log("Port not found! returning 0");
-	}
-	return port;
+int getPortNoFromString(std::string fullServAddr) {
+       int port = 0;
+       try {
+              port = stoi(split(trim(fullServAddr), ":")[1]);
+       } catch (const std::invalid_argument &ia) {
+              log("Port not found! returning 0");
+       }
+       return port;
 }
 
-std::string getAddrFromString(std::string fullServAddr){
-	return trim(split(fullServAddr, ":")[0]);
-}
+std::string getAddrFromString(std::string fullServAddr) { return trim(split(fullServAddr, ":")[0]); }
 
-int connectToServer(std::string fullServAddress){
-	int socketFD = socket(PF_INET, SOCK_STREAM, 0);
-	if (socketFD < 0) {
-		fprintf(stderr, "Cannot open socket (%s)\n", strerror(errno));
-		exit(1);
-	}
-	struct sockaddr_in servaddr;
-	bzero(&servaddr, sizeof(servaddr));
-	servaddr.sin_family = AF_INET;
-	int serverPortNo = getPortNoFromString(fullServAddress);
-	servaddr.sin_port = htons(serverPortNo);
-	std::string servAddress = getAddrFromString(fullServAddress);
-	inet_pton(AF_INET, servAddress.c_str(), &(servaddr.sin_addr));
-	connect(socketFD, (struct sockaddr *)&servaddr, sizeof(servaddr));
-	return socketFD;
+int connectToServer(std::string fullServAddress) {
+       int socketFD = socket(PF_INET, SOCK_STREAM, 0);
+       if (socketFD < 0) {
+              fprintf(stderr, "Cannot open socket (%s)\n", strerror(errno));
+              exit(1);
+       }
+       struct sockaddr_in servaddr;
+       bzero(&servaddr, sizeof(servaddr));
+       servaddr.sin_family = AF_INET;
+       int serverPortNo = getPortNoFromString(fullServAddress);
+       servaddr.sin_port = htons(serverPortNo);
+       std::string servAddress = getAddrFromString(fullServAddress);
+       inet_pton(AF_INET, servAddress.c_str(), &(servaddr.sin_addr));
+       connect(socketFD, (struct sockaddr *)&servaddr, sizeof(servaddr));
+       return socketFD;
 }
 
 /*********************** KVS Util function ***********************************/
 
-int putKVS(std::string row, std::string column, std::string value){
-	int kv_server = connectToServer(kvs_addr);
-	std::string message = "PUT " + row + "," + column +  "," + value + "\r\n";
-	writeNBytes(&kv_server, message.size(), message.data());
-	//TODO: confirm that the kvs server returns "+OK"
-	close(kv_server);
-	return 0;
+std::string putKVS(std::string row, std::string column, std::string value) {
+       int kv_server = connectToServer(kvs_addr);
+       int cmdLength = row.size() + column.size() + value.size() + 2; // +2 for commas between row,col,val
+       std::string message = "PUT " + std::to_string(cmdLength) + "," + row + "," + column + "," + value;
+       writeNBytes(&kv_server, message.size(), message.data());
+       // Response
+       std::string response = readKVSResponse(&kv_server);
+       close(kv_server);
+       return response;
 }
 
-std::string getKVS(std::string row, std::string column){
-	int kv_server = connectToServer(kvs_addr);
+std::string getKVS(std::string row, std::string column) {
+       int kv_server = connectToServer(kvs_addr);
 
-	//Request
-	std::string request = "GET " + row + "," + column + "\r\n";
-	writeNBytes(&kv_server, request.size(), request.data());
+       // Request
+       int cmdLength = row.size() + column.size() + 1; // +1 for comma between row and col
+       std::string request = "GET " + std::to_string(cmdLength) + "," + row + "," + column;
+       writeNBytes(&kv_server, request.size(), request.data());
 
-	//Response
-	std::string response = std::string(readGetResponseKVS(&kv_server));
-	std::string value = "";
-	if(response.find("+OK") != std::string::npos){
-		value = trim(split(response, " ")[2]);
-	}
-	return value;
+       // Response
+       std::string response = readKVSResponse(&kv_server);
+       /*
+       std::string value = "";
+       if (response.find("+OK") != std::string::npos) {
+              value = trim(split(response, " ")[2]);
+       }
+       return value;
+       */
+       close(kv_server);
+       return response;
 }
 
 /*********************** Http Util function **********************************/
@@ -448,50 +462,65 @@ struct http_response processRequest(struct http_request &req) {
               resp.status = "OK";
               resp.headers["Content-type"] = "text/html";
               if (req.cookies.find("error") != req.cookies.end()) {
-            	  printf("here\n");
+                     printf("here\n");
               }
               resp.content =
-				"<html><body style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:center;\">"
-				"<form id=\"login\" action=\"/login\" enctype=\"multipart/form-data\" method=\"POST\""
-				"<label for =\"username\">Username:</label><br/><input name=\"username\" type=\"text\"/><br/>"
-				"<label for=\"password\">Password:</label><br/><input name=\"password\" type=\"password\"/><br/>"
-				"<br/><input type=\"submit\" name=\"submit\" value=\"Log In\"><br/>"
-				"</form>"
-				"<form id=\"signup\" style=\"display:none;\" action=\"/signup\" enctype=\"multipart/form-data\" method=\"POST\""
-				"<label for =\"username\">Username:</label><br/><input name=\"username\" type=\"text\"/><br/>"
-				"<label for=\"password\">Password:</label><br/><input name=\"password\" type=\"password\"/><br/>"
-                "<label for=\"confirm_password\">Confirm Password:</label><br/><input name=\"confirm_password\" type=\"password\"/><br/>"
-				"<br/><input type=\"submit\" name=\"submit\" value=\"Sign Up\"><br/>"
-				"</form>"
-            	"<br/><button id=\"switchButton\" type=\"button\">Don't have an account? Sign up!</button>"
-            	"<script>"
-				"var switchButton=document.getElementById('switchButton');"
-                "switchButton.onclick=function(){var loginForm=document.getElementById('login');switchButton.innerHTML=(loginForm.style.display == 'none') ? \"Don't have an account? Sign up!\" : 'Have an account? Log in!';"
-                "loginForm.style.display=(loginForm.style.display == 'none') ? 'block' : 'none';"
-                "var signupForm=document.getElementById('signup');signupForm.style.display=(signupForm.style.display == 'none') ? 'block' : 'none';}"
-				"</script>"
-				"</body></html>";
-             /* resp.content =
-                  "<html><body>"
-                  "<form action=\"/submitdummy\" enctype=\"multipart/form-data\" method=\"POST\""
-                  "<label for =\"username\">Username</label><br/><input name=\"username\" type=\"text\"/><br/>"
-                  "<label for=\"password\">Password:</label><br/><input name=\"password\" type=\"password\"/><br/>"
-                  "<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
-                  "<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
-                  "</form></body></html>";*/
+                  "<html><body "
+                  "style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
+                  "center;\">"
+                  "<form id=\"login\" action=\"/login\" enctype=\"multipart/form-data\" method=\"POST\""
+                  "<label for =\"username\">Username:</label><br/><input name=\"username\" type=\"text\"/><br/>"
+                  "<label for=\"password\">Password:</label><br/><input name=\"password\" "
+                  "type=\"password\"/><br/>"
+                  "<br/><input type=\"submit\" name=\"submit\" value=\"Log In\"><br/>"
+                  "</form>"
+                  "<form id=\"signup\" style=\"display:none;\" action=\"/signup\" "
+                  "enctype=\"multipart/form-data\" "
+                  "method=\"POST\""
+                  "<label for =\"username\">Username:</label><br/><input name=\"username\" type=\"text\"/><br/>"
+                  "<label for=\"password\">Password:</label><br/><input name=\"password\" "
+                  "type=\"password\"/><br/>"
+                  "<label for=\"confirm_password\">Confirm Password:</label><br/><input "
+                  "name=\"confirm_password\" "
+                  "type=\"password\"/><br/>"
+                  "<br/><input type=\"submit\" name=\"submit\" value=\"Sign Up\"><br/>"
+                  "</form>"
+                  "<br/><button id=\"switchButton\" type=\"button\">Don't have an account? Sign up!</button>"
+                  "<script>"
+                  "var switchButton=document.getElementById('switchButton');"
+                  "switchButton.onclick=function(){var "
+                  "loginForm=document.getElementById('login');switchButton.innerHTML=(loginForm.style.display "
+                  "== "
+                  "'none') ? \"Don't have an account? Sign up!\" : 'Have an account? Log in!';"
+                  "loginForm.style.display=(loginForm.style.display == 'none') ? 'block' : 'none';"
+                  "var "
+                  "signupForm=document.getElementById('signup');signupForm.style.display=(signupForm.style."
+                  "display "
+                  "== 'none') ? 'block' : 'none';}"
+                  "</script>"
+                  "</body></html>";
+              /* resp.content =
+                   "<html><body>"
+                   "<form action=\"/submitdummy\" enctype=\"multipart/form-data\" method=\"POST\""
+                   "<label for =\"username\">Username</label><br/><input name=\"username\" type=\"text\"/><br/>"
+                   "<label for=\"password\">Password:</label><br/><input name=\"password\"
+                 type=\"password\"/><br/>"
+                   "<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
+                   "<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
+                   "</form></body></html>";*/
               resp.headers["Content-length"] = std::to_string(resp.content.size());
        } else if (req.filepath.compare("/login") == 0) {
-		    resp.status_code = 307;
-			resp.status = "Temporary Redirect";
-    	   	resp.headers["Location"] = "/";
-    	   	resp.cookies["error"] = "1";
-    	   //check KVS. redirect to dashboard if successful
-    	   //set cookies
-    	   //if not successful, report error and redirect to login page
+              resp.status_code = 307;
+              resp.status = "Temporary Redirect";
+              resp.headers["Location"] = "/";
+              resp.cookies["error"] = "1";
+              // check KVS. redirect to dashboard if successful
+              // set cookies
+              // if not successful, report error and redirect to login page
        } else if (req.filepath.compare("/signup") == 0) {
-    	   //try to add to KVS. if successful, login and redirect to dashboard
-    	   //set cookies
-    	   //if not successful, report error and redirect to signup page
+              // try to add to KVS. if successful, login and redirect to dashboard
+              // set cookies
+              // if not successful, report error and redirect to signup page
        } else {
               resp.status_code = 404;
               resp.status = "Not Found";
@@ -525,9 +554,7 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 
 /***************************** Start storage service functions ************************/
 
-int connectToKVSServer() {
-       return connectToServer(kvs_addr);
-}
+int connectToKVSServer() { return connectToServer(kvs_addr); }
 
 void uploadFile(struct http_request req) {
        std::string username = req.formData["username"];
@@ -537,37 +564,15 @@ void uploadFile(struct http_request req) {
 
        // Construct filepath of new file
        std::string kvsCol = "ss1_" + filepath.substr(4, 1) + filename;
-       // Establish connection with KVS Server
-       int socketFD = connectToKVSServer();
-       // GET length,user,filepath
-       int cmdLength = username.size() + filepath.size() + 2;
-       std::string cmd = "GET " + std::to_string(cmdLength) + "," + username + "," + filepath + "\r\n";
-       char *cmdToSend = strdup(cmd.c_str());
-       writeNBytes(&socketFD, cmd.size(), cmdToSend);
-       free(cmdToSend);
        // Reading in response to GET --> list of files at filepath
-       char *getCmdReturn = readGetResponseKVS(&socketFD);
-       char *commaPtr = strstr(getCmdReturn, ",");
-       char *getCmdValue = strndup(commaPtr + 1, getCmdReturn - commaPtr);
+       std::string getCmdResponse = getKVS(username, filepath);
        // Adding new file to file list
-       std::string fileList(getCmdValue);
+       std::string fileList(getCmdResponse);
        fileList += "," + kvsCol;
        // PUT length,row,col,value for MODIFIED FILE LIST
-       cmdLength = username.size() + filepath.size() + fileList.size() + 3;
-       cmd = "PUT " + std::to_string(cmdLength) + "," + username + "," + filepath + "," + fileList + "\r\n";
-       cmdToSend = strdup(cmd.c_str());
-       writeNBytes(&socketFD, cmd.size(), cmdToSend);
-       free(cmdToSend);
+       std::string putCmdResponse = putKVS(username, filepath, fileList);
        // PUT username,kvsCol,filedata
-       cmdLength = username.size() + filepath.size() + fileData.size() + 3;
-       cmd = "PUT " + std::to_string(cmdLength) + "," + username + "," + kvsCol + "," + fileData + "\r\n";
-       cmdToSend = strdup(cmd.c_str());
-       writeNBytes(&socketFD, cmd.size(), cmdToSend);
-       free(cmdToSend);
-       free(getCmdValue);
-       free(getCmdReturn);
-       // Close connection with KVS server
-       close(socketFD);
+       putCmdResponse = putKVS(username, kvsCol, fileData);
 }
 
 /***************************** End storage service functions ************************/
@@ -626,23 +631,23 @@ int main(int argc, char *argv[]) {
                             std::cerr << "'-p' should be followed by a number! Using port 10000\n";
                      }
               } else if (strstr(argv[i], "-k") != NULL && strcmp(strstr(argv[i], "-k"), "-k") == 0) {
-                  if (i + 1 < argc) {
-                         kvs_addr = trim(std::string(argv[++i]));
-                  } else {
-                         std::cerr << "'-k' should be followed by an address!\n";
-                  }
+                     if (i + 1 < argc) {
+                            kvs_addr = trim(std::string(argv[++i]));
+                     } else {
+                            std::cerr << "'-k' should be followed by an address!\n";
+                     }
               } else if (strstr(argv[i], "-m") != NULL && strcmp(strstr(argv[i], "-m"), "-m") == 0) {
-                  if (i + 1 < argc) {
-                         mail_addr = trim(std::string(argv[++i]));
-                  } else {
-                         std::cerr << "'-m' should be followed by an address!\n";
-                  }
+                     if (i + 1 < argc) {
+                            mail_addr = trim(std::string(argv[++i]));
+                     } else {
+                            std::cerr << "'-m' should be followed by an address!\n";
+                     }
               } else if (strstr(argv[i], "-s") != NULL && strcmp(strstr(argv[i], "-s"), "-s") == 0) {
-                  if (i + 1 < argc) {
-                         storage_addr = trim(std::string(argv[++i]));
-                  } else {
-                         std::cerr << "'-s' should be followed by an address!\n";
-                  }
+                     if (i + 1 < argc) {
+                            storage_addr = trim(std::string(argv[++i]));
+                     } else {
+                            std::cerr << "'-s' should be followed by an address!\n";
+                     }
               } else if (strstr(argv[i], "-a") != NULL && strcmp(strstr(argv[i], "-a"), "-a") == 0) {
                      std::cerr << "Full name: Prasanna Poudyal\nSEAS login: poudyal\n";
                      exit(0);
