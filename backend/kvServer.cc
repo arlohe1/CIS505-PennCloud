@@ -297,7 +297,7 @@ int get(int len, int comm_fd) {
 			std::string valString = kvMap[rowString][colString];
 			std::string lengthParam = std::to_string(strlen(valString.c_str()));
 			debugDetailed("---get row: %s, column: %s, val: %s\n", row, col, valString.c_str());
-			write(comm_fd, "+OK 0,", strlen("+OK 0,"));
+			write(comm_fd, "+OK ", strlen("+OK "));
 			write(comm_fd, lengthParam.c_str(), strlen(lengthParam.c_str()));
 			write(comm_fd, ",", strlen(","));
 			write(comm_fd, valString.c_str(), strlen(valString.c_str()));
