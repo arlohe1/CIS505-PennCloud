@@ -271,7 +271,7 @@ int put(int len, int comm_fd) {
 	char* buf = (char*) args.c_str();
 	char* row = strtok(buf, ",");
 	char* col = strtok(NULL, ",");
-	char* val = &col[strlen(col)+2];
+	char* val = &col[strlen(col)+1];
 	//strtok(NULL, ",");
 	debugDetailed("---put row: %s, column: %s, val: %s\n", row, col, val);
 	std::string rowString(row);
