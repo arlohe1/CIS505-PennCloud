@@ -95,7 +95,8 @@ std::string readKVSResponse(int *client_fd) {
 			if (firstComma != NULL) {
 				char *firstSpace = strstr(buffer, " ");
 				lengthUnknown = false;
-				char *numStr = strndup(firstSpace + 1, firstComma - firstSpace);
+				char *numStr = strndup(firstSpace + 1,
+						firstComma - firstSpace - 1);
 				contentLength = strtol(numStr, NULL, 10);
 				responseAfterComma = (char*) malloc(
 						sizeof(char) * contentLength);
@@ -245,9 +246,10 @@ int connectToServer(std::string fullServAddress) {
 std::string putKVS(std::string row, std::string column, std::string value) {
 	int kv_server = connectToServer(kvs_addr);
 	int cmdLength = row.size() + column.size() + value.size() + 2; // +2 for commas between row,col,val
-	std::string message = "PUT " + std::to_string(cmdLength) + "," + row + ","
+	std::string request = "PUT " + std::to_string(cmdLength) + "," + row + ","
 			+ column + "," + value;
-	writeNBytes(&kv_server, message.size(), message.data());
+	log("KVS PUT: " + request);
+	writeNBytes(&kv_server, request.size(), request.data());
 	// Response
 	std::string response = readKVSResponse(&kv_server);
 	close(kv_server);
@@ -261,6 +263,7 @@ std::string getKVS(std::string row, std::string column) {
 	int cmdLength = row.size() + column.size() + 1; // +1 for comma between row and col
 	std::string request = "GET " + std::to_string(cmdLength) + "," + row + ","
 			+ column;
+	log("KVS GET: " + request);
 	writeNBytes(&kv_server, request.size(), request.data());
 
 	// Response
@@ -719,14 +722,19 @@ int connectToKVSServer() {
 
 void uploadFile(struct http_request req) {
 	std::string username = req.formData["username"];
+	username = "amit"; // TODO change hardcoding
 	std::string filename = req.formData["filename"];
 	std::string filepath = "ss0_/"; // TODO filepath of file in storage service (no dirs for now)
-	std::string fileData(req.file.begin(), req.file.end());
+	std::string fileData = req.formData["file"];
 
 	// Construct filepath of new file
 	std::string kvsCol = "ss1_" + filepath.substr(4, 1) + filename;
 	// Reading in response to GET --> list of files at filepath
 	std::string getCmdResponse = getKVS(username, filepath);
+	if (getCmdResponse.compare("no such value") == 0) {
+		std::string putCmdResponse = putKVS(username, "ss0_/", ".");
+		getCmdResponse = getKVS(username, filepath);
+	}
 	// Adding new file to file list
 	std::string fileList(getCmdResponse);
 	fileList += "," + kvsCol;
@@ -749,7 +757,7 @@ void* handleClient(void *arg) {
 		close(*client_fd);
 		return NULL;
 	}
-	if (req.file.size() > 0) {
+	if (req.formData["file"].size() > 0) {
 		// File present to upload
 		uploadFile(req);
 	}
