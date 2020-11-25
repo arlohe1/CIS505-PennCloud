@@ -93,7 +93,7 @@ std::string readKVSResponse(int *client_fd) {
                      if (firstComma != NULL) {
                             char *firstSpace = strstr(buffer, " ");
                             lengthUnknown = false;
-                            char *numStr = strndup(firstSpace + 1, firstComma - firstSpace);
+                            char *numStr = strndup(firstSpace + 1, firstComma - firstSpace-1);
                             contentLength = strtol(numStr, NULL, 10);
                             responseAfterComma = (char *)malloc(sizeof(char) * contentLength);
                             strncpy(responseAfterComma, firstComma + 1, (buffer + message_read) - firstComma);
