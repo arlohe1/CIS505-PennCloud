@@ -290,13 +290,14 @@ int get(int len, int comm_fd) {
 	std::string rowString(row);
 	std::string colString(col);
 	
-	char* err_message = (char*) "-ERR 13,no such value";
+	//char* err_message = (char*) "-ERR 13,no such value";
+	char* err_message = (char*) "-ERR 0,";
 	if (kvMap.count(rowString) > 0) {
 		if (kvMap[rowString].count(colString) > 0) {
 			std::string valString = kvMap[rowString][colString];
 			std::string lengthParam = std::to_string(strlen(valString.c_str()));
 			debugDetailed("---get row: %s, column: %s, val: %s\n", row, col, valString.c_str());
-			write(comm_fd, "+OK ", strlen("+OK "));
+			write(comm_fd, "+OK 0,", strlen("+OK 0,"));
 			write(comm_fd, lengthParam.c_str(), strlen(lengthParam.c_str()));
 			write(comm_fd, ",", strlen(","));
 			write(comm_fd, valString.c_str(), strlen(valString.c_str()));
@@ -311,7 +312,8 @@ int get(int len, int comm_fd) {
 
 
 int cput(int len, int comm_fd) {
-	char* buf;
+	std::string args = readFromSocket(len, comm_fd);
+	char* buf = (char*) args.c_str();
 	char* row = strtok(buf, ",");
 	char* col = strtok(NULL, ",");
 	char* val = strtok(NULL, ",");
@@ -320,25 +322,52 @@ int cput(int len, int comm_fd) {
 	std::string colString(col);
 	std::string valString(val);
 	std::string newvalString(newval);
-	if (strcmp(val, kvMap[rowString][colString].c_str()) == 0) {
-		kvMap[rowString][colString] = newvalString;
+
+	
+	if (kvMap.count(rowString) > 0) {
+		if (kvMap[rowString].count(colString) > 0) {
+			//check if row, col is in map
+			if (strcmp(val, kvMap[rowString][colString].c_str()) == 0) {
+				kvMap[rowString][colString] = newvalString;
+				debugDetailed("---cput update row: %s, column: %s, old val: %s, new val: %s\n", row, col, val, newval);
+				write(comm_fd, "+OK 7,updated", strlen("+OK 7,updated"));
+				return 0;
+			} 
+			
+		}
 	} 
-	std::string updatedValString = kvMap[rowString][colString];
-	write(comm_fd, "+OK CPUT ", strlen("+OK CPUT "));
-	write(comm_fd, updatedValString.c_str(), updatedValString.length());
-	write(comm_fd, "\r\n", strlen("\r\n"));
-	debugDetailed("---cput row: %s, column: %s, val: %s\n", row, col, updatedValString.c_str());	
+	
+	write(comm_fd, "+OK 11,not updated", strlen("+OK 11,not updated"));
 	return 0;
 }
 
 int del(int len, int comm_fd) {
-	char* buf;
+	std::string args = readFromSocket(len, comm_fd);
+	char* buf = (char*) args.c_str();
 	char* row = strtok(buf, ",");
 	char* col = strtok(NULL, ",");
 	std::string rowString(row);
 	std::string colString(col);
+
+	//char* err_message = (char*) "-ERR 13,no such value";
+	char* err_message = (char*) "-ERR 0,";
+	if (kvMap.count(rowString) > 0) {
+		if (kvMap[rowString].count(colString) > 0) {
+			kvMap[rowString].erase(colString);
+			debugDetailed("---delete deleted row: %s, column: %s\n", row, col);
+			write(comm_fd, "+OK 0,", strlen("+OK 0,"));
+			printKvMap();
+			return 0;
+		}
+	} 
+	debugDetailed("---delete row: %s, column: %s, val: not found\n", row, col);
+	printKvMap();
+	write(comm_fd, err_message, strlen(err_message));
+	return 0;
+
+
 	kvMap[rowString].erase(col);
-	write(comm_fd, "+OK\r\n", strlen("+OK\r\n"));
+	write(comm_fd, err_message, strlen(err_message));
 	printKvMap();
 	return 0;
 }
@@ -375,11 +404,11 @@ int parseCommand(char* buf, int len, int comm_fd, struct thread_info* tinfo) {
 		} else if (strncasecmp("CPUT ", buf, 5) == 0) {
 			debugDetailed("%s\n", "cput command found");
 			argLength = getArgLength(&buf[5]);
-			cput(len, comm_fd);
+			cput(argLength, comm_fd);
 		} else if (strncasecmp("DELETE ", buf, 7) == 0) {
 			debugDetailed("%s\n", "delete command found");
 			argLength = getArgLength(&buf[7]);
-			del(len, comm_fd);
+			del(argLength, comm_fd);
 		} else if (strncasecmp("QUIT", buf, 4) == 0) {
 			write(comm_fd, quit_message, strlen(quit_message));
 			debug("[%d] Connection closed\n", comm_fd);	
