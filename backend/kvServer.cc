@@ -271,7 +271,8 @@ int put(int len, int comm_fd) {
 	char* buf = (char*) args.c_str();
 	char* row = strtok(buf, ",");
 	char* col = strtok(NULL, ",");
-	char* val = strtok(NULL, ",");
+	char* val = &col[strlen(col)+1];
+	//strtok(NULL, ",");
 	debugDetailed("---put row: %s, column: %s, val: %s\n", row, col, val);
 	std::string rowString(row);
 	std::string colString(col);
@@ -301,6 +302,7 @@ int get(int len, int comm_fd) {
 			write(comm_fd, lengthParam.c_str(), strlen(lengthParam.c_str()));
 			write(comm_fd, ",", strlen(","));
 			write(comm_fd, valString.c_str(), strlen(valString.c_str()));
+			debugDetailed("---get returning the following: %s%s%s%s\n", "+OK ", lengthParam.c_str(), ",", valString.c_str());
 			return 0;
 		}
 	} 
@@ -317,7 +319,8 @@ int cput(int len, int comm_fd) {
 	char* row = strtok(buf, ",");
 	char* col = strtok(NULL, ",");
 	char* val = strtok(NULL, ",");
-	char* newval = strtok(NULL, ",");
+	//char* newval = strtok(NULL, ",");
+	char* newval = &val[strlen(val)+1];
 	std::string rowString(row);
 	std::string colString(col);
 	std::string valString(val);

@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
-#include <rc/server.h>
+#include <rpc/server.h>
 
 
 #include <errno.h>
