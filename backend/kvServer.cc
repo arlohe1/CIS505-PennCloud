@@ -302,6 +302,7 @@ int get(int len, int comm_fd) {
 			write(comm_fd, lengthParam.c_str(), strlen(lengthParam.c_str()));
 			write(comm_fd, ",", strlen(","));
 			write(comm_fd, valString.c_str(), strlen(valString.c_str()));
+			debugDetailed("---get returning the following: %s%s%s%s\n", "+OK ", lengthParam.c_str(), ",", valString.c_str());
 			return 0;
 		}
 	} 
