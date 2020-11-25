@@ -319,7 +319,7 @@ int cput(int len, int comm_fd) {
 	char* col = strtok(NULL, ",");
 	char* val = strtok(NULL, ",");
 	//char* newval = strtok(NULL, ",");
-	char* newval = &val[strlen(val)+2];
+	char* newval = &val[strlen(val)+1];
 	std::string rowString(row);
 	std::string colString(col);
 	std::string valString(val);
