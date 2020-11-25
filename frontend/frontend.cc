@@ -20,6 +20,9 @@ std::string greeting = "+OK Server ready (Author: Prasanna Poudyal / poudyal)\r\
 std::string goodbye = "+OK Goodbye!\r\n";
 std::string error_msg = "-ERR Server shutting down\r\n";
 std::string unknown_cmd = "-ERR Unknown command\r\n";
+std::string kvs_addr = "";
+std::string mail_addr = "";
+std::string storage_addr = "";
 std::vector<pthread_t> pthread_ids;
 pthread_mutex_t fd_mutex;
 std::set<int *> fd;
@@ -180,6 +183,64 @@ std::string getLineAndDelete(std::string &str) {
 }
 
 void removeQuotes(std::string &str) { str.erase(remove(str.begin(), str.end(), '\"'), str.end()); }
+
+int getPortNoFromString(std::string fullServAddr){
+	int port = 0;
+	try{
+		port = stoi(split(trim(fullServAddr), ":")[1]);
+	} catch (const std::invalid_argument &ia) {
+		log("Port not found! returning 0");
+	}
+	return port;
+}
+
+std::string getAddrFromString(std::string fullServAddr){
+	return trim(split(fullServAddr, ":")[0]);
+}
+
+int connectToServer(std::string fullServAddress){
+	int socketFD = socket(PF_INET, SOCK_STREAM, 0);
+	if (socketFD < 0) {
+		fprintf(stderr, "Cannot open socket (%s)\n", strerror(errno));
+		exit(1);
+	}
+	struct sockaddr_in servaddr;
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	int serverPortNo = getPortNoFromString(fullServAddress);
+	servaddr.sin_port = htons(serverPortNo);
+	std::string servAddress = getAddrFromString(fullServAddress);
+	inet_pton(AF_INET, servAddress.c_str(), &(servaddr.sin_addr));
+	connect(socketFD, (struct sockaddr *)&servaddr, sizeof(servaddr));
+	return socketFD;
+}
+
+/*********************** KVS Util function ***********************************/
+
+int putKVS(std::string row, std::string column, std::string value){
+	int kv_server = connectToServer(kvs_addr);
+	std::string message = "PUT " + row + "," + column +  "," + value + "\r\n";
+	writeNBytes(&kv_server, message.size(), message.data());
+	//TODO: confirm that the kvs server returns "+OK"
+	close(kv_server);
+	return 0;
+}
+
+std::string getKVS(std::string row, std::string column){
+	int kv_server = connectToServer(kvs_addr);
+
+	//Request
+	std::string request = "GET " + row + "," + column + "\r\n";
+	writeNBytes(&kv_server, request.size(), request.data());
+
+	//Response
+	std::string response = std::string(readGetResponseKVS(&kv_server));
+	std::string value = "";
+	if(response.find("+OK") != std::string::npos){
+		value = trim(split(response, " ")[2]);
+	}
+	return value;
+}
 
 /*********************** Http Util function **********************************/
 std::string getBoundary(std::string &type) {
@@ -465,20 +526,7 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 /***************************** Start storage service functions ************************/
 
 int connectToKVSServer() {
-       int socketFD = socket(PF_INET, SOCK_STREAM, 0);
-       if (socketFD < 0) {
-              fprintf(stderr, "Cannot open socket (%s)\n", strerror(errno));
-              exit(1);
-       }
-       struct sockaddr_in servaddr;
-       bzero(&servaddr, sizeof(servaddr));
-       servaddr.sin_family = AF_INET;
-       int serverPortNo = 0; // TODO
-       servaddr.sin_port = htons(serverPortNo);
-       std::string servAddress = ""; // TODO
-       inet_pton(AF_INET, servAddress.c_str(), &(servaddr.sin_addr));
-       connect(socketFD, (struct sockaddr *)&servaddr, sizeof(servaddr));
-       return socketFD;
+       return connectToServer(kvs_addr);
 }
 
 void uploadFile(struct http_request req) {
@@ -577,6 +625,24 @@ int main(int argc, char *argv[]) {
                      } else {
                             std::cerr << "'-p' should be followed by a number! Using port 10000\n";
                      }
+              } else if (strstr(argv[i], "-k") != NULL && strcmp(strstr(argv[i], "-k"), "-k") == 0) {
+                  if (i + 1 < argc) {
+                         kvs_addr = trim(std::string(argv[++i]));
+                  } else {
+                         std::cerr << "'-k' should be followed by an address!\n";
+                  }
+              } else if (strstr(argv[i], "-m") != NULL && strcmp(strstr(argv[i], "-m"), "-m") == 0) {
+                  if (i + 1 < argc) {
+                         mail_addr = trim(std::string(argv[++i]));
+                  } else {
+                         std::cerr << "'-m' should be followed by an address!\n";
+                  }
+              } else if (strstr(argv[i], "-s") != NULL && strcmp(strstr(argv[i], "-s"), "-s") == 0) {
+                  if (i + 1 < argc) {
+                         storage_addr = trim(std::string(argv[++i]));
+                  } else {
+                         std::cerr << "'-s' should be followed by an address!\n";
+                  }
               } else if (strstr(argv[i], "-a") != NULL && strcmp(strstr(argv[i], "-a"), "-a") == 0) {
                      std::cerr << "Full name: Prasanna Poudyal\nSEAS login: poudyal\n";
                      exit(0);
