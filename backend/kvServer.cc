@@ -277,24 +277,41 @@ int put(int len, int comm_fd) {
 	std::string colString(col);
 	std::string valString(val);
 	kvMap[rowString][colString] = valString;
+	printKvMap();
 	write(comm_fd, "+OK 0,", strlen("+OK 0,"));
 	return 0;
 }
 
-int get(char* buf, int len, int comm_fd) {
+int get(int len, int comm_fd) {
+	std::string args = readFromSocket(len, comm_fd);
+	char* buf = (char*) args.c_str();
 	char* row = strtok(buf, ",");
 	char* col = strtok(NULL, ",");
 	std::string rowString(row);
 	std::string colString(col);
-	std::string valString = kvMap[rowString][colString];
-	debugDetailed("---get row: %s, column: %s, val: %s\n", row, col, valString.c_str());
-	write(comm_fd, "+OK GET ", strlen("+OK GET "));
-	write(comm_fd, valString.c_str(), strlen(valString.c_str()));
-	write(comm_fd, "\r\n", strlen("\r\n"));
+	
+	char* err_message = (char*) "-ERR 13,no such value";
+	if (kvMap.count(rowString) > 0) {
+		if (kvMap[rowString].count(colString) > 0) {
+			std::string valString = kvMap[rowString][colString];
+			std::string lengthParam = std::to_string(strlen(valString.c_str()));
+			debugDetailed("---get row: %s, column: %s, val: %s\n", row, col, valString.c_str());
+			write(comm_fd, "+OK ", strlen("+OK "));
+			write(comm_fd, lengthParam.c_str(), strlen(lengthParam.c_str()));
+			write(comm_fd, ",", strlen(","));
+			write(comm_fd, valString.c_str(), strlen(valString.c_str()));
+			return 0;
+		}
+	} 
+	debugDetailed("---get row: %s, column: %s, val: not found\n", row, col);
+	printKvMap();
+	write(comm_fd, err_message, strlen(err_message));
 	return 0;
 }
 
-int cput(char* buf, int len, int comm_fd) {
+
+int cput(int len, int comm_fd) {
+	char* buf;
 	char* row = strtok(buf, ",");
 	char* col = strtok(NULL, ",");
 	char* val = strtok(NULL, ",");
@@ -314,7 +331,8 @@ int cput(char* buf, int len, int comm_fd) {
 	return 0;
 }
 
-int del(char* buf, int len, int comm_fd) {
+int del(int len, int comm_fd) {
+	char* buf;
 	char* row = strtok(buf, ",");
 	char* col = strtok(NULL, ",");
 	std::string rowString(row);
@@ -353,15 +371,15 @@ int parseCommand(char* buf, int len, int comm_fd, struct thread_info* tinfo) {
 		} else if (strncasecmp("GET ", buf, 4) == 0) {
 			debugDetailed("%s\n", "get command found");
 			argLength = getArgLength(&buf[4]);
-			get(&buf[4], len, comm_fd);
+			get(argLength, comm_fd);
 		} else if (strncasecmp("CPUT ", buf, 5) == 0) {
 			debugDetailed("%s\n", "cput command found");
 			argLength = getArgLength(&buf[5]);
-			cput(&buf[5], len, comm_fd);
+			cput(len, comm_fd);
 		} else if (strncasecmp("DELETE ", buf, 7) == 0) {
 			debugDetailed("%s\n", "delete command found");
 			argLength = getArgLength(&buf[7]);
-			del(&buf[7], len, comm_fd);
+			del(len, comm_fd);
 		} else if (strncasecmp("QUIT", buf, 4) == 0) {
 			write(comm_fd, quit_message, strlen(quit_message));
 			debug("[%d] Connection closed\n", comm_fd);	
