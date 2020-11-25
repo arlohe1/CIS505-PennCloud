@@ -643,6 +643,33 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/dashboard";
 		}
+	} else if (req.filepath.compare("/dashboard") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+			resp.content =
+					"<html><body "
+							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
+							"center;\">"
+							"<form action=\"/mail\" method=\"POST\"> <input type = \"submit\" value=\"My Mailbox\" /></form>"
+							"<form action=\"/compose\" method=\"POST\"> <input type = \"submit\" value=\"Compose Email\" /></form>"
+							"<form action=\"/logout\" method=\"POST\"><input type = \"submit\" value=\"Logout\" /></form>"
+							"</body></html>";
+			resp.headers["Content-length"] = std::to_string(
+					resp.content.size());
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/login";
+		}
+	} else if (req.filepath.compare("/logout") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.cookies.erase("username");
+		}
+		resp.status_code = 307;
+		resp.status = "Temporary Redirect";
+		resp.headers["Location"] = "/";
 	} else {
 		resp.status_code = 404;
 		resp.status = "Not Found";
@@ -665,6 +692,15 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 			response += "Set-cookie: ";
 			response += it->first + "=" + it->second + "\r\n";
 		}
+	}
+	if (resp.cookies.find("error") == resp.cookies.end()) {
+		response += "Set-cookie: error=deleted; Max-Age=-1\r\n";
+	}
+	if (resp.cookies.find("signuperr") == resp.cookies.end()) {
+		response += "Set-cookie: signuperr=deleted; Max-Age=-1\r\n";
+	}
+	if (resp.cookies.find("username") == resp.cookies.end()) {
+		response += "Set-cookie: username=deleted; Max-Age=-1\r\n";
 	}
 	if (resp.content.compare("") != 0) {
 		response += "\r\n" + resp.content;
