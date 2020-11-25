@@ -14,6 +14,7 @@
 #include <sys/file.h>
 #include <time.h>
 #include <errno.h>
+#include <sstream>
 
 volatile bool sigcaught = false;
 std::map<pthread_t, int> threads;
@@ -22,7 +23,8 @@ int listenFD;
 int vflag;
 std::string directory;
 std::map<std::string, pthread_mutex_t> mailboxes;
-std::string kvs_addr = "";
+std::string kvsAddress;
+int kvsPort;
 
 /************************************************************************************/
 
@@ -112,7 +114,7 @@ void writeNBytes(int *client_fd, int n, const char *buffer) {
 	}
 }
 
-int connectToServer(std::string fullServAddress) {
+int connectToServer() {
 	int socketFD = socket(PF_INET, SOCK_STREAM, 0);
 	if (socketFD < 0) {
 		fprintf(stderr, "Cannot open socket (%s)\n", strerror(errno));
@@ -121,10 +123,8 @@ int connectToServer(std::string fullServAddress) {
 	struct sockaddr_in servaddr;
 	bzero(&servaddr, sizeof(servaddr));
 	servaddr.sin_family = AF_INET;
-	int serverPortNo = 10001;
-	servaddr.sin_port = htons(serverPortNo);
-	std::string servAddress = "127.0.0.1";
-	inet_pton(AF_INET, servAddress.c_str(), &(servaddr.sin_addr));
+	servaddr.sin_port = htons(kvsPort);
+	inet_pton(AF_INET, kvsAddress.c_str(), &(servaddr.sin_addr));
 	connect(socketFD, (struct sockaddr*) &servaddr, sizeof(servaddr));
 	return socketFD;
 }
@@ -132,7 +132,7 @@ int connectToServer(std::string fullServAddress) {
 /*********************** KVS Util function ***********************************/
 
 std::string putKVS(std::string row, std::string column, std::string value) {
-	int kv_server = connectToServer(kvs_addr);
+	int kv_server = connectToServer();
 	int cmdLength = row.size() + column.size() + value.size() + 2; // +2 for commas between row,col,val
 	std::string message = "PUT " + std::to_string(cmdLength) + "," + row + ","
 			+ column + "," + value;
@@ -144,7 +144,7 @@ std::string putKVS(std::string row, std::string column, std::string value) {
 }
 
 std::string getKVS(std::string row, std::string column) {
-	int kv_server = connectToServer(kvs_addr);
+	int kv_server = connectToServer();
 
 	// Request
 	int cmdLength = row.size() + column.size() + 1; // +1 for comma between row and col
@@ -513,7 +513,7 @@ void* worker(void *arg) {
 								current += data[b];
 							}
 							putKVS(recipients[a], "mailbox", current);
-							printf("%s\n",
+							printf("Current contents of the mailbox:\n%s",
 									getKVS(recipients[a], "mailbox").c_str());
 							// Release mutex for mailbox.
 							pthread_mutex_unlock(&mailboxes[recipients[a]]);
@@ -601,12 +601,15 @@ void* worker(void *arg) {
 }
 
 // Processes command line arguments to program.
-void processArguments(int argc, char *argv[], int *p, int *aflag, int *vflag) {
+std::string processArguments(int argc, char *argv[], int *p, int *aflag,
+		int *vflag) {
 	char *pstr = NULL;
+	char *kstr = NULL;
 	int c;
+	int colons;
 	opterr = 0;
 
-	while ((c = getopt(argc, argv, "p:av")) != -1) {
+	while ((c = getopt(argc, argv, "p:avk:")) != -1) {
 		switch (c) {
 		case 'a':
 			*aflag = 1;
@@ -623,6 +626,18 @@ void processArguments(int argc, char *argv[], int *p, int *aflag, int *vflag) {
 				}
 			}
 			*p = atoi(pstr);
+			break;
+		case 'k':
+			kstr = optarg;
+			colons = 0;
+			for (char *i = kstr; *i != '\0'; i++) {
+				if (*i == ':')
+					colons++;
+			}
+			if (colons != 1) {
+				fprintf(stderr, "Invalid argument to option `-k'.\n");
+				exit(1);
+			}
 			break;
 		case '?':
 			if (optopt == 'p')
@@ -642,6 +657,8 @@ void processArguments(int argc, char *argv[], int *p, int *aflag, int *vflag) {
 		fprintf(stderr, "Too many command line arguments.\n");
 		exit(1);
 	}
+
+	return std::string(kstr);
 }
 
 // Main function for opening TCP port, accepting connections, and spawning worker threads.
@@ -658,7 +675,19 @@ int main(int argc, char *argv[]) {
 	int p = 2500;
 	int aflag = 0;
 	vflag = 0;
-	processArguments(argc, argv, &p, &aflag, &vflag);
+	std::string kvsFullAddress = processArguments(argc, argv, &p, &aflag,
+			&vflag);
+	std::stringstream ss(kvsFullAddress);
+	std::string item;
+	bool isAddr = true;
+	while (std::getline(ss, item, ':')) {
+		if (isAddr) {
+			kvsAddress = item;
+			isAddr = false;
+		} else {
+			kvsPort = stoi(item);
+		}
+	}
 
 	if (aflag) {
 		fprintf(stderr, "Bharath Jaladi (bjaladi).\n");
