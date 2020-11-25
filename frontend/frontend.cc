@@ -317,6 +317,7 @@ void processMultiPart(struct http_request &req) {
 					if (d.find("filename") != std::string::npos) {
 						filename = trim(split(d, "=")[1]);
 						removeQuotes(filename);
+                        req.formData["filename"] = filename;
 					} else if (d.find("name") != std::string::npos) {
 						fieldname = trim(split(d, "=")[1]);
 						removeQuotes(fieldname);
@@ -671,6 +672,19 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/login";
 		}
+	} else if (req.filepath.compare("/upload") == 0) {
+			resp.content =
+			"<html><body>"
+			"<form action=\"/submitdummy\" enctype=\"multipart/form-data\" method=\"POST\""
+			"<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
+			"<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
+			"</form></body></html>";
+	} else if (req.filepath.compare("/files") == 0) {
+        std::string filesResp = getKVS("amit","ss0_/");
+			resp.content =
+			"<html><body>"
+            ""+filesResp+""
+			"</body></html>";
 	} else if (req.filepath.compare("/logout") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.cookies.erase("username");
@@ -736,8 +750,8 @@ void uploadFile(struct http_request req) {
 	std::string kvsCol = "ss1_" + filepath.substr(4, 1) + filename;
 	// Reading in response to GET --> list of files at filepath
 	std::string getCmdResponse = getKVS(username, filepath);
-	if (getCmdResponse.compare("no such value") == 0) {
-		std::string putCmdResponse = putKVS(username, "ss0_/", ".");
+	if (getCmdResponse.compare("") == 0) {
+		std::string putCmdResponse = putKVS(username, filepath, ".");
 		getCmdResponse = getKVS(username, filepath);
 	}
 	// Adding new file to file list
