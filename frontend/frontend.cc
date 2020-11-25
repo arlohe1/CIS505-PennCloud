@@ -675,15 +675,17 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare("/upload") == 0) {
 			resp.content =
 			"<html><body>"
-			"<form action=\"/submitdummy\" enctype=\"multipart/form-data\" method=\"POST\""
+			"<form action=\"/files\" enctype=\"multipart/form-data\" method=\"POST\""
 			"<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
 			"<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
-			"</form></body></html>";
+			"</form>"
+            "</body></html>";
 	} else if (req.filepath.compare("/files") == 0) {
         std::string filesResp = getKVS("amit","ss0_/");
 			resp.content =
 			"<html><body>"
-            ""+filesResp+""
+            ""+filesResp+"<br/>"
+            "<a href=\"/upload\"> <button>Upload another File</button></a>"
 			"</body></html>";
 	} else if (req.filepath.compare("/logout") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
