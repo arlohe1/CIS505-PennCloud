@@ -28,6 +28,11 @@ int kvsPort;
 
 /************************************************************************************/
 
+void log(std::string str) {
+	if (vflag)
+		fprintf(stderr, "%s\n", str.c_str());
+}
+
 void readNBytes(int *client_fd, int n, char *buffer) {
 	if (n == 0)
 		return;
@@ -45,14 +50,19 @@ std::string readKVSResponse(int *client_fd) {
 	long contentLength = 100;
 	int message_read = 0;
 	char buffer[100] = "";
-	char *responseAfterComma = NULL;
+	std::string response("");
 	while (lengthUnknown || message_read < contentLength) {
 		int rlen = 0;
 		if (lengthUnknown) {
 			rlen = read(*client_fd, &buffer[message_read], 100 - message_read);
 		} else {
-			rlen = read(*client_fd, responseAfterComma + message_read,
-					contentLength - message_read);
+			char temp[1001];
+			int nBytes =
+					1000 < (contentLength - message_read) ?
+							1000 : (contentLength - message_read);
+			rlen = read(*client_fd, temp, nBytes);
+			temp[rlen] = '\0';
+			response += std::string(temp);
 		}
 		message_read += rlen;
 		if (lengthUnknown) {
@@ -60,20 +70,22 @@ std::string readKVSResponse(int *client_fd) {
 			if (firstComma != NULL) {
 				char *firstSpace = strstr(buffer, " ");
 				lengthUnknown = false;
-				char *numStr = strndup(firstSpace + 1, firstComma - firstSpace);
+				char *numStr = strndup(firstSpace + 1,
+						firstComma - firstSpace - 1);
 				contentLength = strtol(numStr, NULL, 10);
-				responseAfterComma = (char*) malloc(
-						sizeof(char) * contentLength);
-				strncpy(responseAfterComma, firstComma + 1,
-						(buffer + message_read) - firstComma);
-				message_read = (buffer + message_read) - firstComma; // what i've read of content so far
+				response = std::string(buffer);
 			}
+			contentLength += firstComma - buffer + 1;
 		}
 	}
-	std::string finalResponseToReturn(responseAfterComma);
-	free(responseAfterComma);
+	log("Response From Server: " + response);
+	std::string finalResponse = response;
+	if (response.find(",") != std::string::npos) {
+		finalResponse = response.substr(response.find(",") + 1);
+	}
 	// EXCLUDES OK OR ERR! TODO add this in
-	return finalResponseToReturn;
+	log("Parsed Response from readKVSResponse(): " + finalResponse);
+	return finalResponse;
 }
 
 char* readIncomingCmdKVS(int *client_fd) {
