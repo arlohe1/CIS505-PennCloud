@@ -386,17 +386,51 @@ struct http_response processRequest(struct http_request &req) {
               resp.status_code = 200;
               resp.status = "OK";
               resp.headers["Content-type"] = "text/html";
+              if (req.cookies.find("error") != req.cookies.end()) {
+            	  printf("here\n");
+              }
               resp.content =
+				"<html><body style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:center;\">"
+				"<form id=\"login\" action=\"/login\" enctype=\"multipart/form-data\" method=\"POST\""
+				"<label for =\"username\">Username:</label><br/><input name=\"username\" type=\"text\"/><br/>"
+				"<label for=\"password\">Password:</label><br/><input name=\"password\" type=\"password\"/><br/>"
+				"<br/><input type=\"submit\" name=\"submit\" value=\"Log In\"><br/>"
+				"</form>"
+				"<form id=\"signup\" style=\"display:none;\" action=\"/signup\" enctype=\"multipart/form-data\" method=\"POST\""
+				"<label for =\"username\">Username:</label><br/><input name=\"username\" type=\"text\"/><br/>"
+				"<label for=\"password\">Password:</label><br/><input name=\"password\" type=\"password\"/><br/>"
+                "<label for=\"confirm_password\">Confirm Password:</label><br/><input name=\"confirm_password\" type=\"password\"/><br/>"
+				"<br/><input type=\"submit\" name=\"submit\" value=\"Sign Up\"><br/>"
+				"</form>"
+            	"<br/><button id=\"switchButton\" type=\"button\">Don't have an account? Sign up!</button>"
+            	"<script>"
+				"var switchButton=document.getElementById('switchButton');"
+                "switchButton.onclick=function(){var loginForm=document.getElementById('login');switchButton.innerHTML=(loginForm.style.display == 'none') ? \"Don't have an account? Sign up!\" : 'Have an account? Log in!';"
+                "loginForm.style.display=(loginForm.style.display == 'none') ? 'block' : 'none';"
+                "var signupForm=document.getElementById('signup');signupForm.style.display=(signupForm.style.display == 'none') ? 'block' : 'none';}"
+				"</script>"
+				"</body></html>";
+             /* resp.content =
                   "<html><body>"
                   "<form action=\"/submitdummy\" enctype=\"multipart/form-data\" method=\"POST\""
                   "<label for =\"username\">Username</label><br/><input name=\"username\" type=\"text\"/><br/>"
                   "<label for=\"password\">Password:</label><br/><input name=\"password\" type=\"password\"/><br/>"
                   "<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
                   "<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
-                  "</form></body></html>";
+                  "</form></body></html>";*/
               resp.headers["Content-length"] = std::to_string(resp.content.size());
+       } else if (req.filepath.compare("/login") == 0) {
+		    resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+    	   	resp.headers["Location"] = "/";
+    	   	resp.cookies["error"] = "1";
+    	   //check KVS. redirect to dashboard if successful
+    	   //set cookies
+    	   //if not successful, report error and redirect to login page
        } else if (req.filepath.compare("/signup") == 0) {
-
+    	   //try to add to KVS. if successful, login and redirect to dashboard
+    	   //set cookies
+    	   //if not successful, report error and redirect to signup page
        } else {
               resp.status_code = 404;
               resp.status = "Not Found";
