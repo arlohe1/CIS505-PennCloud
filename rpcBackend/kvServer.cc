@@ -124,6 +124,21 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 			std::string val = kvMap[row][col];
 			debugDetailed("---get succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
 			printKvMap();
+			return std::make_tuple(0, val);
+		}
+	} 
+
+	debugDetailed("---get val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
+	printKvMap();
+	return std::make_tuple(1, "No such row, column pair");
+}
+
+std::tuple<int, std::string> exists(std::string row, std::string col) {
+    if (kvMap.count(row) > 0) {
+		if (kvMap[row].count(col) > 0) {
+			std::string val = kvMap[row][col];
+			debugDetailed("---exists succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+			printKvMap();
 			return std::make_tuple(0, "OK");
 		}
 	} 
@@ -199,7 +214,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	rpc::server srv(rpc::constants::DEFAULT_PORT);
+	rpc::server srv("localhost", port);
 	srv.bind("put", &put);
 	srv.bind("get", &get);
 	srv.bind("cput", &cput);
