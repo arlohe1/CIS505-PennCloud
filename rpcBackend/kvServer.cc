@@ -214,7 +214,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	rpc::server srv("localhost", port);
+	rpc::server srv(port);
 	srv.bind("put", &put);
 	srv.bind("get", &get);
 	srv.bind("cput", &cput);
