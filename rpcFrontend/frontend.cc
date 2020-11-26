@@ -218,7 +218,7 @@ std::string kvsResponseMsg(resp_tuple resp) {
 /***************************** Start storage service functions ************************/
 
 void uploadFile(struct http_request req) {
-	std::string username = req.cookies["username"];//TODO
+	std::string username = req.cookies["username"]; //TODO
 	username = "amit";
 	std::string filename = req.formData["filename"];
 	std::string filepath = "ss0_/"; // TODO filepath of file in storage service (no dirs for now)
@@ -240,6 +240,11 @@ void uploadFile(struct http_request req) {
 	putCmdResponse = putKVS(username, kvsCol, fileData);
 }
 
+std::string getFileLink(std::string filePath) {
+    std::string link="<a href=/files/"+filePath+">Link</a>";
+    return link;
+}
+
 std::string getFileList() {
     std::string delim = ",";
     resp_tuple filesResp = getKVS("amit","ss0_/");
@@ -249,14 +254,18 @@ std::string getFileList() {
     if(respStatus == 0) {
         int pos = 0;
         std::string token;
+        std::string fileName;
+        std::string link;
         while ((pos = respValue.find(delim)) != std::string::npos) {
             token = respValue.substr(0, pos);
-            token = token.substr(token.find("_") + 1);
-            result+="<li>"+token+"</li>";
+            fileName = token.substr(token.find("_") + 1);
+            link = getFileLink(token);
+            result+="<li>"+fileName+link+"</li>";
             respValue.erase(0, pos + delim.length());
         }
-        respValue = respValue.substr(respValue.find("_") + 1);
-        result+="<li>"+respValue+"</li>";
+        link = getFileLink(respValue);
+        fileName = respValue.substr(respValue.find("_") + 1);
+        result+="<li>"+fileName+link+"</li>";
         result+="</ul>";
         return result;
     } else {
@@ -659,6 +668,9 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/login";
 		}
 	} else if (req.filepath.compare("/upload") == 0) {
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
 			resp.content =
 			"<html><body>"
 			"<form action=\"/files\" enctype=\"multipart/form-data\" method=\"POST\""
@@ -667,12 +679,44 @@ struct http_response processRequest(struct http_request &req) {
 			"</form>"
             "</body></html>";
 	} else if (req.filepath.compare("/files") == 0) {
-        std::string fileList = getFileList();
-			resp.content =
-			"<html><body>"
+            resp.status_code = 200;
+            resp.status = "OK";
+            resp.headers["Content-type"] = "text/html";
+            std::string fileList = getFileList();
+            resp.content =
+            "<html><body>"
             ""+fileList+"<br/>"
             "<a href=\"/upload\"> <button>Upload another File</button></a>"
-			"</body></html>";
+            "</body></html>";
+	} else if (req.filepath.compare(0,7,"/files/") == 0) {
+            if(req.filepath.length() > 7) {
+                    std::string filepath = req.filepath.substr(7);
+                    resp_tuple getFileResp = getKVS("amit", filepath); // TODO change hardcoded username
+                    if(kvsResponseStatusCode(getFileResp) == 0) {
+                            resp.status_code = 200;
+                            resp.status = "OK";
+                            resp.headers["Content-type"] = "text/plain";
+                            resp.content = kvsResponseMsg(getFileResp);
+                    } else {
+                            resp.status_code = 404;
+                            resp.status = "Not found";
+                            resp.headers["Content-type"] = "text/html";
+                            resp.content =
+                            "<html><body>"
+                            "Requested file not found!"
+                            "</body></html>";
+                    }
+            } else {
+                    resp.status_code = 200;
+                    resp.status = "OK";
+                    resp.headers["Content-type"] = "text/html";
+                    std::string fileList = getFileList();
+                    resp.content =
+                    "<html><body>"
+                    ""+fileList+"<br/>"
+                    "<a href=\"/upload\"> <button>Upload another File</button></a>"
+                    "</body></html>";
+            }
 	} else if (req.filepath.compare("/logout") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.cookies.erase("username");
