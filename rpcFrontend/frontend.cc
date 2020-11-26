@@ -217,27 +217,30 @@ std::string kvsResponseMsg(resp_tuple resp) {
 
 /***************************** Start storage service functions ************************/
 
-void uploadFile(struct http_request req) {
-	std::string username = req.cookies["username"]; //TODO
+void uploadFile(struct http_request req, std::string filepath) {
+	std::string username = req.cookies["username"]; //TODO change hardcoding
 	username = "amit";
 	std::string filename = req.formData["filename"];
-	std::string filepath = "ss0_/"; // TODO filepath of file in storage service (no dirs for now)
 	std::string fileData = req.formData["file"];
 
 	// Construct filepath of new file
-	std::string kvsCol = "ss1_" + filepath.substr(4, 1) + filename;
+	std::string kvsCol = filepath + "ss1_" + filename;
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, filepath);
 	std::string fileList = kvsCol;
     if(kvsResponseStatusCode(getCmdResponse) == 0) {
         fileList = kvsResponseMsg(getCmdResponse);
         // Adding new file to existing file list
-        fileList += "," + kvsCol;
+        if(fileList.length() > 0) {
+            fileList += "," + kvsCol;
+        } else {
+            fileList = kvsCol;
+        }
+        // PUT length,row,col,value for MODIFIED FILE LIST
+        resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
+        // PUT username,kvsCol,filedata
+        putCmdResponse = putKVS(username, kvsCol, fileData);
     }
-	// PUT length,row,col,value for MODIFIED FILE LIST
-	resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
-	// PUT username,kvsCol,filedata
-	putCmdResponse = putKVS(username, kvsCol, fileData);
 }
 
 std::string getFileLink(std::string filePath) {
@@ -245,14 +248,18 @@ std::string getFileLink(std::string filePath) {
     return link;
 }
 
-std::string getFileList() {
+std::string getFileList(std::string filepath) {
     std::string delim = ",";
-    resp_tuple filesResp = getKVS("amit","ss0_/");
+    resp_tuple filesResp = getKVS("amit", filepath);
     int respStatus = kvsResponseStatusCode(filesResp);
     std::string respValue = kvsResponseMsg(filesResp);
-    std::string result = "<ul>";
     if(respStatus == 0) {
+        if(respValue.length() == 0) {
+            return "This directory is empty.";
+
+        }
         int pos = 0;
+        std::string result = "<ul>";
         std::string token;
         std::string fileName;
         std::string link;
@@ -271,6 +278,40 @@ std::string getFileList() {
     } else {
         return "No files available";
     }
+}
+
+bool isFileRouteDirectory(std::string filepath) {
+    // All directories should end with a '/'
+    return (filepath.back() == '/');
+}
+
+void createDirectory(struct http_request req, std::string filepath, std::string dirName) {
+	std::string username = req.cookies["username"]; //TODO change hardcoding
+	username = "amit";
+
+	// Construct filepath of new directory
+	std::string kvsCol = filepath + "ss0_" + dirName+"/";
+	// Reading in response to GET --> list of files at filepath
+	resp_tuple getCmdResponse = getKVS(username, filepath);
+	std::string fileList = kvsCol;
+    if(kvsResponseStatusCode(getCmdResponse) == 0) {
+        fileList = kvsResponseMsg(getCmdResponse);
+        // Adding new file to existing file list
+        fileList += "," + kvsCol;
+    }
+	// PUT length,row,col,value for MODIFIED FILE LIST
+	resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
+    // PUT new column for new directory
+	putCmdResponse = putKVS(username, kvsCol, "");
+}
+
+void createRootDirForNewUser(struct http_request req) {
+	std::string username = req.cookies["username"];
+	username = "amit"; //TODO change hardcoding
+	// Construct filepath of new directory
+	std::string kvsCol = "ss0_/";
+    // PUT new column for root directory
+	putKVS(username, kvsCol, "");
 }
 
 /***************************** End storage service functions ************************/
@@ -498,6 +539,22 @@ struct http_response processRequest(struct http_request &req) {
 		resp.cookies[it->first] = it->second;
 	}
 
+	if (req.formData["dir_name"].size() > 0) {
+            // File present to upload
+            if(req.filepath.substr(0,7).compare("/files/") == 0 && req.filepath.length() > 7) {
+                std::string filepath = req.filepath.substr(7);
+                createDirectory(req, filepath, req.formData["dir_name"]);
+            }
+	}
+
+	if (req.formData["file"].size() > 0) {
+            // File present to upload
+            if(req.filepath.substr(0,7).compare("/files/") == 0 && req.filepath.length() > 7) {
+                std::string filepath = req.filepath.substr(7);
+                uploadFile(req, filepath);
+            }
+	}
+
 	if (req.filepath.compare("/") == 0) {
 		if (req.cookies.find("username") == req.cookies.end()) {
 			resp.status_code = 200;
@@ -641,6 +698,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.status = "Temporary Redirect";
 				resp.headers["Location"] = "/dashboard";
 				resp.cookies["username"] = req.formData["username"];
+                createRootDirForNewUser(req);
 			}
 		} else {
 			resp.status_code = 307;
@@ -667,36 +725,35 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/login";
 		}
-	} else if (req.filepath.compare("/upload") == 0) {
-			resp.status_code = 200;
-			resp.status = "OK";
-			resp.headers["Content-type"] = "text/html";
-			resp.content =
-			"<html><body>"
-			"<form action=\"/files\" enctype=\"multipart/form-data\" method=\"POST\""
-			"<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
-			"<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
-			"</form>"
-            "</body></html>";
-	} else if (req.filepath.compare("/files") == 0) {
-            resp.status_code = 200;
-            resp.status = "OK";
-            resp.headers["Content-type"] = "text/html";
-            std::string fileList = getFileList();
-            resp.content =
-            "<html><body>"
-            ""+fileList+"<br/>"
-            "<a href=\"/upload\"> <button>Upload another File</button></a>"
-            "</body></html>";
 	} else if (req.filepath.compare(0,7,"/files/") == 0) {
             if(req.filepath.length() > 7) {
                     std::string filepath = req.filepath.substr(7);
                     resp_tuple getFileResp = getKVS("amit", filepath); // TODO change hardcoded username
                     if(kvsResponseStatusCode(getFileResp) == 0) {
-                            resp.status_code = 200;
-                            resp.status = "OK";
-                            resp.headers["Content-type"] = "text/plain";
-                            resp.content = kvsResponseMsg(getFileResp);
+                            // display list of files if route = directory. else, display file contents
+                            if(isFileRouteDirectory(filepath)) {
+                                    resp.status_code = 200;
+                                    resp.status = "OK";
+                                    resp.headers["Content-type"] = "text/html";
+                                    std::string fileList = getFileList(filepath);
+                                    resp.content =
+                                    "<html><body>"
+                                    ""+fileList+"<br/>"
+                                    "<form action=\"/files/"+filepath+"\" enctype=\"multipart/form-data\" method=\"POST\""
+                                    "<label for=\"file\">Upload a new File</label><br/><input type=\"file\" name=\"file\"/><br/>"
+                                    "<input type=\"submit\" name=\"submit\" value=\"Upload\"><br/>"
+                                    "</form>"
+                                    "<form action=\"/files/"+filepath+"\" enctype=\"multipart/form-data\" method=\"POST\""
+                                    "<label for=\"dir_name\">New Directory Name</label><br/><input type=\"text\" name=\"dir_name\" placeholder=\"Create Directory\"/><br/>"
+                                    "<input type=\"submit\" name=\"submit\" value=\"Submit\"><br/>"
+                                    "</form>"
+                                    "</body></html>";
+                            } else {
+                                    resp.status_code = 200;
+                                    resp.status = "OK";
+                                    resp.headers["Content-type"] = "text/plain";
+                                    resp.content = kvsResponseMsg(getFileResp);
+                            }
                     } else {
                             resp.status_code = 404;
                             resp.status = "Not found";
@@ -707,14 +764,12 @@ struct http_response processRequest(struct http_request &req) {
                             "</body></html>";
                     }
             } else {
-                    resp.status_code = 200;
-                    resp.status = "OK";
+                    resp.status_code = 404;
+                    resp.status = "Not found";
                     resp.headers["Content-type"] = "text/html";
-                    std::string fileList = getFileList();
                     resp.content =
                     "<html><body>"
-                    ""+fileList+"<br/>"
-                    "<a href=\"/upload\"> <button>Upload another File</button></a>"
+                    "Requested file not found!"
                     "</body></html>";
             }
 	} else if (req.filepath.compare("/logout") == 0) {
@@ -775,10 +830,6 @@ void* handleClient(void *arg) {
 	if (!req.valid) {
 		close(*client_fd);
 		return NULL;
-	}
-	if (req.formData["file"].size() > 0) {
-		// File present to upload
-		uploadFile(req);
 	}
 
 	/* Process newly filled buffer and add commands to queue */
