@@ -31,7 +31,6 @@ pthread_mutex_t fd_mutex;
 std::set<int*> fd;
 volatile bool verbose = false;
 volatile bool shut_down = false;
-// rpc::client kvsRPCClient;
 
 using resp_tuple = std::tuple<int, std::string>;
 
@@ -76,79 +75,6 @@ void readNBytes(int *client_fd, int n, char *buffer) {
 		int rlen = read(*client_fd, &buffer[message_read], n - message_read);
 		message_read += rlen;
 	}
-}
-
-// TODO: confirm that the kvs server returns "+OK" or "-ERR" (ignoring them for now)
-// Returns content from KVS response (anything following length,)
-std::string readKVSResponse(int *client_fd) {
-	bool lengthUnknown = true;
-	long contentLength = 100;
-	int message_read = 0;
-	char buffer[100] = "";
-	std::string response("");
-	while (lengthUnknown || message_read < contentLength) {
-		int rlen = 0;
-		if (lengthUnknown) {
-			rlen = read(*client_fd, &buffer[message_read], 100 - message_read);
-		} else {
-			char temp[1001];
-			int nBytes =
-					1000 < (contentLength - message_read) ?
-							1000 : (contentLength - message_read);
-			rlen = read(*client_fd, temp, nBytes);
-			temp[rlen] = '\0';
-			response += std::string(temp);
-		}
-		message_read += rlen;
-		if (lengthUnknown) {
-			char *firstComma = strstr(buffer, ",");
-			if (firstComma != NULL) {
-				char *firstSpace = strstr(buffer, " ");
-				lengthUnknown = false;
-				char *numStr = strndup(firstSpace + 1,
-						firstComma - firstSpace - 1);
-				contentLength = strtol(numStr, NULL, 10);
-				response = std::string(buffer);
-				contentLength += firstComma - buffer + 1;
-			}
-		}
-	}
-	log("Response From Server: " + response);
-	std::string finalResponse = response;
-	if (response.find(",") != std::string::npos) {
-		finalResponse = response.substr(response.find(",") + 1);
-	}
-	// EXCLUDES OK OR ERR! TODO add this in
-	log("Parsed Response from readKVSResponse(): " + finalResponse);
-	return finalResponse;
-}
-
-char* readIncomingCmdKVS(int *client_fd) {
-	bool lengthUnknown = true;
-	long contentLength = 100;
-	int message_read = 0;
-	char buffer[100] = "";
-	char *finalCmd = NULL;
-	while (lengthUnknown || message_read < contentLength) {
-		int rlen = 0;
-		if (lengthUnknown) {
-			rlen = read(*client_fd, &buffer[message_read], 100 - message_read);
-		} else {
-			rlen = read(*client_fd, finalCmd + message_read,
-					contentLength - message_read);
-		}
-		message_read += rlen;
-		char *firstComma = strstr(buffer, ",");
-		if (firstComma != NULL) {
-			char *firstSpace = strstr(buffer, " ");
-			lengthUnknown = false;
-			char *numStr = strndup(firstSpace + 1, firstComma - firstSpace);
-			contentLength = strtol(numStr, NULL, 10) + (firstComma - buffer);
-			finalCmd = (char*) malloc(sizeof(char) * contentLength);
-			strncpy(finalCmd, buffer, message_read);
-		}
-	}
-	return finalCmd;
 }
 
 void writeNBytes(int *client_fd, int n, const char *buffer) {
@@ -234,14 +160,6 @@ std::string getAddrFromString(std::string fullServAddr) {
 	return trim(split(fullServAddr, ":")[0]);
 }
 
-/*
-void connectToRPCServer(std::string fullServAddress) {
-	int serverPortNo = getPortNoFromString(fullServAddress);
-	std::string servAddress = getAddrFromString(fullServAddress);
-    kvsRPCClient(servAddress, serverPortNo);
-}
-*/
-
 /*********************** KVS Util function ***********************************/
 
 resp_tuple putKVS(std::string row, std::string column, std::string value) {
@@ -296,6 +214,57 @@ int kvsResponseStatusCode(resp_tuple resp) {
 std::string kvsResponseMsg(resp_tuple resp) {
         return std::get<1>(resp);
 }
+
+/***************************** Start storage service functions ************************/
+
+void uploadFile(struct http_request req) {
+	std::string username = req.cookies["username"];//TODO
+	username = "amit";
+	std::string filename = req.formData["filename"];
+	std::string filepath = "ss0_/"; // TODO filepath of file in storage service (no dirs for now)
+	std::string fileData = req.formData["file"];
+
+	// Construct filepath of new file
+	std::string kvsCol = "ss1_" + filepath.substr(4, 1) + filename;
+	// Reading in response to GET --> list of files at filepath
+	resp_tuple getCmdResponse = getKVS(username, filepath);
+	std::string fileList = kvsCol;
+    if(kvsResponseStatusCode(getCmdResponse) == 0) {
+        fileList = kvsResponseMsg(getCmdResponse);
+        // Adding new file to existing file list
+        fileList += "," + kvsCol;
+    }
+	// PUT length,row,col,value for MODIFIED FILE LIST
+	resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
+	// PUT username,kvsCol,filedata
+	putCmdResponse = putKVS(username, kvsCol, fileData);
+}
+
+std::string getFileList() {
+    std::string delim = ",";
+    resp_tuple filesResp = getKVS("amit","ss0_/");
+    int respStatus = kvsResponseStatusCode(filesResp);
+    std::string respValue = kvsResponseMsg(filesResp);
+    std::string result = "<ul>";
+    if(respStatus == 0) {
+        int pos = 0;
+        std::string token;
+        while ((pos = respValue.find(delim)) != std::string::npos) {
+            token = respValue.substr(0, pos);
+            token = token.substr(token.find("_") + 1);
+            result+="<li>"+token+"</li>";
+            respValue.erase(0, pos + delim.length());
+        }
+        respValue = respValue.substr(respValue.find("_") + 1);
+        result+="<li>"+respValue+"</li>";
+        result+="</ul>";
+        return result;
+    } else {
+        return "No files available";
+    }
+}
+
+/***************************** End storage service functions ************************/
 
 /*********************** Http Util function **********************************/
 std::string getBoundary(std::string &type) {
@@ -698,11 +667,10 @@ struct http_response processRequest(struct http_request &req) {
 			"</form>"
             "</body></html>";
 	} else if (req.filepath.compare("/files") == 0) {
-        resp_tuple filesResp = getKVS("amit","ss0_/");
-        std::string filesContent = kvsResponseMsg(filesResp);
+        std::string fileList = getFileList();
 			resp.content =
 			"<html><body>"
-            ""+filesContent+"<br/>"
+            ""+fileList+"<br/>"
             "<a href=\"/upload\"> <button>Upload another File</button></a>"
 			"</body></html>";
 	} else if (req.filepath.compare("/logout") == 0) {
@@ -752,33 +720,6 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 }
 
 /***************************** End http util functions ************************/
-
-/***************************** Start storage service functions ************************/
-
-void uploadFile(struct http_request req) {
-	std::string username = req.cookies["username"];//TODO
-	username = "amit";
-	std::string filename = req.formData["filename"];
-	std::string filepath = "ss0_/"; // TODO filepath of file in storage service (no dirs for now)
-	std::string fileData = req.formData["file"];
-
-	// Construct filepath of new file
-	std::string kvsCol = "ss1_" + filepath.substr(4, 1) + filename;
-	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(username, filepath);
-	std::string fileList = kvsCol;
-    if(kvsResponseStatusCode(getCmdResponse) == 0) {
-        fileList = kvsResponseMsg(getCmdResponse);
-        // Adding new file to existing file list
-        fileList = "," + kvsCol;
-    }
-	// PUT length,row,col,value for MODIFIED FILE LIST
-	resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
-	// PUT username,kvsCol,filedata
-	putCmdResponse = putKVS(username, kvsCol, fileData);
-}
-
-/***************************** End storage service functions ************************/
 
 void* handleClient(void *arg) {
 	/* Initialize buffer and client fd */
