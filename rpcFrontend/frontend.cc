@@ -626,6 +626,7 @@ struct http_response processRequest(struct http_request &req) {
 			}
             resp_tuple getResp = getKVS(req.formData["username"], "password");
             std::string getRespMsg = kvsResponseMsg(getResp);
+            int getRespStatusCode = kvsResponseStatusCode(getResp);
 			if (req.formData["username"].size() == 0 || !valid) {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
@@ -649,7 +650,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] = "Passwords do not match.";
 				resp.cookies["signuperr"] = "1";
-			} else if (getRespMsg != "") {
+			} else if (getRespStatusCode == 0) {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
 				resp.headers["Location"] = "/";
@@ -755,8 +756,8 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 /***************************** Start storage service functions ************************/
 
 void uploadFile(struct http_request req) {
-	std::string username = req.formData["username"];
-	username = "amit"; // TODO change hardcoding
+	std::string username = req.cookies["username"];//TODO
+	username = "amit";
 	std::string filename = req.formData["filename"];
 	std::string filepath = "ss0_/"; // TODO filepath of file in storage service (no dirs for now)
 	std::string fileData = req.formData["file"];
