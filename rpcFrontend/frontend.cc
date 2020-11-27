@@ -5,6 +5,7 @@
 #include <map>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <openssl/md5.h>
 #include <queue>
 #include <set>
 #include <signal.h>
@@ -61,6 +62,32 @@ std::map<int, struct http_session> id_to_session;
 /******************************* End http data structures ******************************/
 
 /******************************* Start Util functions     ******************************/
+
+// From HW2
+void computeDigest(char *data, int dataLengthBytes, unsigned char *digestBuffer) {
+    /* The digest will be written to digestBuffer, which must be at least MD5_DIGEST_LENGTH bytes long */
+    MD5_CTX c;
+    MD5_Init(&c);
+    MD5_Update(&c, data, dataLengthBytes);
+    MD5_Final(digestBuffer, &c);
+}
+
+std::string generateStringHash(std::string strToHash) {
+        unsigned char *digestBuff = (unsigned char *)malloc(MD5_DIGEST_LENGTH * sizeof(unsigned char) + 1);
+        char* strToHashCStr = strdup(strToHash.c_str());
+        computeDigest(strToHashCStr, strToHash.length()+1, digestBuff);
+        free(strToHashCStr);
+        digestBuff[MD5_DIGEST_LENGTH] = '\0';
+        char *stringHash = (char *)malloc((32+1) * sizeof(char));
+        for (int i = 0; i < 16; i++) {
+            stringHash[2 * i] = "0123456789ABCDEF"[digestBuff[i] / 16];
+            stringHash[2 * i + 1] = "0123456789ABCDEF"[digestBuff[i] % 16];
+        }
+        free(digestBuff);
+        stringHash[32] = '\0';
+        return std::string(stringHash);
+
+}
 
 void log(std::string str) {
 	if (verbose)
@@ -218,24 +245,20 @@ std::string kvsResponseMsg(resp_tuple resp) {
 /***************************** Start storage service functions ************************/
 
 void uploadFile(struct http_request req, std::string filepath) {
-	std::string username = req.cookies["username"]; //TODO change hardcoding
-	username = "amit";
+	std::string username = req.cookies["username"]; 
+	username = "amit"; // TODO change hardcoding
 	std::string filename = req.formData["filename"];
 	std::string fileData = req.formData["file"];
 
 	// Construct filepath of new file
-	std::string kvsCol = filepath + "ss1_" + filename;
+    std::string filenameHash = generateStringHash(username+filename);
+	std::string kvsCol = "ss1_" + filenameHash;
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, filepath);
-	std::string fileList = kvsCol;
     if(kvsResponseStatusCode(getCmdResponse) == 0) {
-        fileList = kvsResponseMsg(getCmdResponse);
+        std::string fileList = kvsResponseMsg(getCmdResponse);
         // Adding new file to existing file list
-        if(fileList.length() > 0) {
-            fileList += "," + kvsCol;
-        } else {
-            fileList = kvsCol;
-        }
+        fileList += filename+","+kvsCol+"\n";
         // PUT length,row,col,value for MODIFIED FILE LIST
         resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
         // PUT username,kvsCol,filedata
@@ -243,37 +266,30 @@ void uploadFile(struct http_request req, std::string filepath) {
     }
 }
 
-std::string getFileLink(std::string filePath) {
-    std::string link="<a href=/files/"+filePath+">Link</a>";
+std::string getFileLink(std::string fileName, std::string fileHash) {
+    std::string link="<li>"+fileName+"<a href=/files/"+fileHash+">Link</a>";
     return link;
 }
 
-std::string getFileList(std::string filepath) {
-    std::string delim = ",";
+std::string getFileList(struct http_request req, std::string filepath) {
+	std::string username = req.cookies["username"]; 
+	username = "amit"; // TODO change hardcoding
     resp_tuple filesResp = getKVS("amit", filepath);
     int respStatus = kvsResponseStatusCode(filesResp);
     std::string respValue = kvsResponseMsg(filesResp);
     if(respStatus == 0) {
         if(respValue.length() == 0) {
             return "This directory is empty.";
-
         }
-        int pos = 0;
         std::string result = "<ul>";
-        std::string token;
-        std::string fileName;
-        std::string link;
-        while ((pos = respValue.find(delim)) != std::string::npos) {
-            token = respValue.substr(0, pos);
-            fileName = token.substr(token.find("_") + 1);
-            link = getFileLink(token);
-            result+="<li>"+fileName+link+"</li>";
-            respValue.erase(0, pos + delim.length());
+        std::deque<std::string> splt = split(respValue, "\n");
+        for (std::string line : splt) {
+            if(line.length() > 0) {
+                std::deque<std::string> lineSplt = split(line, ",");
+                result += getFileLink(lineSplt[0], lineSplt[1]);
+            }
         }
-        link = getFileLink(respValue);
-        fileName = respValue.substr(respValue.find("_") + 1);
-        result+="<li>"+fileName+link+"</li>";
-        result+="</ul>";
+        result += "</ul>";
         return result;
     } else {
         return "No files available";
@@ -282,7 +298,7 @@ std::string getFileList(std::string filepath) {
 
 bool isFileRouteDirectory(std::string filepath) {
     // All directories should end with a '/'
-    return (filepath.back() == '/');
+    return (filepath.length() > 4 && filepath.substr(0, 4).compare("ss0_") == 0);
 }
 
 void createDirectory(struct http_request req, std::string filepath, std::string dirName) {
@@ -290,28 +306,27 @@ void createDirectory(struct http_request req, std::string filepath, std::string 
 	username = "amit";
 
 	// Construct filepath of new directory
-	std::string kvsCol = filepath + "ss0_" + dirName+"/";
+    std::string dirNameHash = generateStringHash(username+dirName);
+	std::string kvsCol = "ss0_" + dirNameHash;
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, filepath);
-	std::string fileList = kvsCol;
     if(kvsResponseStatusCode(getCmdResponse) == 0) {
-        fileList = kvsResponseMsg(getCmdResponse);
+        std::string fileList = kvsResponseMsg(getCmdResponse);
         // Adding new file to existing file list
-        fileList += "," + kvsCol;
+        fileList += dirName+","+kvsCol+"\n";
+        // PUT length,row,col,value for MODIFIED FILE LIST
+        resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
+        // PUT new column for new directory
+        putCmdResponse = putKVS(username, kvsCol, "");
     }
-	// PUT length,row,col,value for MODIFIED FILE LIST
-	resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
-    // PUT new column for new directory
-	putCmdResponse = putKVS(username, kvsCol, "");
 }
 
 void createRootDirForNewUser(struct http_request req) {
 	std::string username = req.cookies["username"];
 	username = "amit"; //TODO change hardcoding
-	// Construct filepath of new directory
-	std::string kvsCol = "ss0_/";
+    std::string dirNameHash = generateStringHash(username + "/");
     // PUT new column for root directory
-	putKVS(username, kvsCol, "");
+	putKVS(username, "ss0_" + dirNameHash, "");
 }
 
 /***************************** End storage service functions ************************/
@@ -710,12 +725,15 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
+            std::string username = "amit"; // TODO change hardcoding
+            std::string userRootDir = "ss0_" + generateStringHash(username + "/");
 			resp.content =
 					"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
 							"center;\">"
 							"<form action=\"/mail\" method=\"POST\"> <input type = \"submit\" value=\"My Mailbox\" /></form>"
 							"<form action=\"/compose\" method=\"POST\"> <input type = \"submit\" value=\"Compose Email\" /></form>"
+							"<form action=\"/files/"+userRootDir+"\" method=\"POST\"> <input type = \"submit\" value=\"Storage Service\" /></form>"
 							"<form action=\"/logout\" method=\"POST\"><input type = \"submit\" value=\"Logout\" /></form>"
 							"</body></html>";
 			resp.headers["Content-length"] = std::to_string(
@@ -735,7 +753,7 @@ struct http_response processRequest(struct http_request &req) {
                                     resp.status_code = 200;
                                     resp.status = "OK";
                                     resp.headers["Content-type"] = "text/html";
-                                    std::string fileList = getFileList(filepath);
+                                    std::string fileList = getFileList(req, filepath);
                                     resp.content =
                                     "<html><body>"
                                     ""+fileList+"<br/>"
