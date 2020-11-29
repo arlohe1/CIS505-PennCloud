@@ -34,16 +34,20 @@
 #include <string>
 
 #define MAX_LEN_SERVER_DIR 15
+#define MAX_LEN_LOG_HEADER 100
+#define MAX_COMM_ARGS 4
 enum Command {GET, PUT, CPUT, DELETE};
 
 
 int debugFlag;
 int err = -1;
 int detailed = 0;
+int replay = 0;
 
 int serverIndx = 1;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // maps server index to ip addr
 FILE* logfile = NULL;
+FILE* logfileRead = NULL;
 
 void debugTime() {
 	if (debugFlag) {
@@ -112,53 +116,62 @@ void printKvMap() {
 // write to log.txt for
 int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg2, std::string arg3, std::string arg4) {
 	// check what command is 
-	if ((logfile = fopen("log.txt", "a")) == NULL) {
-		debugDetailed("could not open log.txt for server %d\n", serverIndx);
-		perror("invalid fopen of log file: ");
-		return -1;
-	}
-	// write header line command arg {GET, PUT, CPUT, DELETE}
-	if (comm == GET) {
-		//fprintf(logfile, "GET,");
-		fwrite("GET,", sizeof(char), strlen("GET,"), logfile);
-	} else if (comm == PUT) {
-		//fprintf(logfile, "PUT,");
-		fwrite("PUT,", sizeof(char), strlen("PUT,"), logfile);
-	} else if (comm == CPUT) {
-		//fprintf(logfile, "CPUT,");
-		fwrite("CPUT,", sizeof(char), strlen("CPUT,"), logfile);
-	} else if (comm == DELETE) {
-		//fprintf(logfile, "DELETE,");
-		fwrite("DELETE,", sizeof(char), strlen("DELETE,"), logfile);
-	}
+	if (replay == 0) {
+		debugDetailed("%s\n", "logging command, replay flag off");
+		if ((logfile = fopen("log.txt", "a")) == NULL) {
+			debugDetailed("could not open log.txt for server %d\n", serverIndx);
+			perror("invalid fopen of log file: ");
+			return -1;
+		}
+		// write header line command arg {GET, PUT, CPUT, DELETE}
+		if (comm == GET) {
+			//fprintf(logfile, "GET,");
+			fwrite("GET,", sizeof(char), strlen("GET,"), logfile);
+		} else if (comm == PUT) {
+			//fprintf(logfile, "PUT,");
+			fwrite("PUT,", sizeof(char), strlen("PUT,"), logfile);
+		} else if (comm == CPUT) {
+			//fprintf(logfile, "CPUT,");
+			fwrite("CPUT,", sizeof(char), strlen("CPUT,"), logfile);
+		} else if (comm == DELETE) {
+			//fprintf(logfile, "DELETE,");
+			fwrite("DELETE,", sizeof(char), strlen("DELETE,"), logfile);
+		}
 
-	// write headerline arglens
-	if (numArgs == 2) {
-		fprintf(logfile, "%ld,%ld,0,0\n", arg1.length(), arg2.length());
-		fwrite(arg1.c_str(), sizeof(char), arg1.length(), logfile);
-		fwrite(arg2.c_str(), sizeof(char), arg2.length(), logfile);
-	} else if (numArgs == 3) {
-		fprintf(logfile, "%ld,%ld,%ld,0\n", arg1.length(), arg2.length(), arg3.length());
-		fwrite(arg1.c_str(), sizeof(char), arg1.length(), logfile);
-		fwrite(arg2.c_str(), sizeof(char), arg2.length(), logfile);
-		fwrite(arg3.c_str(), sizeof(char), arg3.length(), logfile);
-	} else if (numArgs == 4) {
-		fprintf(logfile, "%ld,%ld,%ld,%ld\n", arg1.length(), arg2.length(), arg3.length(), arg4.length());
-		fwrite(arg1.c_str(), sizeof(char), arg1.length(), logfile);
-		fwrite(arg2.c_str(), sizeof(char), arg2.length(), logfile);
-		fwrite(arg3.c_str(), sizeof(char), arg3.length(), logfile);
-		fwrite(arg4.c_str(), sizeof(char), arg4.length(), logfile);
+		// write headerline arglens
+		if (numArgs == 2) {
+			fprintf(logfile, "%ld,%ld,0,0\n", arg1.length(), arg2.length());
+			fwrite(arg1.c_str(), sizeof(char), arg1.length(), logfile);
+			fwrite(arg2.c_str(), sizeof(char), arg2.length(), logfile);
+		} else if (numArgs == 3) {
+			fprintf(logfile, "%ld,%ld,%ld,0\n", arg1.length(), arg2.length(), arg3.length());
+			fwrite(arg1.c_str(), sizeof(char), arg1.length(), logfile);
+			fwrite(arg2.c_str(), sizeof(char), arg2.length(), logfile);
+			fwrite(arg3.c_str(), sizeof(char), arg3.length(), logfile);
+		} else if (numArgs == 4) {
+			fprintf(logfile, "%ld,%ld,%ld,%ld\n", arg1.length(), arg2.length(), arg3.length(), arg4.length());
+			fwrite(arg1.c_str(), sizeof(char), arg1.length(), logfile);
+			fwrite(arg2.c_str(), sizeof(char), arg2.length(), logfile);
+			fwrite(arg3.c_str(), sizeof(char), arg3.length(), logfile);
+			fwrite(arg4.c_str(), sizeof(char), arg4.length(), logfile);
+		} else {
+			debugDetailed("invalid number of args (%d) in logCommand\n", numArgs);
+			fprintf(stderr, "invalid paramaters in logCommand\n");
+		}
+
+		fwrite("\n", sizeof(char), strlen("\n"), logfile);
+
+		fclose(logfile);
+		logfile = NULL;
 	} else {
-		debugDetailed("invalid number of args (%d) in logCommand\n", numArgs);
-		fprintf(stderr, "invalid paramaters in logCommand\n");
+		debugDetailed("%s\n", "did not re-log, replay flag is 1");
 	}
-
-	fwrite("\n", sizeof(char), strlen("\n"), logfile);
-
-	fclose(logfile);
+	
 
 	return 0;
 }
+
+
 
 std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
     logCommand(PUT, 3, row, col, val, row);
@@ -239,7 +252,86 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 }
 
 
+void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, int len1, int len2, int len3, int len4) {
+	if (strncmp(comm, "PUT", 3) == 0) {
+		std::string rowString(arg1, len1);
+		std::string colString(arg2, len2);
+		std::string valString(arg3, len3);
+		put(rowString, colString, valString);
 
+	} else if (strncmp(comm, "GET", 3) == 0) {
+		std::string rowString(arg1, len1);
+		std::string colString(arg2, len2);
+		get(rowString, colString);
+
+	} else if (strncmp(comm, "CPUT", 4) == 0) {
+		std::string rowString(arg1, len1);
+		std::string colString(arg2, len2);
+		std::string expValString(arg3, len3);
+		std::string newValString(arg4, len4);
+		cput(rowString, colString, expValString, newValString);
+
+	} else if (strncmp(comm, "DELETE", 6) == 0) {
+		std::string rowString(arg1, len1);
+		std::string colString(arg2, len2);
+		del(rowString, colString);
+
+	} 
+	return;
+}
+
+// NOTE: will segfault if bad formatted file eg) if len numbers are wrong - TODO make atoi wrapper/check strtok ret's
+int replayLog() {
+	replay = 1;
+	if ((logfile = fopen("log.txt", "r")) == NULL) {
+		debugDetailed("could not open log.txt for server %d\n", serverIndx);
+		perror("invalid fopen of log file: ");
+		return -1;
+	}
+
+	char headerBuf[MAX_LEN_LOG_HEADER];
+	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
+	char* comm;
+	int i;
+	int lens[MAX_COMM_ARGS];
+	char* args[MAX_COMM_ARGS];
+
+	while(fgets(headerBuf, MAX_LEN_LOG_HEADER, logfile) != NULL) {
+		if (headerBuf[0] == '\0') {
+			debugDetailed("%s\n", "nothing in log file");
+			break;
+		}
+		headerBuf[strlen(headerBuf)] = '\0'; //set newline to null
+		debugDetailed("buf read from log file is: %s\n", headerBuf);
+		comm = strtok(headerBuf, ",");
+		for (i = 0; i < MAX_COMM_ARGS; i++) {
+			lens[i] = atoi(strtok(NULL, ","));
+		}
+		for (i = 0; i < MAX_COMM_ARGS; i++) {
+			args[i] = (char*) calloc(lens[i], sizeof(char));
+			if (args[i] != NULL) {
+				fread(args[i], sizeof(char), lens[i], logfile);
+			}
+		}
+
+		debugDetailed("header args - comm: %s, len1: %d, len2: %d, len3: %d, len4: %d\n", comm, lens[0], lens[1], lens[2], lens[3]);
+		debugDetailed("parsed args - arg1: %s, arg2: %s, arg3: %s, arg4: %s\n", args[0], args[1], args[2], args[3]);
+		callFunction(comm, args[0], args[1], args[2], args[3], lens[0], lens[1], lens[2], lens[3]);
+
+		for (i = 0; i < MAX_COMM_ARGS; i++) {
+			if (args[i] != NULL) {
+				free(args[i]);
+			}
+		}
+		// read newline character before re-looping
+		fseek(logfile, 1, SEEK_CUR);
+		memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
+	
+	}
+	fclose(logfile);
+	replay = 0;
+	return 0;
+}
 
 
 int main(int argc, char *argv[]) {	
@@ -280,6 +372,12 @@ int main(int argc, char *argv[]) {
  		}
  		exit(-1);
  	}
+
+ 	debug("%s\n", "kvMap before log replay: ");
+ 	printKvMap();
+ 	replayLog();
+ 	debug("%s\n", "kvMap after log replay: ");
+ 	printKvMap();
 
 	rpc::server srv(port);
 	srv.bind("put", &put);
