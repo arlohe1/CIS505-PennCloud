@@ -234,6 +234,29 @@ resp_tuple getKVS(std::string row, std::string column) {
     return resp;
 }
 
+resp_tuple deleteKVS(std::string row, std::string column) {
+	int serverPortNo = getPortNoFromString(kvs_addr);
+	std::string servAddress = getAddrFromString(kvs_addr);
+    rpc::client kvsRPCClient(servAddress, serverPortNo);
+    using resp_tuple = std::tuple<int, std::string>;
+    resp_tuple resp;
+    try {
+        log("KVS DELETE: "+row+", "+column);
+        resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
+        log("deleteKVS Response Status: "+ std::to_string(std::get<0>(resp)));
+        log("deleteKVS Response Value: "+ std::get<1>(resp));
+    } catch (rpc::rpc_error &e) {
+        /*
+        std::cout << std::endl << e.what() << std::endl;
+        std::cout << "in function " << e.get_function_name() << ": ";
+        using err_t = std::tuple<std::string, std::string>;
+        auto err = e.get_error().as<err_t>();
+        */
+        log("UNHANDLED ERROR IN deleteKVS TRY CATCH"); // TODO
+    }
+    return resp;
+}
+
 int kvsResponseStatusCode(resp_tuple resp) {
         return std::get<0>(resp);
 }
@@ -251,7 +274,7 @@ void uploadFile(struct http_request req, std::string filepath) {
 	std::string fileData = req.formData["file"];
 
 	// Construct filepath of new file
-    std::string filenameHash = generateStringHash(username+filename);
+    std::string filenameHash = generateStringHash(username+filepath+filename);
 	std::string kvsCol = "ss1_" + filenameHash;
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, filepath);
@@ -266,8 +289,40 @@ void uploadFile(struct http_request req, std::string filepath) {
     }
 }
 
-std::string getFileLink(std::string fileName, std::string fileHash) {
+void deleteFile(struct http_request req, std::string containingDir, std::string itemToDeleteHash) {
+	std::string username = req.cookies["username"]; 
+	username = "amit"; // TODO change hardcoding
+
+	// Reading in response to GET --> list of files at filepath
+	resp_tuple getCmdResponse = getKVS(username, containingDir);
+    if(kvsResponseStatusCode(getCmdResponse) == 0) {
+        std::string fileList = kvsResponseMsg(getCmdResponse);
+        // Removing itemToDelete hash from  existing file list
+        size_t hashPos = fileList.find(itemToDeleteHash);
+        size_t startLine = fileList.substr(0, hashPos).find_last_of("\n");
+        size_t endLine = fileList.find("\n", hashPos);
+        if(startLine != std::string::npos) {
+            fileList = fileList.replace(startLine+1, endLine-startLine, "");
+        }
+        // PUT length,row,col,value for MODIFIED FILE LIST
+        resp_tuple putCmdResponse = putKVS(username, containingDir, fileList);
+        // DELETE username,itemToDeleteHash
+        putCmdResponse = deleteKVS(username, itemToDeleteHash);
+    }
+}
+
+std::string getParentDirLink(std::string fileHash) {
+    std::string link="<li>Go back<a href=/files/"+fileHash+">Link</a>";
+    return link;
+}
+
+std::string getFileLink(std::string fileName, std::string fileHash, std::string containingDirectory) {
     std::string link="<li>"+fileName+"<a href=/files/"+fileHash+">Link</a>";
+    link += "<form action=\"/ss_delete\" method=\"post\">"
+        "<input type=\"hidden\" name=\"containingDirectory\" value=\""+containingDirectory+"\" />"
+        "<input type=\"hidden\" name=\"itemToDelete\" value=\""+fileHash+"\" />"
+        "<input type=\"submit\" name=\"submit\" value=\"Delete\" />"
+        "</form>";
     return link;
 }
 
@@ -277,6 +332,7 @@ std::string getFileList(struct http_request req, std::string filepath) {
     resp_tuple filesResp = getKVS("amit", filepath);
     int respStatus = kvsResponseStatusCode(filesResp);
     std::string respValue = kvsResponseMsg(filesResp);
+    int lineNum = 0;
     if(respStatus == 0) {
         if(respValue.length() == 0) {
             return "This directory is empty.";
@@ -286,10 +342,22 @@ std::string getFileList(struct http_request req, std::string filepath) {
         for (std::string line : splt) {
             if(line.length() > 0) {
                 std::deque<std::string> lineSplt = split(line, ",");
-                result += getFileLink(lineSplt[0], lineSplt[1]);
+                if(lineNum == 0) {
+                    // Parent Directory Line
+                    if(!(lineSplt[0].compare("ROOT") == 0 && lineSplt[1].compare("ROOT") == 0)) {
+                        result += getParentDirLink(lineSplt[1]);
+                    }
+                } else {
+                    // Child Files or Directories
+                    result += getFileLink(lineSplt[0], lineSplt[1], filepath);
+                }
+                lineNum++;
             }
         }
         result += "</ul>";
+        if(lineNum <= 1) {
+            result+= "<p>This directory is empty</p>";
+        }
         return result;
     } else {
         return "No files available";
@@ -306,7 +374,7 @@ void createDirectory(struct http_request req, std::string filepath, std::string 
 	username = "amit";
 
 	// Construct filepath of new directory
-    std::string dirNameHash = generateStringHash(username+dirName);
+    std::string dirNameHash = generateStringHash(username+filepath+dirName);
 	std::string kvsCol = "ss0_" + dirNameHash;
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, filepath);
@@ -317,7 +385,7 @@ void createDirectory(struct http_request req, std::string filepath, std::string 
         // PUT length,row,col,value for MODIFIED FILE LIST
         resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
         // PUT new column for new directory
-        putCmdResponse = putKVS(username, kvsCol, "");
+        putCmdResponse = putKVS(username, kvsCol, "PARENT_DIR,"+filepath+"\n");
     }
 }
 
@@ -326,7 +394,7 @@ void createRootDirForNewUser(struct http_request req) {
 	username = "amit"; //TODO change hardcoding
     std::string dirNameHash = generateStringHash(username + "/");
     // PUT new column for root directory
-	putKVS(username, "ss0_" + dirNameHash, "");
+	putKVS(username, "ss0_" + dirNameHash, "ROOT,ROOT\n");
 }
 
 /***************************** End storage service functions ************************/
@@ -790,6 +858,22 @@ struct http_response processRequest(struct http_request &req) {
                     "Requested file not found!"
                     "</body></html>";
             }
+	} else if (req.filepath.compare(0,11,"/ss_delete") == 0) {
+        std::string containingDirectory = req.formData["containingDirectory"];
+        std::string itemToDelete= req.formData["itemToDelete"];
+        if(containingDirectory.length() > 0 && itemToDelete.length() > 0) {
+            if(itemToDelete.at(2) == '1') {
+                // itemToDelete is a FILE
+                deleteFile(req, containingDirectory, req.formData["itemToDelete"]);
+            } else if(itemToDelete.at(2) == '0') {
+                // itemToDelete is a DIRECTORY
+                // Recursively delete all subdirectories and files
+                // TODO
+            }
+            resp.status_code = 307;
+            resp.status = "Temporary Redirect";
+            resp.headers["Location"] = "/files/"+containingDirectory;
+        }
 	} else if (req.filepath.compare("/logout") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.cookies.erase("username");
