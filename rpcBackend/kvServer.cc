@@ -33,12 +33,17 @@
 #include <tuple>
 #include <string>
 
+#define MAX_LEN_SERVER_DIR 15
+enum Command {GET, PUT, CPUT, DELETE};
+
 
 int debugFlag;
 int err = -1;
 int detailed = 0;
 
 int serverIndx = 1;
+std::map<std::string, std::map<std::string, std::string>> kvMap; // maps server index to ip addr
+FILE* logfile = NULL;
 
 void debugTime() {
 	if (debugFlag) {
@@ -88,13 +93,6 @@ void volatileMemset(volatile int* start, char c, int len) {
 }
 
 
-
-
-
-
-
-std::map<std::string, std::map<std::string, std::string>> kvMap; // maps server index to ip addr
-
 void printKvMap() {
 	if (debugFlag == 1) {
 		std::cout << "kvmap print: \n";
@@ -111,7 +109,59 @@ void printKvMap() {
 	
 }
 
+// write to log.txt for
+int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg2, std::string arg3, std::string arg4) {
+	// check what command is 
+	if ((logfile = fopen("log.txt", "a")) == NULL) {
+		debugDetailed("could not open log.txt for server %d\n", serverIndx);
+		perror("invalid fopen of log file: ");
+		return -1;
+	}
+	// write header line command arg {GET, PUT, CPUT, DELETE}
+	if (comm == GET) {
+		//fprintf(logfile, "GET,");
+		fwrite("GET,", sizeof(char), strlen("GET,"), logfile);
+	} else if (comm == PUT) {
+		//fprintf(logfile, "PUT,");
+		fwrite("PUT,", sizeof(char), strlen("PUT,"), logfile);
+	} else if (comm == CPUT) {
+		//fprintf(logfile, "CPUT,");
+		fwrite("CPUT,", sizeof(char), strlen("CPUT,"), logfile);
+	} else if (comm == DELETE) {
+		//fprintf(logfile, "DELETE,");
+		fwrite("DELETE,", sizeof(char), strlen("DELETE,"), logfile);
+	}
+
+	// write headerline arglens
+	if (numArgs == 2) {
+		fprintf(logfile, "%ld,%ld,0,0\n", arg1.length(), arg2.length());
+		fwrite(arg1.c_str(), sizeof(char), arg1.length(), logfile);
+		fwrite(arg2.c_str(), sizeof(char), arg2.length(), logfile);
+	} else if (numArgs == 3) {
+		fprintf(logfile, "%ld,%ld,%ld,0\n", arg1.length(), arg2.length(), arg3.length());
+		fwrite(arg1.c_str(), sizeof(char), arg1.length(), logfile);
+		fwrite(arg2.c_str(), sizeof(char), arg2.length(), logfile);
+		fwrite(arg3.c_str(), sizeof(char), arg3.length(), logfile);
+	} else if (numArgs == 4) {
+		fprintf(logfile, "%ld,%ld,%ld,%ld\n", arg1.length(), arg2.length(), arg3.length(), arg4.length());
+		fwrite(arg1.c_str(), sizeof(char), arg1.length(), logfile);
+		fwrite(arg2.c_str(), sizeof(char), arg2.length(), logfile);
+		fwrite(arg3.c_str(), sizeof(char), arg3.length(), logfile);
+		fwrite(arg4.c_str(), sizeof(char), arg4.length(), logfile);
+	} else {
+		debugDetailed("invalid number of args (%d) in logCommand\n", numArgs);
+		fprintf(stderr, "invalid paramaters in logCommand\n");
+	}
+
+	fwrite("\n", sizeof(char), strlen("\n"), logfile);
+
+	fclose(logfile);
+
+	return 0;
+}
+
 std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
+    logCommand(PUT, 3, row, col, val, row);
     kvMap[row][col] = val;
     debugDetailed("---put row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
     printKvMap();
@@ -119,6 +169,7 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
 }
 
 std::tuple<int, std::string> get(std::string row, std::string col) {
+    logCommand(GET, 2, row, col, row, row);
     if (kvMap.count(row) > 0) {
 		if (kvMap[row].count(col) > 0) {
 			std::string val = kvMap[row][col];
@@ -149,6 +200,7 @@ std::tuple<int, std::string> exists(std::string row, std::string col) {
 }
 
 std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
+    logCommand(CPUT, 4, row, col, expVal, newVal);
     if (kvMap.count(row) > 0) {
 		if (kvMap[row].count(col) > 0) {
 			if (expVal.compare(kvMap[row][col]) == 0) {
@@ -171,6 +223,7 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 }
 
 std::tuple<int, std::string> del(std::string row, std::string col) {
+	logCommand(DELETE, 2, row, col, row, row);
     if (kvMap.count(row) > 0) {
 		if (kvMap[row].count(col) > 0) {
 			kvMap[row].erase(col);
@@ -214,6 +267,20 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	// change dir to server's designated folder with checkpoint and logfile
+	char serverDir[MAX_LEN_SERVER_DIR];
+	sprintf(serverDir, "server_%d", serverIndx);
+	int chdirRet = chdir(serverDir);
+ 	if (chdirRet == 0) {
+ 		debug("serverDir is: %s\n", serverDir);	
+ 	} else {
+ 		debug("no serverDir: %s\n", serverDir);	
+ 		if (write(STDERR_FILENO, "please create server directory", strlen("please create server directory")) < 0) {
+ 			perror("invalid write: ");
+ 		}
+ 		exit(-1);
+ 	}
+
 	rpc::server srv(port);
 	srv.bind("put", &put);
 	srv.bind("get", &get);
@@ -227,3 +294,5 @@ int main(int argc, char *argv[]) {
 
 
 }
+
+// run as ./kvServer -v -p 10000
