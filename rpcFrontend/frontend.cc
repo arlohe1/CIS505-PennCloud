@@ -306,8 +306,51 @@ void deleteFile(struct http_request req, std::string containingDir, std::string 
         }
         // PUT length,row,col,value for MODIFIED FILE LIST
         resp_tuple putCmdResponse = putKVS(username, containingDir, fileList);
+    }
+    // DELETE username,itemToDeleteHash
+    resp_tuple putCmdResponse = deleteKVS(username, itemToDeleteHash);
+}
+
+void deleteDirectory(struct http_request req, std::string containingDir, std::string itemToDeleteHash) {
+	std::string username = req.cookies["username"]; 
+	username = "amit"; // TODO change hardcoding
+
+	// Reading in response to GET --> list of files at filepath
+	resp_tuple getCmdResponse = getKVS(username, containingDir);
+    if(kvsResponseStatusCode(getCmdResponse) == 0) {
+        std::string fileList = kvsResponseMsg(getCmdResponse);
+        // Removing itemToDelete hash from  existing file list
+        size_t hashPos = fileList.find(itemToDeleteHash);
+        size_t startLine = fileList.substr(0, hashPos).find_last_of("\n");
+        size_t endLine = fileList.find("\n", hashPos);
+        if(startLine != std::string::npos) {
+            fileList = fileList.replace(startLine+1, endLine-startLine, "");
+        }
+        // PUT length,row,col,value for MODIFIED FILE LIST
+        resp_tuple putCmdResponse = putKVS(username, containingDir, fileList);
+    }
+	resp_tuple recursiveDeleteResp = getKVS(username, itemToDeleteHash);
+    int respStatus = kvsResponseStatusCode(recursiveDeleteResp);
+    std::string respValue = kvsResponseMsg(recursiveDeleteResp);
+    if(respStatus == 0) {
         // DELETE username,itemToDeleteHash
-        putCmdResponse = deleteKVS(username, itemToDeleteHash);
+        resp_tuple putCmdResponse = deleteKVS(username, itemToDeleteHash);
+        std::deque<std::string> splt = split(respValue, "\n");
+        int lineNum = 0;
+        for (std::string line : splt) {
+            if(line.length() > 0) {
+                std::deque<std::string> lineSplt = split(line, ",");
+                if(lineNum != 0) {
+                    // Delete Child Files or Directories
+                    if(lineSplt[1].at(2) == '1') {
+                        deleteFile(req, itemToDeleteHash, lineSplt[1]);
+                    } else if(lineSplt[1].at(2) == '0') {
+                        deleteDirectory(req, itemToDeleteHash, lineSplt[1]);
+                    }
+                }
+                lineNum++;
+            }
+        }
     }
 }
 
@@ -864,11 +907,11 @@ struct http_response processRequest(struct http_request &req) {
         if(containingDirectory.length() > 0 && itemToDelete.length() > 0) {
             if(itemToDelete.at(2) == '1') {
                 // itemToDelete is a FILE
-                deleteFile(req, containingDirectory, req.formData["itemToDelete"]);
+                deleteFile(req, containingDirectory, itemToDelete);
             } else if(itemToDelete.at(2) == '0') {
                 // itemToDelete is a DIRECTORY
                 // Recursively delete all subdirectories and files
-                // TODO
+                deleteDirectory(req, containingDirectory, itemToDelete);
             }
             resp.status_code = 307;
             resp.status = "Temporary Redirect";
