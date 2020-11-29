@@ -278,12 +278,16 @@ void uploadFile(struct http_request req, std::string filepath) {
 	std::string kvsCol = "ss1_" + filenameHash;
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, filepath);
+    resp_tuple putCmdResponse;
     if(kvsResponseStatusCode(getCmdResponse) == 0) {
         std::string fileList = kvsResponseMsg(getCmdResponse);
-        // Adding new file to existing file list
-        fileList += filename+","+kvsCol+"\n";
-        // PUT length,row,col,value for MODIFIED FILE LIST
-        resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
+        // Adding new file to existing file list (IF new file!)
+        std::string newEntry = filename+","+kvsCol+"\n";
+        if(fileList.find(newEntry) == std::string::npos) {
+            fileList += newEntry;
+            // PUT length,row,col,value for MODIFIED FILE LIST
+            putCmdResponse = putKVS(username, filepath, fileList);
+        }
         // PUT username,kvsCol,filedata
         putCmdResponse = putKVS(username, kvsCol, fileData);
     }
@@ -295,6 +299,7 @@ void deleteFile(struct http_request req, std::string containingDir, std::string 
 
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, containingDir);
+    resp_tuple putCmdResponse;
     if(kvsResponseStatusCode(getCmdResponse) == 0) {
         std::string fileList = kvsResponseMsg(getCmdResponse);
         // Removing itemToDelete hash from  existing file list
@@ -305,10 +310,10 @@ void deleteFile(struct http_request req, std::string containingDir, std::string 
             fileList = fileList.replace(startLine+1, endLine-startLine, "");
         }
         // PUT length,row,col,value for MODIFIED FILE LIST
-        resp_tuple putCmdResponse = putKVS(username, containingDir, fileList);
+        putCmdResponse = putKVS(username, containingDir, fileList);
     }
     // DELETE username,itemToDeleteHash
-    resp_tuple putCmdResponse = deleteKVS(username, itemToDeleteHash);
+    putCmdResponse = deleteKVS(username, itemToDeleteHash);
 }
 
 void deleteDirectory(struct http_request req, std::string containingDir, std::string itemToDeleteHash) {
@@ -317,6 +322,7 @@ void deleteDirectory(struct http_request req, std::string containingDir, std::st
 
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, containingDir);
+    resp_tuple putCmdResponse;
     if(kvsResponseStatusCode(getCmdResponse) == 0) {
         std::string fileList = kvsResponseMsg(getCmdResponse);
         // Removing itemToDelete hash from  existing file list
@@ -327,14 +333,14 @@ void deleteDirectory(struct http_request req, std::string containingDir, std::st
             fileList = fileList.replace(startLine+1, endLine-startLine, "");
         }
         // PUT length,row,col,value for MODIFIED FILE LIST
-        resp_tuple putCmdResponse = putKVS(username, containingDir, fileList);
+        putCmdResponse = putKVS(username, containingDir, fileList);
     }
 	resp_tuple recursiveDeleteResp = getKVS(username, itemToDeleteHash);
     int respStatus = kvsResponseStatusCode(recursiveDeleteResp);
     std::string respValue = kvsResponseMsg(recursiveDeleteResp);
     if(respStatus == 0) {
         // DELETE username,itemToDeleteHash
-        resp_tuple putCmdResponse = deleteKVS(username, itemToDeleteHash);
+        putCmdResponse = deleteKVS(username, itemToDeleteHash);
         std::deque<std::string> splt = split(respValue, "\n");
         int lineNum = 0;
         for (std::string line : splt) {
@@ -360,7 +366,7 @@ std::string getParentDirLink(std::string fileHash) {
 }
 
 std::string getFileLink(std::string fileName, std::string fileHash, std::string containingDirectory) {
-    std::string link="<li>"+fileName+"<a href=/files/"+fileHash+">Link</a>";
+    std::string link="<li>"+fileName+"<a download=\""+fileName+"\" href=/files/"+fileHash+">Download</a>";
     link += "<form action=\"/ss_delete\" method=\"post\">"
         "<input type=\"hidden\" name=\"containingDirectory\" value=\""+containingDirectory+"\" />"
         "<input type=\"hidden\" name=\"itemToDelete\" value=\""+fileHash+"\" />"
@@ -421,14 +427,20 @@ void createDirectory(struct http_request req, std::string filepath, std::string 
 	std::string kvsCol = "ss0_" + dirNameHash;
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, filepath);
+    resp_tuple putCmdResponse;
     if(kvsResponseStatusCode(getCmdResponse) == 0) {
         std::string fileList = kvsResponseMsg(getCmdResponse);
+        // Adding new directory to existing file list (IF new dir!)
+        std::string newEntry = dirName+","+kvsCol+"\n";
         // Adding new file to existing file list
-        fileList += dirName+","+kvsCol+"\n";
-        // PUT length,row,col,value for MODIFIED FILE LIST
-        resp_tuple putCmdResponse = putKVS(username, filepath, fileList);
-        // PUT new column for new directory
-        putCmdResponse = putKVS(username, kvsCol, "PARENT_DIR,"+filepath+"\n");
+        // disallow creation of duplicate named directories
+        if(fileList.find(newEntry) == std::string::npos) {
+            fileList += newEntry;
+            // PUT length,row,col,value for MODIFIED FILE LIST
+            putCmdResponse = putKVS(username, filepath, fileList);
+            // PUT new column for new directory
+            putCmdResponse = putKVS(username, kvsCol, "PARENT_DIR,"+filepath+"\n");
+        }
     }
 }
 
