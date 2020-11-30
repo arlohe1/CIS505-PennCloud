@@ -5,6 +5,7 @@ LIBS= -lrpc -lpthread
 
 test:
 	$(GCC) kvServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o kvServer $(LIBS)
+	$(GCC) testClient.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o testClient $(LIBS)
 	# $(GCC) test_client.cc backend.h $(INCLUDES) -L $(RPC_DIR)/output/lib -o client $(LIBS)
 	# $(GCC) master.cc master.h $(INCLUDES) -L $(RPC_DIR)/output/lib -o master $(LIBS)
 	
