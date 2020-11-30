@@ -48,7 +48,6 @@ struct http_request {
 	std::map<std::string, std::string> headers;
 	std::map<std::string, std::string> cookies;
 	std::map<std::string, std::string> formData;
-	std::deque<char> file;
 } http_request;
 
 struct http_response {
@@ -271,7 +270,7 @@ void uploadFile(struct http_request req, std::string filepath) {
 	std::string username = req.cookies["username"]; 
 	username = "amit"; // TODO change hardcoding
 	std::string filename = req.formData["filename"];
-	std::string fileData = std::string(req.file.begin(), req.file.end());
+	std::string fileData = req.formData["file"];
 
 	// Construct filepath of new file
     std::string filenameHash = generateStringHash(username+filepath+filename);
@@ -499,17 +498,14 @@ void processMultiPart(struct http_request &req) {
 				(segment.find("--") == std::string::npos) ?
 						segment : segment.substr(0, segment.find("--"));
 		if (segment_is_file) {
-			for (char c : segment) {
-				req.file.push_back(c);
-			}
 			req.formData["filename"] = filename;
+			req.formData["file"] = segment;
 		} else if (fieldname.compare("") != 0) {
 			req.formData[fieldname] = trim(segment);
 		}
 	}
 
 	log("Results of multi-part processing: ");
-	log("File: " + std::string(req.file.begin(), req.file.end()));
 	log("Form data: ");
 	for (std::map<std::string, std::string>::iterator it = req.formData.begin();
 			it != req.formData.end(); it++) {
