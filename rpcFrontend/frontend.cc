@@ -271,7 +271,7 @@ void uploadFile(struct http_request req, std::string filepath) {
 	std::string username = req.cookies["username"]; 
 	username = "amit"; // TODO change hardcoding
 	std::string filename = req.formData["filename"];
-	std::string fileData = req.formData["file"];
+	std::string fileData = std::string(req.file.begin(), req.file.end());
 
 	// Construct filepath of new file
     std::string filenameHash = generateStringHash(username+filepath+filename);
@@ -478,7 +478,7 @@ void processMultiPart(struct http_request &req) {
 		std::string line = "", fieldname = "", filename = "";
 		bool segment_is_file = false;
 		while (trim((line = getLineAndDelete(segment))).compare("") != 0) {
-			if (line.find("application/octet-stream") != std::string::npos)
+			if (line.find("filename") != std::string::npos)
 				segment_is_file = true;
 			if (lower(line).find("content-disposition") != std::string::npos) {
 				std::deque<std::string> data = split((split(line, ":")[1]),
