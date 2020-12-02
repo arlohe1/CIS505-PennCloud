@@ -36,6 +36,7 @@
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
+#define COM_PER_CHECKPOINT 2
 enum Command {GET, PUT, CPUT, DELETE};
 
 
@@ -43,6 +44,7 @@ int debugFlag;
 int err = -1;
 int detailed = 0;
 int replay = 0;
+int numCommandsSinceLastCheckpoint = 0;
 
 int serverIndx = 1;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // maps server index to ip addr
@@ -113,7 +115,139 @@ void printKvMap() {
 	
 }
 
-// write to log.txt for
+// TODO - eviction: global count of values put into mem, map of r, c, 0/1 in mem or disk, 
+	// when treshold is reached run checkpoint, then clear map
+	// need to add to put,get, cput, delete and in checkpoint a check for map value - Note you would assume that anything not in the cache has remained unchanged
+
+void chdirToCheckpoint() {
+	int chdirRet = chdir("checkpoint");
+ 	if (chdirRet == 0) {
+ 		debugDetailed("%s\n", "cd into checkpoint dir complete");	
+ 	} else {
+ 		debugDetailed("%s\n", "no checkpoint dir to cd into");	
+ 		if (write(STDERR_FILENO, "please create server's checkpoint directory", strlen("please create server's checkpoint directory")) < 0) {
+ 			perror("invalid write: ");
+ 		}
+ 		exit(-1);
+ 	}
+
+
+}
+
+void runCheckpoint() {
+	debugDetailed("%s,\n", "--------RUNNING CHECKPOINT--------");
+	// cd into checkpoint directory
+	chdirToCheckpoint();
+	// loop over rows in map and write each to a file
+	FILE* rowFilePtr;
+	for (const auto& [row, mapping]: kvMap) {
+		rowFilePtr = fopen((row).c_str(), "w");
+		for (const auto& [col, val]: mapping) {		
+			// write all columns to file with format columnLen,ValLen\ncolumnName,ValName\n
+			fprintf(rowFilePtr, "%ld,%ld\n", col.length(), val.length());
+			fwrite(col.c_str(), sizeof(char), col.length(), rowFilePtr);
+			fwrite(val.c_str(), sizeof(char), val.length(), rowFilePtr);
+			fwrite("\n", sizeof(char), strlen("\n"), rowFilePtr);
+			
+		}
+		fclose(rowFilePtr);
+	}
+		
+
+	// cd back out to server directory
+	chdir("..");
+
+	// clear logfile
+	FILE* logFilePtr;
+	logFilePtr = fopen("log.txt", "w");
+	fclose(logFilePtr);
+	numCommandsSinceLastCheckpoint = 0;
+	debugDetailed("%s,\n", "--------cleared log file and return--------");
+
+	// need to add new function - loadKvStore - parses all row files and enters the appropriate column, value into map
+
+}
+
+int loadKvStoreFromDisk() {
+	// loop over all files in checkpoint dir and read each row file
+	debugDetailed("%s\n", "---------Entered loadKvStoreFromDisk");
+	chdirToCheckpoint();
+	DIR* dir = opendir(".");
+	struct dirent* nextRowFile;
+	nextRowFile = readdir(dir); // skip "."
+	nextRowFile = readdir(dir); // skip ".."
+	
+	FILE* rowFilePtr; 
+	char headerBuf[MAX_LEN_LOG_HEADER];
+	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
+	while((nextRowFile = readdir(dir)) != NULL) {
+		printf("reached\n");
+		// open file
+		if ((rowFilePtr = fopen(nextRowFile->d_name, "r")) == NULL) {
+			debugDetailed("fopen failed %d\n", serverIndx);
+			perror("invalid fopen of a checkpoint row file: ");
+			fclose(rowFilePtr);
+			// cd back out to server directory
+			chdir("..");
+			debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk WITH ERROR");
+			return -1;
+		}
+		int colLen;
+		int valLen;
+		char* col;
+		char* val;
+		std::string rowString(nextRowFile->d_name);
+		// read formatted file and reconstruct row in kvMap
+		while(fgets(headerBuf, MAX_LEN_LOG_HEADER, rowFilePtr) != NULL) {
+			headerBuf[strlen(headerBuf)] = '\0'; //set newline to null
+			debugDetailed("buf read from checkpoint file (%s) is: %s\n", nextRowFile->d_name, headerBuf);
+			// find lengths
+			colLen = atoi(strtok(headerBuf, ","));
+			valLen = atoi(strtok(NULL, ","));
+			col = (char*) calloc(colLen, sizeof(char));
+			val = (char*) calloc(valLen, sizeof(char));
+			// get col and value
+			if (col != NULL) {
+				fread(col, sizeof(char), colLen, rowFilePtr);
+			}
+			if (val != NULL) {
+				fread(val, sizeof(char), valLen, rowFilePtr);
+			}
+			// enter into kvMap
+			std::string colString(col, colLen);
+			std::string valString(val, valLen);
+			kvMap[rowString][colString] = valString;
+			// free callocs
+			free(col);
+			free(val);
+			//read newline char before re-looping
+			fseek(rowFilePtr, 1, SEEK_CUR);
+			memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
+		}
+		fclose(rowFilePtr);
+	}
+	printKvMap();
+	// cd back out to server directory
+	chdir("..");
+	
+	debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk");
+
+	return 0;	
+
+}
+
+// increments command count since last checkpoint and deals with checkpointing
+void checkIfCheckPoint() {
+	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
+	debugDetailed("NUM completed commands: %d\n", numCommandsSinceLastCheckpoint);
+	if (numCommandsSinceLastCheckpoint >= COM_PER_CHECKPOINT) {
+		debugDetailed("%s\n", "triggering checkpoint");
+		runCheckpoint();
+	}
+
+}
+
+// write to log.txt if new command came in and handle checkpointing
 int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg2, std::string arg3, std::string arg4) {
 	// check what command is 
 	if (replay == 0) {
@@ -163,6 +297,8 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 
 		fclose(logfile);
 		logfile = NULL;
+
+		checkIfCheckPoint();
 	} else {
 		debugDetailed("%s\n", "did not re-log, replay flag is 1");
 	}
@@ -174,26 +310,27 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 
 
 std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
-    logCommand(PUT, 3, row, col, val, row);
     kvMap[row][col] = val;
-    debugDetailed("---put row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+    debugDetailed("---PUT row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
     printKvMap();
+    logCommand(PUT, 3, row, col, val, row);
     return std::make_tuple(0, "OK");
 }
 
 std::tuple<int, std::string> get(std::string row, std::string col) {
-    logCommand(GET, 2, row, col, row, row);
     if (kvMap.count(row) > 0) {
 		if (kvMap[row].count(col) > 0) {
 			std::string val = kvMap[row][col];
-			debugDetailed("---get succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+			debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
 			printKvMap();
+			logCommand(GET, 2, row, col, row, row);
 			return std::make_tuple(0, val);
 		}
 	} 
 
-	debugDetailed("---get val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
+	debugDetailed("---GET val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
+	logCommand(GET, 2, row, col, row, row);
 	return std::make_tuple(1, "No such row, column pair");
 }
 
@@ -201,53 +338,56 @@ std::tuple<int, std::string> exists(std::string row, std::string col) {
     if (kvMap.count(row) > 0) {
 		if (kvMap[row].count(col) > 0) {
 			std::string val = kvMap[row][col];
-			debugDetailed("---exists succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+			debugDetailed("---EXISTS succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
 			printKvMap();
 			return std::make_tuple(0, "OK");
 		}
 	} 
 
-	debugDetailed("---get val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
+	debugDetailed("---EXISTS val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
 	return std::make_tuple(1, "No such row, column pair");
 }
 
 std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
-    logCommand(CPUT, 4, row, col, expVal, newVal);
     if (kvMap.count(row) > 0) {
 		if (kvMap[row].count(col) > 0) {
 			if (expVal.compare(kvMap[row][col]) == 0) {
 				kvMap[row][col] = newVal;
-				debugDetailed("---cput updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+				debugDetailed("---CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 				printKvMap();
+				logCommand(CPUT, 4, row, col, expVal, newVal);
 				return std::make_tuple(0, "OK");
 			} else {
-				debugDetailed("---cput did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+				debugDetailed("---CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 				printKvMap();
+				logCommand(CPUT, 4, row, col, expVal, newVal);
 				return std::make_tuple(2, "Incorrect expVal");
 			}
 			
 		}
 	} 
 
-	debugDetailed("---cput did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+	debugDetailed("---CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 	printKvMap();
+	logCommand(CPUT, 4, row, col, expVal, newVal);
 	return std::make_tuple(1, "No such row, column pair");
 }
 
 std::tuple<int, std::string> del(std::string row, std::string col) {
-	logCommand(DELETE, 2, row, col, row, row);
     if (kvMap.count(row) > 0) {
 		if (kvMap[row].count(col) > 0) {
 			kvMap[row].erase(col);
-			debugDetailed("---delete deleted row: %s, column: %s\n", row.c_str(), col.c_str());
+			debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());
 			printKvMap();
+			logCommand(DELETE, 2, row, col, row, row);
 			return std::make_tuple(0, "OK");
 		}
 	} 
 
-	debugDetailed("---del val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
+	debugDetailed("---DELETE val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
+	logCommand(DELETE, 2, row, col, row, row);
 	return std::make_tuple(1, "No such row, column pair");
 }
 
@@ -373,6 +513,9 @@ int main(int argc, char *argv[]) {
  		exit(-1);
  	}
 
+ 	debug("%s\n", "kvMap before log replay or checkpoint: ");
+ 	printKvMap();
+ 	loadKvStoreFromDisk();
  	debug("%s\n", "kvMap before log replay: ");
  	printKvMap();
  	replayLog();

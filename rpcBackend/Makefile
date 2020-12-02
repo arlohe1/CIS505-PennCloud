@@ -15,6 +15,7 @@ test:
 	
 clean:
 	rm -f kvServer
+	rm -r server_1/log.txt
 	#rm -f client
 	#rm -f Checkpoint*
 	#rm -f Serverlog*
