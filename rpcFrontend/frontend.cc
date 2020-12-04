@@ -27,11 +27,15 @@ std::string unknown_cmd = "-ERR Unknown command\r\n";
 std::string kvs_addr = "";
 std::string mail_addr = "";
 std::string storage_addr = "";
+std::string my_address;
 std::vector<pthread_t> pthread_ids;
 pthread_mutex_t fd_mutex;
 std::set<int*> fd;
 volatile bool verbose = false;
 volatile bool shut_down = false;
+volatile bool load_balancer = false;
+volatile int l_balancer_index = 0;
+std::vector<std::string> frontend_server_list;
 
 using resp_tuple = std::tuple<int, std::string>;
 
@@ -674,6 +678,22 @@ struct http_response processRequest(struct http_request &req) {
 		resp.cookies[it->first] = it->second;
 	}
 
+	/* Check to see if I'm the load balancer and if this request needs to be redirected */
+	if(load_balancer && frontend_server_list.size() > 1 && req.cookies.find("redirected") == req.cookies.end()){
+		std::string redirect_server = frontend_server_list[l_balancer_index];
+		l_balancer_index = (l_balancer_index + 1) % frontend_server_list.size();
+
+		if(redirect_server.compare(my_address) == 0){
+			resp.cookies["redirected"] = "true";
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "http://" + redirect_server + "/";
+			resp.cookies["redirected"] = "true";
+			return resp;
+		}
+	}
+
 	if (req.formData["dir_name"].size() > 0) {
             // File present to upload
             if(req.filepath.substr(0,7).compare("/files/") == 0 && req.filepath.length() > 7) {
@@ -1063,10 +1083,14 @@ int main(int argc, char *argv[]) {
 	/* Parse command line args */
 	int port_no = 10000;
 	int smtp_port_no = 15000;
+	std::string list_of_frontend;
 	for (int i = 0; i < argc; i++) {
 		if (strstr(argv[i], "-v") != NULL
 				&& strcmp(strstr(argv[i], "-v"), "-v") == 0) {
 			verbose = true;
+		} else if (strstr(argv[i], "-l") != NULL
+				&& strcmp(strstr(argv[i], "-l"), "-l") == 0) {
+			load_balancer = true;
 		} else if (strstr(argv[i], "-p") != NULL
 				&& strcmp(strstr(argv[i], "-p"), "-p") == 0) {
 			if (i + 1 < argc) {
@@ -1079,6 +1103,19 @@ int main(int argc, char *argv[]) {
 			} else {
 				std::cerr
 						<< "'-p' should be followed by a number! Using port 10000\n";
+			}
+		} else if (strstr(argv[i], "-q") != NULL
+				&& strcmp(strstr(argv[i], "-q"), "-q") == 0) {
+			if (i + 1 < argc) {
+				smtp_port_no = atoi(argv[++i]);
+				if (smtp_port_no == 0) {
+					std::cerr
+							<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
+					smtp_port_no = 15000;
+				}
+			} else {
+				std::cerr
+						<< "'-q' should be followed by a number! Using port 15000 for smtp\n";
 			}
 		} else if (strstr(argv[i], "-k") != NULL
 				&& strcmp(strstr(argv[i], "-k"), "-k") == 0) {
@@ -1101,11 +1138,34 @@ int main(int argc, char *argv[]) {
 			} else {
 				std::cerr << "'-s' should be followed by an address!\n";
 			}
+		} else if (strstr(argv[i], "-f") != NULL
+				&& strcmp(strstr(argv[i], "-f"), "-f") == 0) {
+			if (i + 1 < argc) {
+				list_of_frontend = trim(std::string(argv[++i]));
+			} else {
+				std::cerr << "'-f' should be followed by a file name!\n";
+			}
 		} else if (strstr(argv[i], "-a") != NULL
 				&& strcmp(strstr(argv[i], "-a"), "-a") == 0) {
 			std::cerr << "Full name: Prasanna Poudyal\nSEAS login: poudyal\n";
 			exit(0);
 		}
+	}
+
+	/* Add the list of all frontend servers to queue for load balancing if this node is load balancer */
+	if(load_balancer){
+		FILE * f = fopen(list_of_frontend.c_str(), "r");
+		if(f == NULL) {
+			std::cerr << "Provide a valid list of frontend servers to the load balancer!"
+				<< "File " << list_of_frontend << " not found or couldn't be opened!\n";
+			exit(-1);
+		}
+		char buffer[300];
+		while(fgets(buffer, 300, f)){
+			frontend_server_list.push_back(trim(std::string(buffer)));
+		}
+		fclose(f);
+		log("Successfully initialized load balancer!");
 	}
 
 	/* Initialize socket */
@@ -1138,6 +1198,9 @@ int main(int argc, char *argv[]) {
 	servaddr.sin_family = AF_INET;
 	servaddr.sin_port = htons(port_no);
 	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	/* Store my address */
+	my_address = std::string(inet_ntoa(servaddr.sin_addr))+ ":" + std::to_string(ntohs(servaddr.sin_port));
 
 	smtp_servaddr.sin_family = AF_INET;
 	smtp_servaddr.sin_port = htons(smtp_port_no);
