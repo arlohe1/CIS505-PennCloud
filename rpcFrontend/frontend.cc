@@ -1001,8 +1001,55 @@ void* handleClient(void *arg) {
 }
 
 // TODO: Bharath adds his stuff
-void handle_smtp_connections(int smtp_socket_fd){
+void * handle_smtp_connections(void * arg){
+	int *client_fd = (int *) arg;
 
+	std::string message = "Hi! no mails yet\n";
+	write(*client_fd, message.data(), message.size());
+
+	// Close client connection and exit thread
+	pthread_mutex_lock(&fd_mutex);
+	fd.erase(client_fd);
+	pthread_mutex_unlock(&fd_mutex);
+	close(*client_fd);
+	free(client_fd);
+	return NULL;
+}
+
+int create_thread(int socket_fd, bool http){
+	struct sockaddr_in client_addr;
+	unsigned int clientaddrlen = sizeof(client_addr);
+	int *client_fd = (int*) malloc(sizeof(int));
+	*client_fd = accept(socket_fd, (struct sockaddr*) &client_addr,
+			&clientaddrlen);
+	if (*client_fd <= 0) {
+		free(client_fd);
+		if (!shut_down) {
+			std::cerr << "Accept system call failed \n";
+			exit(-1);
+		}
+		return -1;
+	} else {
+		pthread_t pthread_id;
+		if(http){
+			pthread_create(&pthread_id, NULL, handleClient, client_fd);
+		} else {
+			pthread_create(&pthread_id, NULL, handle_smtp_connections, client_fd);
+		}
+		if (shut_down) {
+			write(*client_fd, error_msg.data(), error_msg.size());
+			close(*client_fd);
+			free(client_fd);
+		} else {
+			if (verbose)
+				std::cerr << "[" << *client_fd << "] New connection\n";
+			pthread_ids.push_back(pthread_id);
+			pthread_mutex_lock(&fd_mutex);
+			fd.insert(client_fd);
+			pthread_mutex_unlock(&fd_mutex);
+		}
+	}
+	return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -1141,37 +1188,9 @@ int main(int argc, char *argv[]) {
 		if(r <= 0 || shut_down) continue;
 
 		if(FD_ISSET(socket_fd, &read_set)){
-			struct sockaddr_in client_addr;
-			unsigned int clientaddrlen = sizeof(client_addr);
-			int *client_fd = (int*) malloc(sizeof(int));
-			*client_fd = accept(socket_fd, (struct sockaddr*) &client_addr,
-					&clientaddrlen);
-			if (*client_fd <= 0) {
-				free(client_fd);
-				if (!shut_down) {
-					std::cerr << "Accept system call failed \n";
-					exit(-1);
-				}
-				break;
-			} else {
-				pthread_t pthread_id;
-				pthread_create(&pthread_id, NULL, handleClient, client_fd);
-				if (shut_down) {
-					write(*client_fd, error_msg.data(), error_msg.size());
-					close(*client_fd);
-					free(client_fd);
-				} else {
-					if (verbose)
-						std::cerr << "[" << *client_fd << "] New connection\n";
-					pthread_ids.push_back(pthread_id);
-					pthread_mutex_lock(&fd_mutex);
-					fd.insert(client_fd);
-					pthread_mutex_unlock(&fd_mutex);
-				}
-			}
+			if(create_thread(socket_fd, true) < 0) break;
 		} else if (FD_ISSET(smtp_socket_fd, &read_set)){
-			/* TODO: Handle smtp connections */
-			handle_smtp_connections(smtp_socket_fd);
+			if(create_thread(smtp_socket_fd, false) < 0) break;
 		}
 	}
 
