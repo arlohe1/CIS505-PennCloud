@@ -48,7 +48,7 @@ int main() {
         isCorrect("OK", std::get<1>(resp));
 
         std::cout << "put(lianap, file, homework 2) = ";
-        resp = c.call("put", "lianap", "file", "homework 2?").as<resp_tuple>();
+        resp = c.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
         std::cout << std::get<1>(resp) << std::endl;
         isCorrect("OK", std::get<1>(resp));
 
