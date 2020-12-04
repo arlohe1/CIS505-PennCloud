@@ -1000,6 +1000,11 @@ void* handleClient(void *arg) {
 	return NULL;
 }
 
+// TODO: Bharath adds his stuff
+void handle_smtp_connections(int smtp_socket_fd){
+
+}
+
 int main(int argc, char *argv[]) {
 	/* Set signal handler */
 	signal(SIGINT, sigint_handler);
@@ -1010,6 +1015,7 @@ int main(int argc, char *argv[]) {
 
 	/* Parse command line args */
 	int port_no = 10000;
+	int smtp_port_no = 15000;
 	for (int i = 0; i < argc; i++) {
 		if (strstr(argv[i], "-v") != NULL
 				&& strcmp(strstr(argv[i], "-v"), "-v") == 0) {
@@ -1057,7 +1063,8 @@ int main(int argc, char *argv[]) {
 
 	/* Initialize socket */
 	int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (socket_fd < 0) {
+	int smtp_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (socket_fd < 0 || smtp_socket_fd < 0) {
 		std::cerr << "Socket failed to initialize\n";
 		exit(-1);
 	} else if (verbose) {
@@ -1065,68 +1072,106 @@ int main(int argc, char *argv[]) {
 	}
 	int true_opt = 1;
 	if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt, sizeof(int))
+			< 0 ||
+		setsockopt(smtp_socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt, sizeof(int))
 			< 0) {
 		if (verbose)
 			std::cerr << "Setsockopt failed\n";
 	}
 	pthread_mutex_lock(&fd_mutex);
 	fd.insert(&socket_fd);
+	fd.insert(&smtp_socket_fd);
 	pthread_mutex_unlock(&fd_mutex);
 
-	struct sockaddr_in servaddr;
+	struct sockaddr_in servaddr, smtp_servaddr;
 	bzero(&servaddr, sizeof(servaddr));
+	bzero(&smtp_servaddr, sizeof(smtp_servaddr));
 
 	/* Assign port and ip address */
 	servaddr.sin_family = AF_INET;
 	servaddr.sin_port = htons(port_no);
 	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
+	smtp_servaddr.sin_family = AF_INET;
+	smtp_servaddr.sin_port = htons(smtp_port_no);
+	smtp_servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
 	/* Bind socket */
-	if (bind(socket_fd, (struct sockaddr*) &servaddr, sizeof(servaddr)) != 0) {
-		std::cerr << "Socket couldn't bind to " << port_no << "\n";
+	if (bind(socket_fd, (struct sockaddr*) &servaddr, sizeof(servaddr)) != 0 ||
+		bind(smtp_socket_fd, (struct sockaddr*) &smtp_servaddr, sizeof(smtp_servaddr)) != 0) {
+		std::cerr << "Sockets couldn't bind\n";
 		exit(-1);
 	} else if (verbose) {
-		std::cerr << "Successfully binded to " << port_no << "\n";
+		std::cerr << "Sockets Successfully binded\n";
 	}
 
     // connectToRPCServer(kvs_addr);
 
 	/* Start listening */
-	if (listen(socket_fd, 20) != 0) {
+	if (listen(socket_fd, 20) != 0 ||
+		listen(smtp_socket_fd, 20) != 0	) {
 		std::cerr << "Listening failed!\n";
 		exit(-1);
 	} else if (verbose) {
 		std::cerr << "Successfully started listening!\n";
 	}
 
+	sigset_t empty_set;
+	sigemptyset(&empty_set);
+
+	/* Add a timeout to socket to handle ctrl c periodically */
+	struct timeval timeout;
+	timeout.tv_sec = 3;
+	timeout.tv_usec = 0;
+	if (setsockopt (socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,sizeof(timeout)) < 0 ||
+		setsockopt (smtp_socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,sizeof(timeout)) < 0)
+		log("setsockopt failed\n");
+
 	while (!shut_down) {
-		struct sockaddr_in client_addr;
-		unsigned int clientaddrlen = sizeof(client_addr);
-		int *client_fd = (int*) malloc(sizeof(int));
-		*client_fd = accept(socket_fd, (struct sockaddr*) &client_addr,
-				&clientaddrlen);
-		if (*client_fd <= 0) {
-			free(client_fd);
-			if (!shut_down) {
-				std::cerr << "Accept system call failed \n";
-				exit(-1);
-			}
-			break;
-		} else {
-			pthread_t pthread_id;
-			pthread_create(&pthread_id, NULL, handleClient, client_fd);
-			if (shut_down) {
-				write(*client_fd, error_msg.data(), error_msg.size());
-				close(*client_fd);
+		/* Initialize read set for select and call select */
+		fd_set read_set;
+		FD_ZERO(&read_set);
+		FD_SET(socket_fd, &read_set);
+		FD_SET(smtp_socket_fd, &read_set);
+		int nfds = std::max(smtp_socket_fd, socket_fd) + 1;
+		int r = 0;
+		while (r <=0 && !shut_down){
+			r = pselect(nfds, &read_set, NULL, NULL, NULL, &empty_set);
+		}
+		if(r <= 0 || shut_down) continue;
+
+		if(FD_ISSET(socket_fd, &read_set)){
+			struct sockaddr_in client_addr;
+			unsigned int clientaddrlen = sizeof(client_addr);
+			int *client_fd = (int*) malloc(sizeof(int));
+			*client_fd = accept(socket_fd, (struct sockaddr*) &client_addr,
+					&clientaddrlen);
+			if (*client_fd <= 0) {
 				free(client_fd);
+				if (!shut_down) {
+					std::cerr << "Accept system call failed \n";
+					exit(-1);
+				}
+				break;
 			} else {
-				if (verbose)
-					std::cerr << "[" << *client_fd << "] New connection\n";
-				pthread_ids.push_back(pthread_id);
-				pthread_mutex_lock(&fd_mutex);
-				fd.insert(client_fd);
-				pthread_mutex_unlock(&fd_mutex);
+				pthread_t pthread_id;
+				pthread_create(&pthread_id, NULL, handleClient, client_fd);
+				if (shut_down) {
+					write(*client_fd, error_msg.data(), error_msg.size());
+					close(*client_fd);
+					free(client_fd);
+				} else {
+					if (verbose)
+						std::cerr << "[" << *client_fd << "] New connection\n";
+					pthread_ids.push_back(pthread_id);
+					pthread_mutex_lock(&fd_mutex);
+					fd.insert(client_fd);
+					pthread_mutex_unlock(&fd_mutex);
+				}
 			}
+		} else if (FD_ISSET(smtp_socket_fd, &read_set)){
+			/* TODO: Handle smtp connections */
+			handle_smtp_connections(smtp_socket_fd);
 		}
 	}
 
