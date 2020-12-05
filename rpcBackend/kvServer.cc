@@ -48,7 +48,7 @@ int replay = 0;
 int numCommandsSinceLastCheckpoint = 0;
 
 int serverIndx = 1;
-int maxCache = 17;
+int maxCache = 30;
 int startCacheThresh = maxCache/2;
 int cacheSize = 0;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
@@ -526,18 +526,23 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
     //return std::make_tuple(0, "OK");
 
     int oldLen = kvMap[row][col].length();
+    int ranCheckPoint = 0;
 
     // check if can store in local cache
-    if (val.length() + cacheSize - oldLen> maxCache) {
+    if (val.length() + cacheSize - oldLen > maxCache) {
     	debugDetailed("------PUT evicting on valLen: %ld, cacheSize: %d, maxCache: %d\n", val.length(), cacheSize, maxCache);
     	runCheckpoint();
+    	ranCheckPoint = 1;
     }
-    if (val.length() + cacheSize <= maxCache) {
+    if (val.length() + cacheSize - oldLen <= maxCache) {
     	// put into kvMap, upate cache size and set kvLoc = 1
     	
     	kvMap[row][col] = val;
     	kvLoc[row][col] = 1;
-    	cacheSize = cacheSize + val.length() - oldLen;
+    	cacheSize = cacheSize + val.length();
+    	if (ranCheckPoint == 0) {
+    		cacheSize = cacheSize - oldLen;
+    	}
     	debugDetailed("------PUT row: %s, column: %s, val: %s, cahceSize: %d\n", row.c_str(), col.c_str(), val.c_str(), cacheSize);
     	printKvMap();
     	logCommand(PUT, 3, row, col, val, row);
@@ -548,6 +553,26 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
     	exit(0);
     }
 }
+
+
+// get val if known to exist
+std::string getValDiskorLocal(std::string row, std::string col) {
+	std::string val;
+	if (kvLoc[row][col] == 0) {
+		debugDetailed("%s\n", "row, col, val on disk, retrieiving..");
+		// try to load from disk, and run checkpoint if needed
+		FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
+		int valLen = getValSize(colFilePtr);
+		int loadRes = readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
+		if (loadRes == -1) {
+			runCheckpoint();
+			readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
+		}	
+	}
+	val = kvMap[row][col];
+	return val;
+}
+
 
 std::tuple<int, std::string> get(std::string row, std::string col) {
  //    if (kvMap.count(row) > 0) {
@@ -565,28 +590,17 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 	// logCommand(GET, 2, row, col, row, row);
 	// return std::make_tuple(1, "No such row, column pair");
 
-	// check that row, col exists in tablet
+	// check that row, col exists in tablet, and not deleted
 	if (kvLoc.count(row) > 0) {
 		if (kvLoc[row].count(col) > 0) {
-			std::string val;
-			// check if val in cache
-			if (kvLoc[row][col] == 1) {
-				val = kvMap[row][col];
-			} else {
-				// try to load from disk, and run checkpoint if needed
-				FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
-				int valLen = getValSize(colFilePtr);
-				int loadRes = readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
-				if (loadRes == -1) {
-					runCheckpoint();
-					readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
-				}
-				val = kvMap[row][col];
-			}			
-			debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
-			printKvMap();
-			logCommand(GET, 2, row, col, row, row);
-			return std::make_tuple(0, val);
+			if (kvLoc[row][col] != -1) {
+				std::string val = getValDiskorLocal(row, col);			
+				debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+				printKvMap();
+				logCommand(GET, 2, row, col, row, row);
+				return std::make_tuple(0, val);
+			}
+			
 		}
 	} 
 
@@ -611,27 +625,58 @@ std::tuple<int, std::string> exists(std::string row, std::string col) {
 }
 
 std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
-    if (kvMap.count(row) > 0) {
-		if (kvMap[row].count(col) > 0) {
-			if (expVal.compare(kvMap[row][col]) == 0) {
-				kvMap[row][col] = newVal;
-				debugDetailed("---CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-				printKvMap();
-				logCommand(CPUT, 4, row, col, expVal, newVal);
-				return std::make_tuple(0, "OK");
-			} else {
-				debugDetailed("---CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-				printKvMap();
-				logCommand(CPUT, 4, row, col, expVal, newVal);
-				return std::make_tuple(2, "Incorrect expVal");
+ //    if (kvMap.count(row) > 0) {
+	// 	if (kvMap[row].count(col) > 0) {
+	// 		if (expVal.compare(kvMap[row][col]) == 0) {
+	// 			kvMap[row][col] = newVal;
+	// 			debugDetailed("---CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+	// 			printKvMap();
+	// 			logCommand(CPUT, 4, row, col, expVal, newVal);
+	// 			return std::make_tuple(0, "OK");
+	// 		} else {
+	// 			debugDetailed("---CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+	// 			printKvMap();
+	// 			logCommand(CPUT, 4, row, col, expVal, newVal);
+	// 			return std::make_tuple(2, "Incorrect expVal");
+	// 		}
+			
+	// 	}
+	// } 
+
+	// debugDetailed("---CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+	// printKvMap();
+	// logCommand(CPUT, 4, row, col, expVal, newVal);
+	// return std::make_tuple(1, "No such row, column pair");
+
+	debugDetailed("---CPUT entered - row: %s, column: %s, expVal: %s, newVal: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+
+	if (kvLoc.count(row) > 0) {
+		if (kvLoc[row].count(col) > 0) {
+			if (kvLoc[row][col] != -1) {
+				std::string val = getValDiskorLocal(row, col);	
+				debugDetailed("------CPUT correct val: %s\n", val.c_str());	
+				if (expVal.compare(kvMap[row][col]) == 0) {
+					//kvMap[row][col] = newVal;
+					put(row, col, newVal);
+					debugDetailed("------CPUT calling put - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+					debugDetailed("------CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+					printKvMap();
+					//logCommand(CPUT, 4, row, col, expVal, newVal);
+					return std::make_tuple(0, "OK");
+				} else {
+					debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+					printKvMap();
+					//logCommand(CPUT, 4, row, col, expVal, newVal);
+					return std::make_tuple(2, "Incorrect expVal");
+				}
 			}
 			
 		}
 	} 
 
-	debugDetailed("---CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+	debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 	printKvMap();
-	logCommand(CPUT, 4, row, col, expVal, newVal);
+	//logCommand(CPUT, 4, row, col, expVal, newVal);
 	return std::make_tuple(1, "No such row, column pair");
 }
 
