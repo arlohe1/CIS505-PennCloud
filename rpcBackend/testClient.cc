@@ -36,36 +36,83 @@ int main() {
         std::string newValString("newVal");
         resp_tuple resp;
         
-        // multiple puts (for log and checkpoint testing - will need to check log and checkpoint files for correct output)
-        std::cout << "put(lianap, name, Lee) = ";
-        resp = c.call("put", "lianap", "name", "Lee").as<resp_tuple>();
-        std::cout << std::get<1>(resp) << std::endl;
-        isCorrect("OK", std::get<1>(resp));
+        // // multiple puts (for log and checkpoint testing - will need to check log and checkpoint files for correct output)
+        // std::cout << "put(lianap, name, Lee) = ";
+        // resp = c.call("put", "lianap", "name", "Lee").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("OK", std::get<1>(resp));
 
-        std::cout << "put(lianap, email, Hi! What's Up???) = ";
-        resp = c.call("put", "lianap", "email", "Hi! What's Up???").as<resp_tuple>();
-        std::cout << std::get<1>(resp) << std::endl;
-        isCorrect("OK", std::get<1>(resp));
+        // std::cout << "put(lianap, email, Hi! What's Up???) = ";
+        // resp = c.call("put", "lianap", "email", "Hi! What's Up???").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("OK", std::get<1>(resp));
 
-        std::cout << "put(lianap, file, homework 2) = ";
-        resp = c.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
-        std::cout << std::get<1>(resp) << std::endl;
-        isCorrect("OK", std::get<1>(resp));
+        // std::cout << "put(lianap, file, homework 2) = ";
+        // resp = c.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("OK", std::get<1>(resp));
 
-        std::cout << "put(amitl, name, Amit) = ";
-        resp = c.call("put", "amitl", "name", "Amit").as<resp_tuple>();
-        std::cout << std::get<1>(resp) << std::endl;
-        isCorrect("OK", std::get<1>(resp));
+        // std::cout << "put(amitl, name, Amit) = ";
+        // resp = c.call("put", "amitl", "name", "Amit").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("OK", std::get<1>(resp));
 
-        std::cout << "put(amitl, email, Hi! What's Up???) = ";
-        resp = c.call("put", "amitl", "email", "Hi! What's Up???").as<resp_tuple>();
-        std::cout << std::get<1>(resp) << std::endl;
-        isCorrect("OK", std::get<1>(resp));
+        // std::cout << "put(amitl, email, Hi! What's Up???) = ";
+        // resp = c.call("put", "amitl", "email", "Hi! What's Up???").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("OK", std::get<1>(resp));
 
         // std::cout << "put(amitl, file, homework 2) = ";
         // resp = c.call("put", "amitl", "file", "homework 2?").as<resp_tuple>();
         // std::cout << std::get<1>(resp) << std::endl;
         // isCorrect("OK", std::get<1>(resp));
+
+        // //test eviction/checkpointing for get
+        // std::cout << "get(lianap, name) = ";
+        // resp = c.call("get", rowString, colString).as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("Lee", std::get<1>(resp));
+
+        // std::cout << "get(lianap, email) = ";
+        // resp = c.call("get", rowString, "email").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("Hi! What's Up???", std::get<1>(resp));
+
+        // std::cout << "get(lianap, file) = ";
+        // resp = c.call("get", rowString, "file").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("homework 2", std::get<1>(resp));
+
+        // std::cout << "get(amitl, name) = ";
+        // resp = c.call("get", "amitl", colString).as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("Amit", std::get<1>(resp));
+
+        // std::cout << "get(amitl, email) = ";
+        // resp = c.call("get", "amitl", "email").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("Hi! What's Up???", std::get<1>(resp));
+
+        // std::cout << "get(amitl, file) = ";
+        // resp = c.call("get", "amitl", "file").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("homework 2?", std::get<1>(resp));
+
+        // testing log
+        for (int i = 0; i < 1; i++) {
+            std::cout << "get(amitl, file) = ";
+            resp = c.call("get", "amitl", "file").as<resp_tuple>();
+            std::cout << std::get<1>(resp) << std::endl;
+            isCorrect("homework 2?", std::get<1>(resp));
+
+            std::cout << "get(amitl, email) = ";
+            resp = c.call("get", "amitl", "email").as<resp_tuple>();
+            std::cout << std::get<1>(resp) << std::endl;
+            isCorrect("Hi! What's Up???", std::get<1>(resp));
+        }
+
+
+        
 
         // // test basic put and get
         // std::cout << "put(lianap, name, Lee) = ";

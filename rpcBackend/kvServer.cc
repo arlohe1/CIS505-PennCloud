@@ -37,7 +37,7 @@
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
-#define COM_PER_CHECKPOINT 2
+#define COM_PER_CHECKPOINT 20
 enum Command {GET, PUT, CPUT, DELETE};
 
 
@@ -48,7 +48,7 @@ int replay = 0;
 int numCommandsSinceLastCheckpoint = 0;
 
 int serverIndx = 1;
-int maxCache = 16;
+int maxCache = 17;
 int startCacheThresh = maxCache/2;
 int cacheSize = 0;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
@@ -277,18 +277,55 @@ void runCheckpoint() {
 	// cd back out to server directory
 	chdir("..");
 
-	// clear logfile
-	FILE* logFilePtr;
-	logFilePtr = fopen("log.txt", "w");
-	fclose(logFilePtr);
+	// clear logfile if not currently replaying log
+	if (replay == 0) {
+		FILE* logFilePtr;
+		logFilePtr = fopen("log.txt", "w");
+		fclose(logFilePtr);
+		debugDetailed("%s,\n", "--------cleared log file and return--------");
+	}
 	numCommandsSinceLastCheckpoint = 0;
 	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
 	printKvMap();
-	debugDetailed("%s,\n", "--------cleared log file and return--------");
+	debugDetailed("%s,\n", "--------checkpoint finished and return--------");
+	return;
+	
 
 	// need to add new function - loadKvStore - parses all row files and enters the appropriate column, value into map
 
 }
+
+FILE * openValFile(char* row, char* col, const char* mode) {
+	std::string filePath("checkpoint");
+	std::string rowString(row);
+	std::string colString(col);
+	filePath = filePath + "/" + rowString + "/" + colString;
+	FILE* ret = fopen(filePath.c_str(), mode);
+	if (ret == NULL) {
+		perror("error in fopen in openValFile: ");
+		debugDetailed("openValFile error in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
+	}
+	debugDetailed("openValFile finished in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
+	return ret;
+
+}
+
+// gets header from a newly opened row file in checkpoint folder
+int getValSize(FILE* colFilePtr) {
+	char headerBuf[MAX_LEN_LOG_HEADER];
+	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
+	// read from column file the formatted length
+	if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
+		perror("invalid fgets when trying to read col file reader: ");	
+		return -1;
+	}
+	headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
+	int valLen = (atoi(headerBuf));
+	debugDetailed("getValSize returns len:%d\n", valLen);
+	return valLen;
+	
+}
+
 
 // returns 0 if there was space, and -1 if not
 int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, char* col) {
@@ -488,14 +525,16 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
     //logCommand(PUT, 3, row, col, val, row);
     //return std::make_tuple(0, "OK");
 
+    int oldLen = kvMap[row][col].length();
+
     // check if can store in local cache
-    if (val.length() + cacheSize > maxCache) {
+    if (val.length() + cacheSize - oldLen> maxCache) {
     	debugDetailed("------PUT evicting on valLen: %ld, cacheSize: %d, maxCache: %d\n", val.length(), cacheSize, maxCache);
     	runCheckpoint();
     }
     if (val.length() + cacheSize <= maxCache) {
     	// put into kvMap, upate cache size and set kvLoc = 1
-    	int oldLen = kvMap[row][col].length();
+    	
     	kvMap[row][col] = val;
     	kvLoc[row][col] = 1;
     	cacheSize = cacheSize + val.length() - oldLen;
@@ -511,9 +550,39 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
 }
 
 std::tuple<int, std::string> get(std::string row, std::string col) {
-    if (kvMap.count(row) > 0) {
-		if (kvMap[row].count(col) > 0) {
-			std::string val = kvMap[row][col];
+ //    if (kvMap.count(row) > 0) {
+	// 	if (kvMap[row].count(col) > 0) {
+	// 		std::string val = kvMap[row][col];
+	// 		debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+	// 		printKvMap();
+	// 		logCommand(GET, 2, row, col, row, row);
+	// 		return std::make_tuple(0, val);
+	// 	}
+	// } 
+
+	// debugDetailed("---GET val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
+	// printKvMap();
+	// logCommand(GET, 2, row, col, row, row);
+	// return std::make_tuple(1, "No such row, column pair");
+
+	// check that row, col exists in tablet
+	if (kvLoc.count(row) > 0) {
+		if (kvLoc[row].count(col) > 0) {
+			std::string val;
+			// check if val in cache
+			if (kvLoc[row][col] == 1) {
+				val = kvMap[row][col];
+			} else {
+				// try to load from disk, and run checkpoint if needed
+				FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
+				int valLen = getValSize(colFilePtr);
+				int loadRes = readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
+				if (loadRes == -1) {
+					runCheckpoint();
+					readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
+				}
+				val = kvMap[row][col];
+			}			
 			debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
 			printKvMap();
 			logCommand(GET, 2, row, col, row, row);
@@ -524,18 +593,13 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 	debugDetailed("---GET val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
 	logCommand(GET, 2, row, col, row, row);
-	return std::make_tuple(1, "No such row, column pair");
-
-	// check if val in cache,
-		// if so return it
-		// else try to load from disk, and if too much in memory, run checkpoint then finish
+	return std::make_tuple(1, "No such row, column pair");	
 }
 
 std::tuple<int, std::string> exists(std::string row, std::string col) {
-    if (kvMap.count(row) > 0) {
-		if (kvMap[row].count(col) > 0) {
-			std::string val = kvMap[row][col];
-			debugDetailed("---EXISTS succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+    if (kvLoc.count(row) > 0) {
+		if (kvLoc[row].count(col) > 0) {
+			debugDetailed("---EXISTS succeeded - row: %s, column: %s\n", row.c_str(), col.c_str());
 			printKvMap();
 			return std::make_tuple(0, "OK");
 		}
@@ -590,6 +654,7 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 
 
 void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, int len1, int len2, int len3, int len4) {
+	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
 	if (strncmp(comm, "PUT", 3) == 0) {
 		std::string rowString(arg1, len1);
 		std::string colString(arg2, len2);
@@ -655,6 +720,7 @@ int replayLog() {
 		debugDetailed("parsed args - arg1: %s, arg2: %s, arg3: %s, arg4: %s\n", args[0], args[1], args[2], args[3]);
 		callFunction(comm, args[0], args[1], args[2], args[3], lens[0], lens[1], lens[2], lens[3]);
 
+
 		for (i = 0; i < MAX_COMM_ARGS; i++) {
 			if (args[i] != NULL) {
 				free(args[i]);
@@ -718,6 +784,7 @@ int main(int argc, char *argv[]) {
  	replayLog();
  	debug("%s\n", "kvMap after log replay: ");
  	printKvMap();
+ 	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
 
 	rpc::server srv(port);
 	srv.bind("put", &put);
