@@ -48,7 +48,9 @@ int replay = 0;
 int numCommandsSinceLastCheckpoint = 0;
 
 int serverIndx = 1;
-int maxCache = 1000;
+int maxCache = 16;
+int startCacheThresh = maxCache/2;
+int cacheSize = 0;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
 std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-1 for val deleted, 0 for val on disk, 1 for val in kvMap)
 FILE* logfile = NULL;
@@ -104,7 +106,7 @@ void volatileMemset(volatile int* start, char c, int len) {
 
 void printKvMap() {
 	if (debugFlag == 1) {
-		std::cout << "kvmap print: \n";
+		std::cout << "kvmap print (size: " << cacheSize << ") : \n";
 		for (const auto& x : kvMap) {
 			//x.first is row, x.second is column -> value
 			std::cout << "\t" << "row: " << x.first << "\n";
@@ -137,40 +139,7 @@ void chdirToCheckpoint() {
 
 }
 
-// // TODO - need to delete shit first and make sure deleteing rows
-// void runCheckpoint() {
-// 	debugDetailed("%s,\n", "--------RUNNING CHECKPOINT--------");
-// 	// cd into checkpoint directory
-// 	chdirToCheckpoint();
-// 	// loop over rows in map and write each to a file
-// 	FILE* rowFilePtr;
-// 	for (const auto& [row, mapping]: kvMap) {
-// 		rowFilePtr = fopen((row).c_str(), "w");
-// 		for (const auto& [col, val]: mapping) {		
-// 			// write all columns to file with format columnLen,ValLen\ncolumnName,ValName\n
-// 			fprintf(rowFilePtr, "%ld,%ld\n", col.length(), val.length());
-// 			fwrite(col.c_str(), sizeof(char), col.length(), rowFilePtr);
-// 			fwrite(val.c_str(), sizeof(char), val.length(), rowFilePtr);
-// 			fwrite("\n", sizeof(char), strlen("\n"), rowFilePtr);
-			
-// 		}
-// 		fclose(rowFilePtr);
-// 	}
-		
 
-// 	// cd back out to server directory
-// 	chdir("..");
-
-// 	// clear logfile
-// 	FILE* logFilePtr;
-// 	logFilePtr = fopen("log.txt", "w");
-// 	fclose(logFilePtr);
-// 	numCommandsSinceLastCheckpoint = 0;
-// 	debugDetailed("%s,\n", "--------cleared log file and return--------");
-
-// 	// need to add new function - loadKvStore - parses all row files and enters the appropriate column, value into map
-
-// }
 
 // makes dirName directory if doesnt already exist, and cds gto the directory //returns 0 if dir exists, else -1
 int chdirToRow(const char* dirName) {
@@ -202,29 +171,109 @@ int chdirToRow(const char* dirName) {
 
 }
 
+// // todo add threshold arg, write calloc wrapper that runs checkpoint if calloc fails
+// // returns -1 if row, col doesnt exist, -2 if cannot calloc, -3 for other error
+// int moveFromDiskToLocal(char* row, char* col) {
+// // 	// check that this row,col exists and is not in kv cache already
+// 	if (kvLoc.count(row) > 0) {
+// 		if (kvLoc.count(col) > 0) {
+// 			// check that kvLoc val is 0 (on disk) and not 1 or -1
+// 			if (kvLoc[row][col] == 1) {
+// 				debugDetailed("row (%s) col (%s) already in local cache\n", row, col);
+// 			} else if (kvLoc[row][col] == -1) {
+// 				debugDetailed("row (%s) col (%s) was deleted, nothing to move to local from disk\n", row, col);
+// 			} else {
+// 				// need to retrieve from disk
+// 				chdirToCheckpoint();
+// 				chdirToRow((const char*) row);
+// 				FILE* colFilePtr;
+// 				if ((colFilePtr = fopen(col.c_str(), "r")) == NULL) {
+// 					debugDetailed("fopen failed when opening %s\n", nextColFile->d_name);
+// 					perror("invalid fopen of a checkpoint col file: ");			
+// 					debugDetailed("%s\n", "---------Finished  moveFromDiskToLocal WITH ERROR");
+// 					return -3;
+// 				}
+// 				// read from column file the formatted length
+// 				char headerBuf[MAX_LEN_LOG_HEADER];
+// 				memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
+// 				if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
+// 					perror("invalid fgets when trying to read col file reader: ");	
+// 					return -3;
+// 				}
+// 				headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
+// 				int valLen = (atoi(headerBuf));
+// 				debugDetailed("buf read from checkpoint file (%s) is: %s, valLen:%d\n", nextColFile->d_name, headerBuf, valLen);
+// 				char* val = (char*) calloc(valLen, sizeof(char)); //TODO check if calloc fails and check if length will be too long
+// 				if (val != NULL) {
+// 					fread(val, sizeof(char), valLen, colFilePtr);
+// 				} else {
+// 					perror("cannot calloc value in moveFromDiskToLocal()");
+// 					return -2;
+// 				}
+// 				// enter into kvMap
+// 				std::string rowString(row);
+// 				std::string colString(col);
+// 				std::string valString(val, valLen);
+// 				kvMap[rowString][colString] = valString;
+// 				//free calloc, close file
+// 				free(val);
+// 				fclose(colFilePtr);
+// 			}
+// 			return 0;
+// 		}
+// 	}
+
+// 	debugDetailed("---row, col, val not in kvLoc - row: %s, column: %s\n", row.c_str(), col.c_str());
+// 	return -1;	 
+// }
+
 
 // TODO - make sure deleted rows are handled correclty
 void runCheckpoint() {
+	int valLen;
 	debugDetailed("%s,\n", "--------RUNNING CHECKPOINT--------");
 	// cd into checkpoint directory
 	chdirToCheckpoint();
 	// loop over rows in create folder for each
 	FILE* colFilePtr;
-	for (const auto& [row, mapping]: kvMap) {
+	for (const auto& x: kvLoc) {
+		std::string row = x.first;
 		chdirToRow(row.c_str());
 		//loop over columns, create new or truncate file for each and write value to file
-		for (const auto& [col, val]: mapping) {		
-			colFilePtr = fopen((col).c_str(), "w");
-			// write all value to file with format valLen\nvalue
-			fprintf(colFilePtr, "%ld\n", val.length());
-			fwrite(val.c_str(), sizeof(char), val.length(), colFilePtr);
-			fclose(colFilePtr);	
+		for (const auto& y: x.second) {	
+			std::string col = y.first;
+			//std::string val = y.second;
+			int loc = y.second;
+			// case on kvLoc val -1 (deleted), 0 (on disk), or 1 (in local kvMap)
+			if (loc == -1) {
+				if(remove( kvMap[row][col].c_str() ) != 0 ) {
+    				perror( "Error deleting file" );
+				} else {
+					debugDetailed("checkpoint deletes file: %s\n", col.c_str());
+					valLen = kvMap[row][col].length();
+					kvMap[row].erase(col);
+					kvLoc[row].erase(col);
+					cacheSize = cacheSize - valLen;
+					printKvMap();
+					
+				}
+			} else if (loc == 1) {
+				debugDetailed("checkpoint writes file: %s\n", col.c_str());
+				colFilePtr = fopen((col).c_str(), "w");
+				// write all value to file with format valLen\nvalue
+				fprintf(colFilePtr, "%ld\n", kvMap[row][col].length());
+				fwrite(kvMap[row][col].c_str(), sizeof(char), kvMap[row][col].length(), colFilePtr);
+				fclose(colFilePtr);	
+				valLen = kvMap[row][col].length();
+				kvMap[row].erase(col);
+				kvLoc[row][col] = 0;
+				cacheSize = cacheSize - valLen;		
+				printKvMap();
+			}		
 		}
 		
 		chdir("..");
 	}
-		
-
 	// cd back out to server directory
 	chdir("..");
 
@@ -233,12 +282,43 @@ void runCheckpoint() {
 	logFilePtr = fopen("log.txt", "w");
 	fclose(logFilePtr);
 	numCommandsSinceLastCheckpoint = 0;
+	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
+	printKvMap();
 	debugDetailed("%s,\n", "--------cleared log file and return--------");
 
 	// need to add new function - loadKvStore - parses all row files and enters the appropriate column, value into map
 
 }
 
+// returns 0 if there was space, and -1 if not
+int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, char* col) {
+	// check if space
+	if (cacheSize + valLen < cacheThresh) {
+		// read in val 
+		char* val = (char*) calloc(valLen, sizeof(char));
+		if (val != NULL) {
+			fread(val, sizeof(char), valLen, fptr);
+		} else {
+			perror("cannot calloc value in loadKvStoreFromDisk()");
+			return -1;
+		}
+		//update kvMap and kvLoc
+		std::string rowString(row);
+		std::string colString(col);
+		std::string valString(val, valLen);
+		kvMap[rowString][colString] = valString;
+		cacheSize = cacheSize + valLen;
+		kvLoc[rowString][colString] = 1;
+		free(val);
+		return 0;
+	} else {
+		// update kvLoc
+		std::string rowString(row);
+		std::string colString(col);
+		kvLoc[rowString][colString] = 0;
+		return -1;
+	}
+}
 
 int loadKvStoreFromDisk() {
 	// loop over all files in checkpoint dir and read each row file
@@ -279,20 +359,10 @@ int loadKvStoreFromDisk() {
 			headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
 			int valLen = (atoi(headerBuf));
 			debugDetailed("buf read from checkpoint file (%s) is: %s, valLen:%d\n", nextColFile->d_name, headerBuf, valLen);
-			char* val = (char*) calloc(valLen, sizeof(char));
-			if (val != NULL) {
-				fread(val, sizeof(char), valLen, colFilePtr);
-			} else {
-				perror("cannot calloc value in loadKvStoreFromDisk()");
-				exit(-1);
-			}
-			// enter into kvMap
-			std::string rowString(nextRowDir->d_name);
-			std::string colString(nextColFile->d_name);
-			std::string valString(val, valLen);
-			kvMap[rowString][colString] = valString;
-			//free calloc, close file and memset before re-looping for next value in current row dir
-			free(val);
+			
+			// enter into kvMap - if space
+			readAndLoadValIfSpace(colFilePtr, valLen, startCacheThresh, nextRowDir->d_name, nextColFile->d_name);
+
 			memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
 			fclose(colFilePtr);
 		}
@@ -307,73 +377,6 @@ int loadKvStoreFromDisk() {
 }
 
 
-// int loadKvStoreFromDisk() {
-// 	// loop over all files in checkpoint dir and read each row file
-// 	debugDetailed("%s\n", "---------Entered loadKvStoreFromDisk");
-// 	chdirToCheckpoint();
-// 	DIR* dir = opendir(".");
-// 	struct dirent* nextRowFile;
-// 	nextRowFile = readdir(dir); // skip "."
-// 	nextRowFile = readdir(dir); // skip ".."
-	
-// 	FILE* rowFilePtr; 
-// 	char headerBuf[MAX_LEN_LOG_HEADER];
-// 	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
-// 	while((nextRowFile = readdir(dir)) != NULL) {
-// 		printf("reached\n");
-// 		// open file
-// 		if ((rowFilePtr = fopen(nextRowFile->d_name, "r")) == NULL) {
-// 			debugDetailed("fopen failed %d\n", serverIndx);
-// 			perror("invalid fopen of a checkpoint row file: ");
-// 			fclose(rowFilePtr);
-// 			// cd back out to server directory
-// 			chdir("..");
-// 			debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk WITH ERROR");
-// 			return -1;
-// 		}
-// 		int colLen;
-// 		int valLen;
-// 		char* col;
-// 		char* val;
-// 		std::string rowString(nextRowFile->d_name);
-// 		// read formatted file and reconstruct row in kvMap
-// 		while(fgets(headerBuf, MAX_LEN_LOG_HEADER, rowFilePtr) != NULL) {
-// 			headerBuf[strlen(headerBuf)] = '\0'; //set newline to null
-// 			debugDetailed("buf read from checkpoint file (%s) is: %s\n", nextRowFile->d_name, headerBuf);
-// 			// find lengths
-// 			colLen = atoi(strtok(headerBuf, ","));
-// 			valLen = atoi(strtok(NULL, ","));
-// 			col = (char*) calloc(colLen, sizeof(char));
-// 			val = (char*) calloc(valLen, sizeof(char));
-// 			// get col and value
-// 			if (col != NULL) {
-// 				fread(col, sizeof(char), colLen, rowFilePtr);
-// 			}
-// 			if (val != NULL) {
-// 				fread(val, sizeof(char), valLen, rowFilePtr);
-// 			}
-// 			// enter into kvMap
-// 			std::string colString(col, colLen);
-// 			std::string valString(val, valLen);
-// 			kvMap[rowString][colString] = valString;
-// 			// free callocs
-// 			free(col);
-// 			free(val);
-// 			//read newline char before re-looping
-// 			fseek(rowFilePtr, 1, SEEK_CUR);
-// 			memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
-// 		}
-// 		fclose(rowFilePtr);
-// 	}
-// 	printKvMap();
-// 	// cd back out to server directory
-// 	chdir("..");
-	
-// 	debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk");
-
-// 	return 0;	
-
-// }
 
 // increments command count since last checkpoint and deals with checkpointing
 void checkIfCheckPoint() {
@@ -447,13 +450,64 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 }
 
 
+// // returns 0 if there was space, and -1 if not
+// int putIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, char* col) {
+// 	// check if space
+// 	if (cacheSize + valLen < cacheThresh) {
+// 		// read in val 
+// 		char* val = (char*) calloc(valLen, sizeof(char));
+// 		if (val != NULL) {
+// 			fread(val, sizeof(char), valLen, fptr);
+// 		} else {
+// 			perror("cannot calloc value in loadKvStoreFromDisk()");
+// 			return -1;
+// 		}
+// 		//update kvMap and kvLoc
+// 		std::string rowString(row);
+// 		std::string colString(col);
+// 		std::string valString(val, valLen);
+// 		kvMap[rowString][colString] = valString;
+// 		cacheSize = cacheSize + valLen;
+// 		kvLoc[rowString][colString] = 1;
+// 		free(val);
+// 		return 0;
+// 	} else {
+// 		// update kvLoc
+// 		std::string rowString(row);
+// 		std::string colString(col);
+// 		kvLoc[rowString][colString] = 0;
+// 		return -1;
+// 	}
+// }
+
 
 std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
-    kvMap[row][col] = val;
-    debugDetailed("---PUT row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
-    printKvMap();
-    logCommand(PUT, 3, row, col, val, row);
-    return std::make_tuple(0, "OK");
+    //kvMap[row][col] = val;
+    debugDetailed("---PUT entered - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+    //printKvMap();
+    //logCommand(PUT, 3, row, col, val, row);
+    //return std::make_tuple(0, "OK");
+
+    // check if can store in local cache
+    if (val.length() + cacheSize > maxCache) {
+    	debugDetailed("------PUT evicting on valLen: %ld, cacheSize: %d, maxCache: %d\n", val.length(), cacheSize, maxCache);
+    	runCheckpoint();
+    }
+    if (val.length() + cacheSize <= maxCache) {
+    	// put into kvMap, upate cache size and set kvLoc = 1
+    	int oldLen = kvMap[row][col].length();
+    	kvMap[row][col] = val;
+    	kvLoc[row][col] = 1;
+    	cacheSize = cacheSize + val.length() - oldLen;
+    	debugDetailed("------PUT row: %s, column: %s, val: %s, cahceSize: %d\n", row.c_str(), col.c_str(), val.c_str(), cacheSize);
+    	printKvMap();
+    	logCommand(PUT, 3, row, col, val, row);
+    	return std::make_tuple(0, "OK");
+    } else {
+    	// evict everything then rerun the function (but dont log the second time)
+    	debugDetailed("------PUT evicting FAILED row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+    	exit(0);
+    }
 }
 
 std::tuple<int, std::string> get(std::string row, std::string col) {
@@ -471,6 +525,10 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 	printKvMap();
 	logCommand(GET, 2, row, col, row, row);
 	return std::make_tuple(1, "No such row, column pair");
+
+	// check if val in cache,
+		// if so return it
+		// else try to load from disk, and if too much in memory, run checkpoint then finish
 }
 
 std::tuple<int, std::string> exists(std::string row, std::string col) {
