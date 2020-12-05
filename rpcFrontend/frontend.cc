@@ -24,7 +24,7 @@ std::string greeting =
 std::string goodbye = "+OK Goodbye!\r\n";
 std::string error_msg = "-ERR Server shutting down\r\n";
 std::string unknown_cmd = "-ERR Unknown command\r\n";
-std::string kvs_addr = "";
+std::string kvMaster_addr = "";
 std::string mail_addr = "";
 std::string storage_addr = "";
 std::string my_address;
@@ -199,9 +199,42 @@ std::string getAddrFromString(std::string fullServAddr) {
 
 /*********************** KVS Util function ***********************************/
 
+std::list<std::string> whereKVS(std::string row) {
+    log("row");
+    log(row);
+    log("row");
+	int masterPortNo = getPortNoFromString(kvMaster_addr);
+	std::string masterServAddress = getAddrFromString(kvMaster_addr);
+    rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
+    try {
+        log("MASTERNODE WHERE: "+row);
+        using where_resp_tuple = std::tuple<int,std::list<std::string>>;
+        where_resp_tuple resp = masterNodeRPCClient.call("where", row).as<where_resp_tuple>();
+        log("whereKVS Response Status: "+ std::to_string(std::get<0>(resp)));
+        std::list<std::string> serverList = std::get<1>(resp);
+        for(std::string server : serverList) {
+            log("whereKVS Response Server: "+ server);
+        }
+        return serverList;
+    } catch (rpc::rpc_error &e) {
+        std::cout << std::endl << e.what() << std::endl;
+        std::cout << "in function " << e.get_function_name() << ": ";
+        using err_t = std::tuple<std::string, std::string>;
+        auto err = e.get_error().as<err_t>();
+        log("UNHANDLED ERROR IN whereKVS TRY CATCH"); // TODO
+    }
+    std::list<std::string> emptyList {};
+    return emptyList;
+}
+
 resp_tuple putKVS(std::string row, std::string column, std::string value) {
-	int serverPortNo = getPortNoFromString(kvs_addr);
-	std::string servAddress = getAddrFromString(kvs_addr);
+    std::list<std::string> serverList = whereKVS(row);
+    if(serverList.size() <= 0) {
+        // TODO error
+    }
+    std::string targetServer = serverList.front();
+	int serverPortNo = getPortNoFromString(targetServer);
+	std::string servAddress = getAddrFromString(targetServer);
     rpc::client kvsRPCClient(servAddress, serverPortNo);
     resp_tuple resp;
     try {
@@ -222,8 +255,15 @@ resp_tuple putKVS(std::string row, std::string column, std::string value) {
 }
 
 resp_tuple getKVS(std::string row, std::string column) {
-	int serverPortNo = getPortNoFromString(kvs_addr);
-	std::string servAddress = getAddrFromString(kvs_addr);
+    std::list<std::string> serverList = whereKVS(row);
+    if(serverList.size() <= 0) {
+        // TODO error
+    } else if (serverList.size() > 1) {
+        serverList.pop_front(); // don't send to leader in cluster if > 1 server available
+    }
+    std::string targetServer = serverList.front();
+	int serverPortNo = getPortNoFromString(targetServer);
+	std::string servAddress = getAddrFromString(targetServer);
     rpc::client kvsRPCClient(servAddress, serverPortNo);
     using resp_tuple = std::tuple<int, std::string>;
     resp_tuple resp;
@@ -245,8 +285,13 @@ resp_tuple getKVS(std::string row, std::string column) {
 }
 
 resp_tuple deleteKVS(std::string row, std::string column) {
-	int serverPortNo = getPortNoFromString(kvs_addr);
-	std::string servAddress = getAddrFromString(kvs_addr);
+    std::list<std::string> serverList = whereKVS(row);
+    if(serverList.size() <= 0) {
+        // TODO error
+    }
+    std::string targetServer = serverList.front();
+	int serverPortNo = getPortNoFromString(targetServer);
+	std::string servAddress = getAddrFromString(targetServer);
     rpc::client kvsRPCClient(servAddress, serverPortNo);
     using resp_tuple = std::tuple<int, std::string>;
     resp_tuple resp;
@@ -1131,7 +1176,7 @@ int main(int argc, char *argv[]) {
 		} else if (strstr(argv[i], "-k") != NULL
 				&& strcmp(strstr(argv[i], "-k"), "-k") == 0) {
 			if (i + 1 < argc) {
-				kvs_addr = trim(std::string(argv[++i]));
+				kvMaster_addr = trim(std::string(argv[++i]));
 			} else {
 				std::cerr << "'-k' should be followed by an address!\n";
 			}
@@ -1225,8 +1270,6 @@ int main(int argc, char *argv[]) {
 	} else if (verbose) {
 		std::cerr << "Sockets Successfully binded\n";
 	}
-
-    // connectToRPCServer(kvs_addr);
 
 	/* Start listening */
 	if (listen(socket_fd, 20) != 0 ||
