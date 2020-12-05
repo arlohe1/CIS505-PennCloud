@@ -324,7 +324,6 @@ std::string kvsResponseMsg(resp_tuple resp) {
 
 void uploadFile(struct http_request req, std::string filepath) {
 	std::string username = req.cookies["username"]; 
-	username = "amit"; // TODO change hardcoding
 	std::string filename = req.formData["filename"];
 	std::string fileData = req.formData["file"];
 
@@ -350,7 +349,6 @@ void uploadFile(struct http_request req, std::string filepath) {
 
 void deleteFile(struct http_request req, std::string containingDir, std::string itemToDeleteHash) {
 	std::string username = req.cookies["username"]; 
-	username = "amit"; // TODO change hardcoding
 
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, containingDir);
@@ -373,7 +371,6 @@ void deleteFile(struct http_request req, std::string containingDir, std::string 
 
 void deleteDirectory(struct http_request req, std::string containingDir, std::string itemToDeleteHash) {
 	std::string username = req.cookies["username"]; 
-	username = "amit"; // TODO change hardcoding
 
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, containingDir);
@@ -439,8 +436,7 @@ std::string getFileLink(std::string fileName, std::string fileHash, std::string 
 
 std::string getFileList(struct http_request req, std::string filepath) {
 	std::string username = req.cookies["username"]; 
-	username = "amit"; // TODO change hardcoding
-    resp_tuple filesResp = getKVS("amit", filepath);
+    resp_tuple filesResp = getKVS(username, filepath);
     int respStatus = kvsResponseStatusCode(filesResp);
     std::string respValue = kvsResponseMsg(filesResp);
     int lineNum = 0;
@@ -481,8 +477,7 @@ bool isFileRouteDirectory(std::string filepath) {
 }
 
 void createDirectory(struct http_request req, std::string filepath, std::string dirName) {
-	std::string username = req.cookies["username"]; //TODO change hardcoding
-	username = "amit";
+	std::string username = req.cookies["username"];
 
 	// Construct filepath of new directory
     std::string dirNameHash = generateStringHash(username+filepath+dirName);
@@ -507,8 +502,7 @@ void createDirectory(struct http_request req, std::string filepath, std::string 
 }
 
 void createRootDirForNewUser(struct http_request req) {
-	std::string username = req.cookies["username"];
-	username = "amit"; //TODO change hardcoding
+	std::string username = req.formData["username"];
     std::string dirNameHash = generateStringHash(username + "/");
     // PUT new column for root directory
 	putKVS(username, "ss0_" + dirNameHash, "ROOT,ROOT\n");
@@ -921,8 +915,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
-            std::string username = "amit"; // TODO change hardcoding
-            std::string userRootDir = "ss0_" + generateStringHash(username + "/");
+            std::string userRootDir = "ss0_" + generateStringHash(req.cookies["username"] + "/");
 			resp.content =
 					"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
@@ -942,7 +935,7 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare(0,7,"/files/") == 0) {
             if(req.filepath.length() > 7) {
                     std::string filepath = req.filepath.substr(7);
-                    resp_tuple getFileResp = getKVS("amit", filepath); // TODO change hardcoded username
+                    resp_tuple getFileResp = getKVS(req.cookies["username"], filepath);
                     if(kvsResponseStatusCode(getFileResp) == 0) {
                             // display list of files if route = directory. else, display file contents
                             if(isFileRouteDirectory(filepath)) {

@@ -15,6 +15,7 @@
 
 enum Command {GET, PUT, CPUT, DELETE};
 bool debugFlag;
+bool testMode;
 int serverIndx = 1;
 int numClusters = 1;
 std::valarray<int> rowVals (36);
@@ -41,6 +42,12 @@ std::tuple<int,std::list<std::string>> where(std::string row) {
          return std::make_tuple(-1, serverList);
     }
 
+    if(testMode) {
+        serverList.push_back("127.0.0.1:10000");
+        serverList.push_back("127.0.0.1:10000");
+        return std::make_tuple(0, serverList);
+    }
+
     char firstChar = toupper(row.at(0));
     if(firstChar >= '0' && firstChar <= '9') {
          return std::make_tuple(0, clusterToServersMap[0 % numClusters]);
@@ -62,7 +69,7 @@ int main(int argc, char *argv[]) {
     char* serverListFile = NULL;
 
 	// parse arguments -p <portno>, -a for full name printed, -v for debug output
-	while ((opt = getopt(argc, argv, "p:av")) != -1) {
+	while ((opt = getopt(argc, argv, "p:avt")) != -1) {
 		switch(opt) {
 			case 'p':
 				port = atoi(optarg);
@@ -70,6 +77,10 @@ int main(int argc, char *argv[]) {
 			case 'a':
 				stderr_msg("Amit Lohe (alohe)");
 		 		return 0;
+				break;
+			case 't':
+				testMode = true;
+				stderr_msg("testMode is on - please launch a single backend server on 127.0.0.1:10000");
 				break;
 			case 'v':
 				debugFlag = true;
