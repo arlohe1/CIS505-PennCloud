@@ -93,8 +93,13 @@ std::string generateStringHash(std::string strToHash) {
 }
 
 void log(std::string str) {
-	if (verbose)
+	if(!verbose) return;
+	if (str.size() <= 1000) {
 		std::cerr << str << "\n";
+	} else {
+		std::cerr << "<LOG STRING TOO LONG! LOGGING LENGTH INSTEAD> " << str.size() << "\n";
+		std::cerr << "<AND THE STARTING 500 BYTES> " << str.substr(0, 500) << "\n";
+	}
 }
 
 int readNBytes(int *client_fd, int n, char *buffer) {
@@ -465,7 +470,7 @@ std::string getBoundary(std::string &type) {
 	for (std::string potent : splt) {
 		if (potent.find("boundary") != std::string::npos) {
 			std::string boundary = trim(potent.substr(potent.find("=") + 1));
-			return boundary + "\r\n";
+			return "--" + boundary + "\r\n";
 		}
 	}
 	return "";
@@ -476,6 +481,7 @@ void processMultiPart(struct http_request &req) {
 	std::string boundary = getBoundary(req.headers["content-type"]);
 	std::string content(req.content);
 	std::string segment = "";
+	content.erase(0, content.find(boundary) + boundary.length());
 
 	while (trim((segment = content.substr(0, content.find(boundary)))).compare(
 			"") != 0) {
@@ -500,9 +506,7 @@ void processMultiPart(struct http_request &req) {
 				}
 			}
 		}
-		segment =
-				(segment.find("--") == std::string::npos) ?
-						segment : segment.substr(0, segment.find("--"));
+
 		if (segment_is_file) {
 			req.formData["filename"] = filename;
 			req.formData["file"] = segment;
@@ -515,7 +519,7 @@ void processMultiPart(struct http_request &req) {
 	log("Form data: ");
 	for (std::map<std::string, std::string>::iterator it = req.formData.begin();
 			it != req.formData.end(); it++) {
-		log("Key : " + it->first + " value : " + it->second);
+		log("Key : " + it->first + " value : " + std::to_string((it->second).size()));
 	}
 }
 
