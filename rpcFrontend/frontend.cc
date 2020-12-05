@@ -376,7 +376,14 @@ std::string getParentDirLink(std::string fileHash) {
 }
 
 std::string getFileLink(std::string fileName, std::string fileHash, std::string containingDirectory) {
-    std::string link="<li>"+fileName+"<a download=\""+fileName+"\" href=/files/"+fileHash+">Download</a>";
+    std::string link;
+    if(fileHash.substr(0,3).compare("ss0") == 0) {
+        // Directory
+        link="<li>"+fileName+"<a href=/files/"+fileHash+">Open Directory</a>";
+    } else {
+        // File
+        link="<li>"+fileName+"<a download=\""+fileName+"\" href=/files/"+fileHash+">Download</a>";
+    }
     link += "<form action=\"/ss_delete\" method=\"post\">"
         "<input type=\"hidden\" name=\"containingDirectory\" value=\""+containingDirectory+"\" />"
         "<input type=\"hidden\" name=\"itemToDelete\" value=\""+fileHash+"\" />"
