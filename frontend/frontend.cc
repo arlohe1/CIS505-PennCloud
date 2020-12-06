@@ -317,7 +317,7 @@ void processMultiPart(struct http_request &req) {
 					if (d.find("filename") != std::string::npos) {
 						filename = trim(split(d, "=")[1]);
 						removeQuotes(filename);
-                        req.formData["filename"] = filename;
+						req.formData["filename"] = filename;
 					} else if (d.find("name") != std::string::npos) {
 						fieldname = trim(split(d, "=")[1]);
 						removeQuotes(fieldname);
@@ -673,20 +673,19 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/login";
 		}
 	} else if (req.filepath.compare("/upload") == 0) {
-			resp.content =
-			"<html><body>"
-			"<form action=\"/files\" enctype=\"multipart/form-data\" method=\"POST\""
-			"<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
-			"<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
-			"</form>"
-            "</body></html>";
+		resp.content =
+				"<html><body>"
+						"<form action=\"/files\" enctype=\"multipart/form-data\" method=\"POST\""
+						"<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
+						"<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
+						"</form>"
+						"</body></html>";
 	} else if (req.filepath.compare("/files") == 0) {
-        std::string filesResp = getKVS("amit","ss0_/");
-			resp.content =
-			"<html><body>"
-            ""+filesResp+"<br/>"
-            "<a href=\"/upload\"> <button>Upload another File</button></a>"
-			"</body></html>";
+		std::string filesResp = getKVS("amit", "ss0_/");
+		resp.content = "<html><body>"
+				"" + filesResp + "<br/>"
+				"<a href=\"/upload\"> <button>Upload another File</button></a>"
+				"</body></html>";
 	} else if (req.filepath.compare("/logout") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.cookies.erase("username");
