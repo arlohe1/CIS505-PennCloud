@@ -909,7 +909,8 @@ struct http_response processRequest(struct http_request &req) {
 				}
 			}
 			resp.content =
-					"<html><body "
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
 							"center;\">" + test
 							+ "<form id=\"login\" style=\"display:"
@@ -1057,7 +1058,8 @@ struct http_response processRequest(struct http_request &req) {
 			std::string userRootDir = "ss0_"
 					+ generateStringHash(req.cookies["username"] + "/");
 			resp.content =
-					"<html><body "
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
 							"center;\">"
 							"<form action=\"/mailbox\" method=\"POST\"> <input type = \"submit\" value=\"Mailbox\" /></form>"
@@ -1087,7 +1089,8 @@ struct http_response processRequest(struct http_request &req) {
 						resp.headers["Content-type"] = "text/html";
 						std::string fileList = getFileList(req, filepath);
 						resp.content =
-								"<html><body>"
+								"<head><meta charset=\"UTF-8\"></head>"
+										"<html><body>"
 										"" + fileList + "<br/>"
 										"<form action=\"/files/" + filepath
 										+ "\" enctype=\"multipart/form-data\" method=\"POST\""
@@ -1111,7 +1114,8 @@ struct http_response processRequest(struct http_request &req) {
 					resp.status_code = 404;
 					resp.status = "Not found";
 					resp.headers["Content-type"] = "text/html";
-					resp.content = "<html><body>"
+					resp.content = "<head><meta charset=\"UTF-8\"></head>"
+							"<html><body>"
 							"Requested file not found!"
 							"</body></html>";
 				}
@@ -1119,7 +1123,8 @@ struct http_response processRequest(struct http_request &req) {
 				resp.status_code = 404;
 				resp.status = "Not found";
 				resp.headers["Content-type"] = "text/html";
-				resp.content = "<html><body>"
+				resp.content = "<head><meta charset=\"UTF-8\"></head>"
+						"<html><body>"
 						"Requested file not found!"
 						"</body></html>";
 			}
@@ -1208,7 +1213,8 @@ struct http_response processRequest(struct http_request &req) {
 			display +=
 					"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>";
 			resp.content =
-					"<html><body "
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
 							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input type = \"submit\" value=\"Dashboard\" /></form>"
 							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Compose Email\"/></form></div>"
@@ -1286,10 +1292,11 @@ struct http_response processRequest(struct http_request &req) {
 				}
 			}
 			resp.content =
-					"<html><body "
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
 							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/mailbox\" method=\"POST\"> <input type = \"submit\" value=\"Discard\" /></form>"
-							"<script>request.setCharacterEncoding(\"UTF-8\"); function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
+							"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
 							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Send\" /></form></div>"
 							"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
 							"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
@@ -1356,7 +1363,8 @@ struct http_response processRequest(struct http_request &req) {
 					}
 				}
 				resp.content =
-						"<html><body "
+						"<head><meta charset=\"UTF-8\"></head>"
+								"<html><body "
 								"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
 								"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input type = \"submit\" value=\"Dashboard\" /></form>"
 								"<form action=\"/mailbox\" method=\"POST\" style=\"padding-right: 15px; margin-bottom:18px;\"> <input type = \"submit\" value=\"Mailbox\" /></form>"
