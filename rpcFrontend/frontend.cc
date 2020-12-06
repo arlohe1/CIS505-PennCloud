@@ -18,6 +18,7 @@
 #include <vector>
 #include <rpc/client.h>
 #include <rpc/rpc_error.h>
+#include <regex>
 
 std::string greeting =
 		"+OK Server ready (Author: Prasanna Poudyal / poudyal)\r\n";
@@ -32,6 +33,7 @@ std::vector<pthread_t> pthread_ids;
 pthread_mutex_t fd_mutex;
 std::set<int*> fd;
 volatile bool verbose = false;
+int vflag = 0;
 volatile bool shut_down = false;
 volatile bool load_balancer = false;
 volatile int l_balancer_index = 0;
@@ -260,6 +262,37 @@ resp_tuple putKVS(std::string row, std::string column, std::string value) {
 		 auto err = e.get_error().as<err_t>();
 		 */
 		log("UNHANDLED ERROR IN putKVS TRY CATCH"); // TODO
+	}
+	return resp;
+}
+
+resp_tuple cputKVS(std::string row, std::string column, std::string old,
+		std::string value) {
+	std::list < std::string > serverList = whereKVS(row);
+	if (serverList.size() <= 0) {
+		// TODO error
+	}
+	std::string targetServer = serverList.front();
+	int serverPortNo = getPortNoFromString(targetServer);
+	std::string servAddress = getAddrFromString(targetServer);
+	rpc::client kvsRPCClient(servAddress, serverPortNo);
+	resp_tuple resp;
+	try {
+		log("KVS CPUT: " + row + ", " + column + ", " + old + ", " + value);
+		resp =
+				kvsRPCClient.call("cput", row, column, old, value).as<resp_tuple>();
+		log(
+				"cputKVS Response Status: "
+						+ std::to_string(std::get < 0 > (resp)));
+		log("cputKVS Response Value: " + std::get < 1 > (resp));
+	} catch (rpc::rpc_error &e) {
+		/*
+		 std::cout << std::endl << e.what() << std::endl;
+		 std::cout << "in function " << e.get_function_name() << ": ";
+		 using err_t = std::tuple<std::string, std::string>;
+		 auto err = e.get_error().as<err_t>();
+		 */
+		log("UNHANDLED ERROR IN cputKVS TRY CATCH"); // TODO
 	}
 	return resp;
 }
@@ -767,6 +800,56 @@ std::string escape(std::string input) {
 	return output;
 }
 
+///////////////////////////////////////////////////////////////////////////
+
+// Attributed to arthurafarias on Github: https://gist.github.com/arthurafarias/56fec2cd49a32f374c02d1df2b6c350f
+
+std::string decodeURIComponent(std::string encoded) {
+
+	std::string decoded = encoded;
+	std::smatch sm;
+	std::string haystack;
+
+	int dynamicLength = decoded.size() - 2;
+
+	if (decoded.size() < 3)
+		return decoded;
+
+	for (int i = 0; i < dynamicLength; i++) {
+
+		haystack = decoded.substr(i, 3);
+
+		if (std::regex_match(haystack, sm, std::regex("%[0-9A-F]{2}"))) {
+			haystack = haystack.replace(0, 1, "0x");
+			std::string rc = { (char) std::stoi(haystack, nullptr, 16) };
+			decoded = decoded.replace(decoded.begin() + i,
+					decoded.begin() + i + 3, rc);
+		}
+
+		dynamicLength = decoded.size() - 2;
+
+	}
+
+	return decoded;
+}
+
+std::string encodeURIComponent(std::string decoded) {
+
+	std::ostringstream oss;
+	std::regex r("[!'\\(\\)*-.0-9A-Za-z_~]");
+
+	for (char &c : decoded) {
+		if (std::regex_match((std::string ) { c }, r)) {
+			oss << c;
+		} else {
+			oss << "%" << std::uppercase << std::hex << (0xff & c);
+		}
+	}
+	return oss.str();
+}
+
+///////////////////////////////////////////////////////////////////////////
+
 struct http_response processRequest(struct http_request &req) {
 	struct http_response resp;
 	for (std::map<std::string, std::string>::iterator it = req.cookies.begin();
@@ -962,6 +1045,7 @@ struct http_response processRequest(struct http_request &req) {
 				} else {
 					putKVS(req.formData["username"], "password",
 							req.formData["password"]);
+					putKVS(req.formData["username"], "mailbox", "");
 					resp.status_code = 307;
 					resp.status = "Temporary Redirect";
 					resp.headers["Location"] = "/dashboard";
@@ -1102,7 +1186,7 @@ struct http_response processRequest(struct http_request &req) {
 								"<div style=\"display:flex; flex-direction: row;\">"
 										"<form action=\"/email\" method=\"post\" style=\"margin: 0;\">"
 										"<input type=\"hidden\" name=\"header\" value=\""
-										+ escape(to) + "\" />"
+										+ encodeURIComponent(to) + "\" />"
 										+ "<label for =\"submit\" style=\"padding-right: 20px;\">"
 										+ escape(to)
 										+ "</label><input type=\"submit\" name=\"submit\" value=\"View\" />"
@@ -1172,14 +1256,19 @@ struct http_response processRequest(struct http_request &req) {
 				std::stringstream ss(getRespMsg);
 				std::string to;
 				std::string display = "";
+				std::string header = decodeURIComponent(req.formData["header"]);
+				header = decodeURIComponent(header);
 				if (getRespMsg != "") {
 					bool found = false;
-					printf("%s\n", req.formData["header"].c_str());
 					while (std::getline(ss, to, '\n')) {
-						if (!found
-								&& to.rfind(req.formData["header"], 0) == 0) {
-							display += "<p>" + escape(to) + "</p>";
+						if (!found && to.rfind(header, 0) == 0) {
+							display +=
+									"<ul style=\"border-bottom: 1px solid black; padding:15px; margin: 0;\">";
+							display += escape(to);
+							display += "</ul>";
 							found = true;
+						} else if (found) {
+
 						}
 					}
 				}
@@ -1278,20 +1367,381 @@ void* handleClient(void *arg) {
 	return NULL;
 }
 
-// TODO: Bharath adds his stuff
+bool do_write(int fd, char *buf, int len) {
+	int sent = 0;
+	while (sent < len) {
+		int n = write(fd, &buf[sent], len - sent);
+		if (n < 0)
+			return false;
+		sent += n;
+	}
+	return true;
+}
+
 void* handle_smtp_connections(void *arg) {
-	int *client_fd = (int*) arg;
-
-	std::string message = "Hi! no mails yet\n";
-	write(*client_fd, message.data(), message.size());
-
-// Close client connection and exit thread
-	pthread_mutex_lock(&fd_mutex);
-	fd.erase(client_fd);
-	pthread_mutex_unlock(&fd_mutex);
-	close(*client_fd);
-	free(client_fd);
-	return NULL;
+	sigset_t newmask;
+	sigemptyset(&newmask);
+	sigaddset(&newmask, SIGINT);
+	//pthread_sigmask(SIG_BLOCK, &newmask, NULL);
+	int comm_fd = *(int*) arg;
+	free(arg);
+	char buf[1000];
+	std::string sender;
+	std::string recipient;
+	std::vector < std::string > recipients;
+	std::string dataLine;
+	std::vector < std::string > data;
+	int len = 0;
+	int rcvd;
+	int start;
+	int index;
+	int checkIndex;
+	bool checked = false;
+	bool alreadySet;
+	int state = 0;
+	char helo[] = "250 localhost\r\n";
+	char stateError[] = "503 Bad sequence of commands\r\n";
+	char paramError[] = "501 Syntax error in parameters or arguments\r\n";
+	char commandError[] = "500 Syntax error, command unrecognized\r\n";
+	char quit[] = "221 localhost Service closing transmission channel\r\n";
+	char ok[] = "250 OK\r\n";
+	char localhost[] = "@localhost";
+	char notLocalError[] = "551 User not local\r\n";
+	char noUserError[] = "550 No such user here\r\n";
+	char intermediateReply[] =
+			"354 Start mail input; end with <CRLF>.<CRLF>\r\n";
+	char shutDown[] = "421 localhost Service not available\r\n";
+	while (true) {
+		alreadySet = false;
+		if (checked)
+			rcvd = read(comm_fd, &buf[len], 1000 - len);
+		else
+			rcvd = 0;
+		len += rcvd;
+		if (checked)
+			start = len - rcvd;
+		else
+			start = 0;
+		checked = true;
+		printf("%s\n", buf);
+		// Check for complete command in unchecked or newly read buffer.
+		for (int i = start; i < len - 1; i++) {
+			if (buf[i] == '\r' && buf[i + 1] == '\n') {
+				if (vflag)
+					fprintf(stderr, "[%d] C: %.*s", comm_fd, i + 2, &buf[0]);
+				// Handle HELO command.
+				if (tolower(buf[0]) == 'h' && i > 3 && tolower(buf[1]) == 'e'
+						&& tolower(buf[2]) == 'l' && tolower(buf[3]) == 'o'
+						&& (i == 4 || buf[4] == ' ')) {
+					if (state != 0 && state != 1) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else if (i > 5 && buf[5] != ' ') {
+						// Successful HELO command.
+						do_write(comm_fd, helo, sizeof(helo) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(helo) - 1, helo);
+						state = 1;
+					} else {
+						do_write(comm_fd, paramError, sizeof(paramError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(paramError) - 1, paramError);
+					}
+				} // Handle MAIL command.
+				else if (tolower(buf[0]) == 'm' && i > 3
+						&& tolower(buf[1]) == 'a' && tolower(buf[2]) == 'i'
+						&& tolower(buf[3]) == 'l'
+						&& (i == 4 || buf[4] == ' ')) {
+					if (state == 0) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else if (i > 14 && tolower(buf[5]) == 'f'
+							&& tolower(buf[6]) == 'r' && tolower(buf[7]) == 'o'
+							&& tolower(buf[8]) == 'm' && buf[9] == ':'
+							&& buf[10] == '<' && buf[i - 1] == '>') {
+						bool validAddress = false;
+						for (int j = 12; j < i - 2; j++) {
+							if (buf[j] == '@')
+								validAddress = true;
+						}
+						if (validAddress) {
+							// Successful MAIL command.
+							sender = "";
+							for (int j = 11; j < i - 1; j++) {
+								sender = sender + buf[j];
+							}
+							recipients.clear();
+							data.clear();
+							state = 2;
+							do_write(comm_fd, ok, sizeof(ok) - 1);
+							if (vflag)
+								fprintf(stderr, "[%d] S: %.*s", comm_fd,
+										(int) sizeof(ok) - 1, ok);
+						} else {
+							do_write(comm_fd, paramError,
+									sizeof(paramError) - 1);
+							if (vflag)
+								fprintf(stderr, "[%d] S: %.*s", comm_fd,
+										(int) sizeof(paramError) - 1,
+										paramError);
+						}
+					} else {
+						do_write(comm_fd, paramError, sizeof(paramError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(paramError) - 1, paramError);
+					}
+				} // Handle RCPT command.
+				else if (tolower(buf[0]) == 'r' && i > 3
+						&& tolower(buf[1]) == 'c' && tolower(buf[2]) == 'p'
+						&& tolower(buf[3]) == 't'
+						&& (i == 4 || buf[4] == ' ')) {
+					if (state != 2 && state != 3) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else if (i > 12 && tolower(buf[5]) == 't'
+							&& tolower(buf[6]) == 'o' && buf[7] == ':'
+							&& buf[8] == '<' && buf[i - 1] == '>') {
+						bool validAddress = false;
+						for (int j = 10; j < i - 2; j++) {
+							if (buf[j] == '@')
+								validAddress = true;
+						}
+						if (validAddress) {
+							checkIndex = 0;
+							bool validDomain = true;
+							for (int j = i - 11; j < i - 1; j++) {
+								if (tolower(buf[j]) != localhost[checkIndex])
+									validDomain = false;
+								checkIndex++;
+							}
+							if (validDomain) {
+								// Successful RCPT command.
+								recipient = "";
+								for (int j = 9; j < i - 11; j++) {
+									recipient = recipient + buf[j];
+								}
+								resp_tuple resp = getKVS(recipient, "mailbox");
+								int respStatus = kvsResponseStatusCode(resp);
+								if (respStatus == 0) {
+									recipients.push_back(recipient);
+									state = 3;
+									do_write(comm_fd, ok, sizeof(ok) - 1);
+									if (vflag)
+										fprintf(stderr, "[%d] S: %.*s", comm_fd,
+												(int) sizeof(ok) - 1, ok);
+								} else {
+									do_write(comm_fd, noUserError,
+											sizeof(noUserError) - 1);
+									if (vflag)
+										fprintf(stderr, "[%d] S: %.*s", comm_fd,
+												(int) sizeof(noUserError) - 1,
+												noUserError);
+								}
+							} else {
+								do_write(comm_fd, notLocalError,
+										sizeof(notLocalError) - 1);
+								if (vflag)
+									fprintf(stderr, "[%d] S: %.*s", comm_fd,
+											(int) sizeof(notLocalError) - 1,
+											notLocalError);
+							}
+						} else {
+							do_write(comm_fd, paramError,
+									sizeof(paramError) - 1);
+							if (vflag)
+								fprintf(stderr, "[%d] S: %.*s", comm_fd,
+										(int) sizeof(paramError) - 1,
+										paramError);
+						}
+					} else {
+						do_write(comm_fd, paramError, sizeof(paramError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(paramError) - 1, paramError);
+					}
+				} // Handle DATA command.
+				else if (tolower(buf[0]) == 'd' && i > 3
+						&& tolower(buf[1]) == 'a' && tolower(buf[2]) == 't'
+						&& tolower(buf[3]) == 'a' && i == 4) {
+					if (state != 3) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else {
+						// Successful DATA command.
+						do_write(comm_fd, intermediateReply,
+								sizeof(intermediateReply) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(intermediateReply) - 1,
+									intermediateReply);
+						index = 0;
+						for (int j = i + 2; j < len; j++) {
+							buf[index] = buf[j];
+							index++;
+						}
+						len = index;
+						if (len > 0)
+							checked = false;
+						bool dataComplete = false;
+						bool seenAlready = false;
+						bool isPeriodEnd = false;
+						// Read text of email.
+						while (!dataComplete) {
+							if (checked)
+								rcvd = read(comm_fd, &buf[len], 1000 - len);
+							else
+								rcvd = 0;
+							len += rcvd;
+							if (checked)
+								start = len - rcvd;
+							else
+								start = 0;
+							checked = true;
+							for (int j = start; j < len - 1; j++) {
+								if (buf[j] == '\r' && buf[j + 1] == '\n') {
+									dataLine = "";
+									for (int k = start; k < j + 2; k++) {
+										dataLine = dataLine + buf[k];
+									}
+									index = 0;
+									if (j < len - 3 && buf[j + 2] == '.'
+											&& buf[j + 3] == '\r'
+											&& buf[j + 4] == '\n') {
+										dataComplete = true;
+										for (int k = j + 5; k < len; k++) {
+											buf[index] = buf[k];
+											index++;
+										}
+										alreadySet = true;
+									} else if (j == start + 1
+											&& buf[start] == '.'
+											&& seenAlready) {
+										dataComplete = true;
+										isPeriodEnd = true;
+										for (int k = j + 2; k < len; k++) {
+											buf[index] = buf[k];
+											index++;
+										}
+										alreadySet = true;
+									} else {
+										for (int k = j + 2; k < len; k++) {
+											buf[index] = buf[k];
+											index++;
+										}
+									}
+									if (!isPeriodEnd)
+										data.push_back(dataLine);
+									len = index;
+									if (len > 0)
+										checked = false;
+									seenAlready = true;
+									break;
+								}
+							}
+						}
+						time_t rawtime;
+						struct tm *timeinfo;
+						time(&rawtime);
+						timeinfo = localtime(&rawtime);
+						std::string temp = "From <" + sender + "> "
+								+ asctime(timeinfo) + "\n";
+						temp[temp.length() - 2] = '\r';
+						// Write email to all recipient mailboxes.
+						for (std::size_t a = 0; a < recipients.size(); a++) {
+							for (std::size_t b = 0; b < data.size(); b++) {
+								temp += data[b];
+							}
+							resp_tuple resp = getKVS(recipients[a], "mailbox");
+							int respStatus = kvsResponseStatusCode(resp);
+							std::string current = kvsResponseMsg(resp);
+							temp += current;
+							putKVS(recipients[a], "mailbox", temp);
+						}
+						state = 1;
+						do_write(comm_fd, ok, sizeof(ok) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(ok) - 1, ok);
+					}
+				} // Handle RSET command.
+				else if (tolower(buf[0]) == 'r' && i > 3
+						&& tolower(buf[1]) == 's' && tolower(buf[2]) == 'e'
+						&& tolower(buf[3]) == 't' && i == 4) {
+					if (state == 0) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else {
+						// Successful RSET command.
+						sender = "";
+						recipients.clear();
+						data.clear();
+						state = 1;
+						do_write(comm_fd, ok, sizeof(ok) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(ok) - 1, ok);
+					}
+				} // Handle NOOP command.
+				else if (tolower(buf[0]) == 'n' && i > 3
+						&& tolower(buf[1]) == 'o' && tolower(buf[2]) == 'o'
+						&& tolower(buf[3]) == 'p' && i == 4) {
+					do_write(comm_fd, ok, sizeof(ok) - 1);
+					if (vflag)
+						fprintf(stderr, "[%d] S: %.*s", comm_fd,
+								(int) sizeof(ok) - 1, ok);
+				} // Handle QUIT command.
+				else if (tolower(buf[0]) == 'q' && i > 3
+						&& tolower(buf[1]) == 'u' && tolower(buf[2]) == 'i'
+						&& tolower(buf[3]) == 't' && i == 4) {
+					do_write(comm_fd, quit, sizeof(quit) - 1);
+					if (vflag)
+						fprintf(stderr, "[%d] S: %.*s", comm_fd,
+								(int) sizeof(quit) - 1, quit);
+					close(comm_fd);
+					if (vflag)
+						fprintf(stderr, "[%d] Connection closed\n", comm_fd);
+					pthread_detach (pthread_self());pthread_exit
+					(NULL);
+				} // Handle unknown command.
+				else {
+					do_write(comm_fd, commandError, sizeof(commandError) - 1);
+					if (vflag)
+						fprintf(stderr, "[%d] S: %.*s", comm_fd,
+								(int) sizeof(commandError) - 1, commandError);
+				}
+				if (!alreadySet) {
+					index = 0;
+					for (int j = i + 2; j < len; j++) {
+						buf[index] = buf[j];
+						index++;
+					}
+					len = index;
+					if (len > 0)
+						checked = false;
+				}
+				break;
+			}
+		}
+	}
+	do_write(comm_fd, shutDown, sizeof(shutDown) - 1);
+	close(comm_fd);
+	if (vflag)
+		fprintf(stderr, "[%d] Connection closed\n", comm_fd);
+	pthread_detach (pthread_self());pthread_exit
+	(NULL);
 }
 
 int create_thread(int socket_fd, bool http) {
@@ -1347,6 +1797,7 @@ int main(int argc, char *argv[]) {
 		if (strstr(argv[i], "-v") != NULL
 				&& strcmp(strstr(argv[i], "-v"), "-v") == 0) {
 			verbose = true;
+			vflag = 1;
 		} else if (strstr(argv[i], "-l") != NULL
 				&& strcmp(strstr(argv[i], "-l"), "-l") == 0) {
 			load_balancer = true;
