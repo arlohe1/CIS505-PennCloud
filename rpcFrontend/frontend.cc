@@ -1191,8 +1191,19 @@ struct http_response processRequest(struct http_request &req) {
 										+ escape(to)
 										+ "</label><input type=\"submit\" name=\"submit\" value=\"View\" />"
 												"</form>"
-												"<form style=\"padding-left:15px; padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\"> <input type = \"submit\" value=\"Reply\" /></form>"
-												"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0;\"> <input type = \"submit\" value=\"Forward\" /></form></div>";
+												"<form style=\"padding-left:15px; padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
+												"<input type=\"hidden\" name=\"header\" value=\""
+										+ encodeURIComponent(to)
+										+ "\" />"
+												"<input type = \"submit\" value=\"Reply\" /></form>"
+												"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
+												"<input type=\"hidden\" name=\"header\" value=\""
+										+ encodeURIComponent(to)
+										+ "\" />" "<input type = \"submit\" value=\"Forward\" /></form>"
+												"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
+												"<input type=\"hidden\" name=\"header\" value=\""
+										+ encodeURIComponent(to)
+										+ "\" />" "<input type = \"submit\" value=\"Delete\" /></form></div>";
 						display += "</ul>";
 					}
 				}
@@ -1258,8 +1269,17 @@ struct http_response processRequest(struct http_request &req) {
 				std::string display = "";
 				std::string header = decodeURIComponent(req.formData["header"]);
 				header = decodeURIComponent(header);
+				size_t index = 0;
+				while (true) {
+					index = header.find("%D", index);
+					if (index == std::string::npos)
+						break;
+					header.replace(index, 2, "\r");
+					index += 2;
+				}
 				if (getRespMsg != "") {
 					bool found = false;
+					std::string message = "";
 					while (std::getline(ss, to, '\n')) {
 						if (!found && to.rfind(header, 0) == 0) {
 							display +=
@@ -1267,9 +1287,19 @@ struct http_response processRequest(struct http_request &req) {
 							display += escape(to);
 							display += "</ul>";
 							found = true;
+							display +=
+									"<span style=\"white-space: pre-wrap; padding:15px;\">";
 						} else if (found) {
-
+							if (to.rfind("From <", 0) == 0) {
+								break;
+							} else {
+								message += to + "\n";
+							}
 						}
+					}
+					if (found) {
+						display += escape(message);
+						display += "</span>";
 					}
 				}
 				resp.content =
@@ -1283,6 +1313,61 @@ struct http_response processRequest(struct http_request &req) {
 								+ display + "</body></html>";
 				resp.headers["Content-length"] = std::to_string(
 						resp.content.size());
+			} else {
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/mailbox";
+			}
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare("/delete") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			if (req.formData.find("header") != req.formData.end()) {
+				std::string header = decodeURIComponent(req.formData["header"]);
+				header = decodeURIComponent(header);
+				size_t index = 0;
+				while (true) {
+					index = header.find("%D", index);
+					if (index == std::string::npos)
+						break;
+					header.replace(index, 2, "\r");
+					index += 2;
+				}
+				int respStatus2 = 1;
+				while (respStatus2 != 0) {
+					resp_tuple getResp = getKVS(req.cookies["username"],
+							"mailbox");
+					std::string getRespMsg = kvsResponseMsg(getResp);
+					std::stringstream ss(getRespMsg);
+					std::string to;
+					std::string final = "";
+					if (getRespMsg != "") {
+						bool found = false;
+						bool done = true;
+						while (std::getline(ss, to, '\n')) {
+							if (!found && to.rfind(header, 0) == 0) {
+								found = true;
+								done = false;
+							} else if (found && !done) {
+								if (to.rfind("From <", 0) == 0) {
+									done = true;
+									final += to + "\n";
+								}
+							} else {
+								final += to + "\n";
+							}
+						}
+					}
+					resp_tuple resp2 = cputKVS(req.cookies["username"],
+							"mailbox", getRespMsg, final);
+					respStatus2 = kvsResponseStatusCode(resp2);
+				}
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/mailbox";
 			} else {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
@@ -1671,8 +1756,21 @@ void* handle_smtp_connections(void *arg) {
 							resp_tuple resp = getKVS(recipients[a], "mailbox");
 							int respStatus = kvsResponseStatusCode(resp);
 							std::string current = kvsResponseMsg(resp);
-							temp += current;
-							putKVS(recipients[a], "mailbox", temp);
+							std::string final = temp;
+							final += current;
+							resp_tuple resp2 = cputKVS(recipients[a], "mailbox",
+									current, final);
+							int respStatus2 = kvsResponseStatusCode(resp2);
+							while (respStatus2 != 0) {
+								resp = getKVS(recipients[a], "mailbox");
+								respStatus = kvsResponseStatusCode(resp);
+								current = kvsResponseMsg(resp);
+								final = temp;
+								final += current;
+								resp2 = cputKVS(recipients[a], "mailbox",
+										current, final);
+								respStatus2 = kvsResponseStatusCode(resp2);
+							}
 						}
 						state = 1;
 						do_write(comm_fd, ok, sizeof(ok) - 1);
