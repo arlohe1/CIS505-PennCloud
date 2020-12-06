@@ -1382,8 +1382,14 @@ void* handle_smtp_connections(void *arg) {
 	sigset_t newmask;
 	sigemptyset(&newmask);
 	sigaddset(&newmask, SIGINT);
-	//pthread_sigmask(SIG_BLOCK, &newmask, NULL);
+	pthread_sigmask(SIG_BLOCK, &newmask, NULL);
 	int comm_fd = *(int*) arg;
+	struct timeval timeout;
+	timeout.tv_sec = 100;
+	timeout.tv_usec = 0;
+	if (setsockopt(comm_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
+			sizeof(timeout)) < 0)
+		log("setsockopt failed\n");
 	free(arg);
 	char buf[1000];
 	std::string sender;
@@ -1413,9 +1419,9 @@ void* handle_smtp_connections(void *arg) {
 	char shutDown[] = "421 localhost Service not available\r\n";
 	while (true) {
 		alreadySet = false;
-		if (checked)
+		if (checked) {
 			rcvd = read(comm_fd, &buf[len], 1000 - len);
-		else
+		} else
 			rcvd = 0;
 		len += rcvd;
 		if (checked)
