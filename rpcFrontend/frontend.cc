@@ -37,6 +37,7 @@ int vflag = 0;
 volatile bool shut_down = false;
 volatile bool load_balancer = false;
 volatile int l_balancer_index = 0;
+volatile int session_id_counter = rand();
 std::vector<std::string> frontend_server_list;
 
 using resp_tuple = std::tuple<int, std::string>;
@@ -567,6 +568,10 @@ void createRootDirForNewUser(struct http_request req) {
 /***************************** End storage service functions ************************/
 
 /*********************** Http Util function **********************************/
+std::string generateSessionID(){
+	return generateStringHash(my_address + std::to_string(++session_id_counter));
+}
+
 std::string getBoundary(std::string &type) {
 	std::deque < std::string > splt = split(type, ";");
 	for (std::string potent : splt) {
@@ -986,6 +991,7 @@ struct http_response processRequest(struct http_request &req) {
 					resp.status = "Temporary Redirect";
 					resp.headers["Location"] = "/dashboard";
 					resp.cookies["username"] = req.formData["username"];
+					resp.cookies["sessionid"] = generateSessionID();
 				}
 			}
 		} else {
@@ -1042,6 +1048,7 @@ struct http_response processRequest(struct http_request &req) {
 					resp.status = "Temporary Redirect";
 					resp.headers["Location"] = "/dashboard";
 					resp.cookies["username"] = req.formData["username"];
+					resp.cookies["sessionid"] = generateSessionID();
 					createRootDirForNewUser(req);
 				}
 			}
@@ -1159,6 +1166,9 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare("/logout") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.cookies.erase("username");
+		}
+		if (req.cookies.find("sessionid") != req.cookies.end()) {
+			resp.cookies.erase("sessionid");
 		}
 		resp.status_code = 307;
 		resp.status = "Temporary Redirect";
@@ -1584,6 +1594,9 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 	}
 	if (resp.cookies.find("username") == resp.cookies.end()) {
 		response += "Set-cookie: username=deleted; Max-Age=-1\r\n";
+	}
+	if (resp.cookies.find("sessionid") == resp.cookies.end()) {
+		response += "Set-cookie: sessionid=deleted; Max-Age=-1\r\n";
 	}
 	if (resp.content.compare("") != 0) {
 		response += "\r\n" + resp.content;
