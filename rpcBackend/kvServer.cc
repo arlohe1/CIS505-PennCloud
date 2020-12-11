@@ -37,7 +37,7 @@
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
-#define COM_PER_CHECKPOINT 20
+#define COM_PER_CHECKPOINT 2
 enum Command {GET, PUT, CPUT, DELETE};
 
 
@@ -108,6 +108,22 @@ void printKvMap() {
 	if (debugFlag == 1) {
 		std::cout << "kvmap print (size: " << cacheSize << ") : \n";
 		for (const auto& x : kvMap) {
+			//x.first is row, x.second is column -> value
+			std::cout << "\t" << "row: " << x.first << "\n";
+			for (const auto& y : x.second) {
+				//y.first is column, y.second is value
+				std::cout << "\t\t" << "column: " << y.first << ", value: " << y.second << "\n";
+			}		
+	    }
+	    std::cout << std::flush;
+	}
+	
+}
+
+void printKvLoc() {
+	if (debugFlag == 1) {
+		std::cout << "kvLoc print (size: " << cacheSize << ") : \n";
+		for (const auto& x : kvLoc) {
 			//x.first is row, x.second is column -> value
 			std::cout << "\t" << "row: " << x.first << "\n";
 			for (const auto& y : x.second) {
@@ -232,6 +248,8 @@ int chdirToRow(const char* dirName) {
 void runCheckpoint() {
 	int valLen;
 	debugDetailed("%s,\n", "--------RUNNING CHECKPOINT--------");
+	printKvMap();
+	printKvLoc();
 	// cd into checkpoint directory
 	chdirToCheckpoint();
 	// loop over rows in create folder for each
@@ -240,23 +258,37 @@ void runCheckpoint() {
 		std::string row = x.first;
 		chdirToRow(row.c_str());
 		//loop over columns, create new or truncate file for each and write value to file
-		for (const auto& y: x.second) {	
-			std::string col = y.first;
+		for (auto it = x.second.cbegin(); it != x.second.cend();) {
+		//for (const auto& y: x.second) {	
+			//std::string col = y.first;
+			std::string col = (*it).first;
+			if (col.c_str() == NULL) {
+				printf("found nullllllllllllllllllllllll\n");
+			}
 			//std::string val = y.second;
-			int loc = y.second;
+			//int loc = y.second;
+			int loc = (*it).second;
+			debugDetailed("loop for: %s, -> %d\n", col.c_str(), loc);
 			// case on kvLoc val -1 (deleted), 0 (on disk), or 1 (in local kvMap)
 			if (loc == -1) {
-				if(remove( kvMap[row][col].c_str() ) != 0 ) {
-    				perror( "Error deleting file" );
+				if(remove( col.c_str() ) != 0 ) {
+     				perror( "Error deleting file" );
 				} else {
-					debugDetailed("checkpoint deletes file: %s\n", col.c_str());
-					valLen = kvMap[row][col].length();
-					kvMap[row].erase(col);
-					kvLoc[row].erase(col);
-					cacheSize = cacheSize - valLen;
-					printKvMap();
+				 	debugDetailed("checkpoint deletes file: %s\n", col.c_str());
+				 	// NOTE - del has already been called and removed the val form kvMap and adjusted cache size
+				// 	//valLen = kvMap[row][col].length();
+				// 	kvMap[row].erase(col);
+				// 	printf("reached 0\n");
+				 	//kvLoc[row].erase(col);
+				 	it = kvLoc[row].erase(it);
+
+				// 	//cacheSize = cacheSize - valLen;
+				 	printKvMap();
+					printKvLoc();
+				// 	printf("reached 1\n");
 					
 				}
+				printf("TODO --- delete file\n");
 			} else if (loc == 1) {
 				debugDetailed("checkpoint writes file: %s\n", col.c_str());
 				colFilePtr = fopen((col).c_str(), "w");
@@ -269,16 +301,24 @@ void runCheckpoint() {
 				kvLoc[row][col] = 0;
 				cacheSize = cacheSize - valLen;		
 				printKvMap();
-			}		
+				++it;
+			} else {
+				++it;
+			}
+			printf("reached 2\n");		
 		}
+		printf("reached 3\n");
 		
 		chdir("..");
+		printf("reached 4\n");
 	}
 	// cd back out to server directory
 	chdir("..");
+	printf("reached 5\n");
 
 	// clear logfile if not currently replaying log
 	if (replay == 0) {
+		printf("reached 6\n");
 		FILE* logFilePtr;
 		logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
@@ -287,6 +327,7 @@ void runCheckpoint() {
 	numCommandsSinceLastCheckpoint = 0;
 	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
 	printKvMap();
+	printKvLoc();
 	debugDetailed("%s,\n", "--------checkpoint finished and return--------");
 	return;
 	
@@ -330,7 +371,7 @@ int getValSize(FILE* colFilePtr) {
 // returns 0 if there was space, and -1 if not
 int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, char* col) {
 	// check if space
-	if (cacheSize + valLen < cacheThresh) {
+	if (cacheSize + valLen <= cacheThresh) {
 		// read in val 
 		char* val = (char*) calloc(valLen, sizeof(char));
 		if (val != NULL) {
@@ -591,6 +632,7 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 	// return std::make_tuple(1, "No such row, column pair");
 
 	// check that row, col exists in tablet, and not deleted
+	debugDetailed("---GET entered - row: %s, column: %s\n", row.c_str(), col.c_str());
 	if (kvLoc.count(row) > 0) {
 		if (kvLoc[row].count(col) > 0) {
 			if (kvLoc[row][col] != -1) {
@@ -681,16 +723,35 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 }
 
 std::tuple<int, std::string> del(std::string row, std::string col) {
-    if (kvMap.count(row) > 0) {
-		if (kvMap[row].count(col) > 0) {
-			kvMap[row].erase(col);
-			debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());
-			printKvMap();
-			logCommand(DELETE, 2, row, col, row, row);
-			return std::make_tuple(0, "OK");
+ //    if (kvMap.count(row) > 0) {
+	// 	if (kvMap[row].count(col) > 0) {
+	// 		kvMap[row].erase(col);
+	// 		debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());
+	// 		printKvMap();
+	// 		logCommand(DELETE, 2, row, col, row, row);
+	// 		return std::make_tuple(0, "OK");
+	// 	}
+	// } 
+	debugDetailed("%s\n", "del entered");
+	printKvMap();
+	printKvLoc();
+	if (kvLoc.count(row) > 0) {
+		if (kvLoc[row].count(col) > 0) {
+			if (kvLoc[row][col] != -1) {
+				if (kvLoc[row][col] == 1) {
+					cacheSize = cacheSize - kvMap[row][col].length();
+					
+				}
+				kvMap[row].erase(col);
+				kvLoc[row][col] = -1;	
+				debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());	
+				printKvMap();	
+				logCommand(DELETE, 2, row, col, row, row);
+				return std::make_tuple(0, "OK");
+			}
+			
 		}
-	} 
-
+	}
 	debugDetailed("---DELETE val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
 	logCommand(DELETE, 2, row, col, row, row);
@@ -829,6 +890,7 @@ int main(int argc, char *argv[]) {
  	replayLog();
  	debug("%s\n", "kvMap after log replay: ");
  	printKvMap();
+ 	printKvLoc();
  	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
 
 	rpc::server srv(port);

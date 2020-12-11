@@ -164,6 +164,50 @@ int main() {
         isCorrect("updated 2x Hi! What's Up???", std::get<1>(resp));
 
 
+        // delete tests
+        std::cout << "del(amitl, email) = ";
+        resp = c.call("del", "amitl", "email").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("OK", std::get<1>(resp));
+
+        // delete something not in local kvMap
+        std::cout << "del(amitl, file) = ";
+        resp = c.call("del", "amitl", "file").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("OK", std::get<1>(resp));
+
+        std::cout << "del(amitl, name) = ";
+        resp = c.call("del", "amitl", "name").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("OK", std::get<1>(resp));
+
+        // try to delete again
+        std::cout << "del(amitl, name) = ";
+        resp = c.call("del", "amitl", "name").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("No such row, column pair", std::get<1>(resp));
+
+        // try to delete random thingy
+        std::cout << "del(amitl, nonexistentCol) = ";
+        resp = c.call("del", "amitl", "nonexistentCol").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("No such row, column pair", std::get<1>(resp));
+
+        std::cout << "get(amit, email) = ";
+        resp = c.call("get", "amitl", "email").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("No such row, column pair", std::get<1>(resp));
+
+        std::cout << "get(amit, name) = ";
+        resp = c.call("get", "amitl", "name").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("No such row, column pair", std::get<1>(resp));
+
+        std::cout << "get(amit, file) = ";
+        resp = c.call("get", "amitl", "file").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("No such row, column pair", std::get<1>(resp));
+
 
 
 
