@@ -652,8 +652,8 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 				debugDetailed("------CPUT correct val: %s\n", val.c_str());	
 				if (expVal.compare(kvMap[row][col]) == 0) {
 					put(row, col, newVal);
-					debugDetailed("------CPUT calling put - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					debugDetailed("------CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+					debugDetailed("------CPUT called put and updated val - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+					//debugDetailed("------CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 					printKvMap();
 					//logCommand(CPUT, 4, row, col, expVal, newVal);
 					return std::make_tuple(0, "OK");
