@@ -989,7 +989,11 @@ struct http_response processRequest(struct http_request &req) {
 				} else {
 					resp.status_code = 307;
 					resp.status = "Temporary Redirect";
-					resp.headers["Location"] = "/dashboard";
+					if(req.formData["username"].compare("admin") != 0){
+						resp.headers["Location"] = "/dashboard";
+					} else {
+						resp.headers["Location"] = "/admin";
+					}
 					resp.cookies["username"] = req.formData["username"];
 					resp.cookies["sessionid"] = generateSessionID();
 				}
@@ -1555,6 +1559,17 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
+		}
+	} else if(req.filepath.compare("/admin") == 0){
+		if(req.cookies.find("username") != req.cookies.end()){
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+
+			std::string message = "<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+					"<input type = \"submit\" value=\"Logout\" /></form></body></html>";
+			resp.headers["Content-length"] = message.size();
+			resp.content = message;
 		}
 	} else {
 		if (req.cookies.find("username") != req.cookies.end()) {
@@ -2234,6 +2249,9 @@ int main(int argc, char *argv[]) {
 			|| setsockopt(smtp_socket_fd, SOL_SOCKET, SO_RCVTIMEO,
 					(char*) &timeout, sizeof(timeout)) < 0)
 		log("setsockopt failed\n");
+
+	//set up admin account (preferably in only one place: load balancer) TODO
+	//putKVS("admin", "password", "505");
 
 	while (!shut_down) {
 		/* Initialize read set for select and call select */
