@@ -929,7 +929,7 @@ struct http_response processRequest(struct http_request &req) {
 									"<label for =\"username\">Username:</label><br/><input required name=\"username\" type=\"text\"/><br/>"
 									"<label for=\"password\">Password:</label><br/><input required name=\"password\" "
 									"type=\"password\"/><br/>"
-									"<label for=\"confirm_password\">Confirm Password:</label><br/><input required"
+									"<label for=\"confirm_password\">Confirm Password:</label><br/><input required "
 									"name=\"confirm_password\" "
 									"type=\"password\"/><br/>"
 									"<br/><input type=\"submit\" name=\"submit\" value=\"Sign Up\"><br/>"
