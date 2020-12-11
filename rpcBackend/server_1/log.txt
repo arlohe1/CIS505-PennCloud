@@ -1,2 +1,6 @@
-GET,5,4,0,0
+DELETE,5,5,0,0
+amitlemail
+DELETE,5,4,0,0
 amitlfile
+DELETE,5,4,0,0
+amitlname

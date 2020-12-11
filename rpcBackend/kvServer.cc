@@ -37,7 +37,7 @@
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
-#define COM_PER_CHECKPOINT 2
+#define COM_PER_CHECKPOINT 10
 enum Command {GET, PUT, CPUT, DELETE};
 
 
@@ -560,12 +560,7 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 
 
 std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
-    //kvMap[row][col] = val;
     debugDetailed("---PUT entered - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
-    //printKvMap();
-    //logCommand(PUT, 3, row, col, val, row);
-    //return std::make_tuple(0, "OK");
-
     int oldLen = kvMap[row][col].length();
     int ranCheckPoint = 0;
 
@@ -591,6 +586,7 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
     } else {
     	// evict everything then rerun the function (but dont log the second time)
     	debugDetailed("------PUT evicting FAILED row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+    	fprintf(stderr, "memCache overfilled\n");
     	exit(0);
     }
 }
@@ -616,21 +612,6 @@ std::string getValDiskorLocal(std::string row, std::string col) {
 
 
 std::tuple<int, std::string> get(std::string row, std::string col) {
- //    if (kvMap.count(row) > 0) {
-	// 	if (kvMap[row].count(col) > 0) {
-	// 		std::string val = kvMap[row][col];
-	// 		debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
-	// 		printKvMap();
-	// 		logCommand(GET, 2, row, col, row, row);
-	// 		return std::make_tuple(0, val);
-	// 	}
-	// } 
-
-	// debugDetailed("---GET val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
-	// printKvMap();
-	// logCommand(GET, 2, row, col, row, row);
-	// return std::make_tuple(1, "No such row, column pair");
-
 	// check that row, col exists in tablet, and not deleted
 	debugDetailed("---GET entered - row: %s, column: %s\n", row.c_str(), col.c_str());
 	if (kvLoc.count(row) > 0) {
@@ -639,7 +620,7 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 				std::string val = getValDiskorLocal(row, col);			
 				debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
 				printKvMap();
-				logCommand(GET, 2, row, col, row, row);
+				//logCommand(GET, 2, row, col, row, row);
 				return std::make_tuple(0, val);
 			}
 			
@@ -648,7 +629,7 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 
 	debugDetailed("---GET val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
-	logCommand(GET, 2, row, col, row, row);
+	//logCommand(GET, 2, row, col, row, row);
 	return std::make_tuple(1, "No such row, column pair");	
 }
 
@@ -667,29 +648,6 @@ std::tuple<int, std::string> exists(std::string row, std::string col) {
 }
 
 std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
- //    if (kvMap.count(row) > 0) {
-	// 	if (kvMap[row].count(col) > 0) {
-	// 		if (expVal.compare(kvMap[row][col]) == 0) {
-	// 			kvMap[row][col] = newVal;
-	// 			debugDetailed("---CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-	// 			printKvMap();
-	// 			logCommand(CPUT, 4, row, col, expVal, newVal);
-	// 			return std::make_tuple(0, "OK");
-	// 		} else {
-	// 			debugDetailed("---CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-	// 			printKvMap();
-	// 			logCommand(CPUT, 4, row, col, expVal, newVal);
-	// 			return std::make_tuple(2, "Incorrect expVal");
-	// 		}
-			
-	// 	}
-	// } 
-
-	// debugDetailed("---CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-	// printKvMap();
-	// logCommand(CPUT, 4, row, col, expVal, newVal);
-	// return std::make_tuple(1, "No such row, column pair");
-
 	debugDetailed("---CPUT entered - row: %s, column: %s, expVal: %s, newVal: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 
 	if (kvLoc.count(row) > 0) {
@@ -698,7 +656,6 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 				std::string val = getValDiskorLocal(row, col);	
 				debugDetailed("------CPUT correct val: %s\n", val.c_str());	
 				if (expVal.compare(kvMap[row][col]) == 0) {
-					//kvMap[row][col] = newVal;
 					put(row, col, newVal);
 					debugDetailed("------CPUT calling put - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 					debugDetailed("------CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
@@ -723,15 +680,6 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 }
 
 std::tuple<int, std::string> del(std::string row, std::string col) {
- //    if (kvMap.count(row) > 0) {
-	// 	if (kvMap[row].count(col) > 0) {
-	// 		kvMap[row].erase(col);
-	// 		debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());
-	// 		printKvMap();
-	// 		logCommand(DELETE, 2, row, col, row, row);
-	// 		return std::make_tuple(0, "OK");
-	// 	}
-	// } 
 	debugDetailed("%s\n", "del entered");
 	printKvMap();
 	printKvLoc();
@@ -754,7 +702,7 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 	}
 	debugDetailed("---DELETE val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
-	logCommand(DELETE, 2, row, col, row, row);
+	//logCommand(DELETE, 2, row, col, row, row);
 	return std::make_tuple(1, "No such row, column pair");
 }
 
