@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <rpc/server.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #include <errno.h>
 #include <sys/socket.h>
@@ -40,8 +42,8 @@ int numCommandsSinceLastCheckpoint = 0;
 
 
 int serverIdx = 1;
-int maxCache = 30;
-int startCacheThresh = maxCache/2;
+int maxCache;
+int startCacheThresh;
 int cacheSize = 0;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
 std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-1 for val deleted, 0 for val on disk, 1 for val in kvMap)
@@ -804,6 +806,14 @@ int main(int argc, char *argv[]) {
 				break;
 		}
 	}
+
+	struct rlimit *rlim = (struct rlimit*) calloc(1, sizeof(struct rlimit));
+	getrlimit(RLIMIT_MEMLOCK, rlim);
+	maxCache = rlim->rlim_cur/3;
+	fprintf(stderr, "total mem limit: %ld\n", rlim->rlim_cur);
+	fprintf(stderr, "cache mem limit: %d\n", maxCache);
+	startCacheThresh = maxCache / 2;
+	free(rlim);
 
     char *serverListFile = NULL;
     if(optind + 1 < argc) {
