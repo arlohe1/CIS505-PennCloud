@@ -2,33 +2,24 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <errno.h>
 #include <string.h>
 #include <rpc/server.h>
 
-
-
 #include <errno.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <errno.h>
 #include <signal.h>
 
-#include <pthread.h>
 #include <fcntl.h>
-#include<signal.h> 
 #include <dirent.h>
 #include <time.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 
 #include <map>
-#include<iostream>
-#include<regex>
-#include<algorithm>
+#include <iostream>
+#include <regex>
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <tuple>
@@ -47,7 +38,8 @@ int detailed = 0;
 int replay = 0;
 int numCommandsSinceLastCheckpoint = 0;
 
-int serverIndx = 1;
+
+int serverIdx = 1;
 int maxCache = 30;
 int startCacheThresh = maxCache/2;
 int cacheSize = 0;
@@ -55,6 +47,7 @@ std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -
 std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-1 for val deleted, 0 for val on disk, 1 for val in kvMap)
 FILE* logfile = NULL;
 FILE* logfileRead = NULL;
+std::string currServerAddr;
 
 void debugTime() {
 	if (debugFlag) {
@@ -79,7 +72,7 @@ void debugTime() {
 		          << minutes.count() << ":"
 		          << seconds.count() << "."
 		          << microseconds.count() << " S"
-		          << serverIndx << " " << std::flush;
+		          << serverIdx << " " << std::flush;
 	}
 	
 }
@@ -473,7 +466,7 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 	if (replay == 0) {
 		debugDetailed("%s\n", "logging command, replay flag off");
 		if ((logfile = fopen("log.txt", "a")) == NULL) {
-			debugDetailed("could not open log.txt for server %d\n", serverIndx);
+			debugDetailed("could not open log.txt for server %d\n", serverIdx);
 			perror("invalid fopen of log file: ");
 			return -1;
 		}
@@ -740,7 +733,7 @@ void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, in
 int replayLog() {
 	replay = 1;
 	if ((logfile = fopen("log.txt", "r")) == NULL) {
-		debugDetailed("could not open log.txt for server %d\n", serverIndx);
+		debugDetailed("could not open log.txt for server %d\n", serverIdx);
 		perror("invalid fopen of log file: ");
 		return -1;
 	}
@@ -793,17 +786,13 @@ int replayLog() {
 
 int main(int argc, char *argv[]) {	
 	int opt;
-	int port = 10000;
 	debugFlag = 0;
 
-	// parse arguments -p <portno>, -a for full name printed, -v for debug output
-	while ((opt = getopt(argc, argv, "p:av")) != -1) {
+	// parse arguments -a for full name printed, -v for debug output
+	while ((opt = getopt(argc, argv, "av")) != -1) {
 		switch(opt) {
-			case 'p':
-				port = atoi(optarg);
-				break;
 			case 'a':
-				if (write(STDERR_FILENO, "Liana Patel (lianap)", strlen("Liana Patel (lianap)\n")) < 0) {
+				if (fprintf(stderr, "Liana Patel (lianap)") < 0) {
 		 			perror("invalid: ");
 		 			return -1;
 		 		}
@@ -816,15 +805,63 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+    char *serverListFile = NULL;
+    if(optind + 1 < argc) {
+        serverListFile = argv[optind];
+        try {
+            serverIdx = stoi(std::string(argv[optind+1]));
+            if(serverIdx <= 0) {
+                fprintf(stderr, "Invalid index provided! Exiting\n");
+                exit(-1);
+            }
+        } catch (const std::invalid_argument &ia) {
+            fprintf(stderr, "Invalid index provided! Exiting\n");
+            exit(-1);
+        }
+    } else {
+        fprintf(stderr, "Please provide a server config file and server index\n");
+        exit(-1);
+    }
+
+    FILE * f = fopen(serverListFile, "r");
+    if(f == NULL) {
+        fprintf(stderr, "Provide a valid list of backend servers\n");
+        exit(-1);
+    }
+    int serverNum = 0;
+    char buffer[300];
+    int port = 0;
+    while(fgets(buffer, 300, f)){
+        std::string server = std::string(buffer);
+        if(serverNum == serverIdx) {
+            if(server.at(server.length()-1) == '\n') {
+                server = server.substr(0, server.length()-1);
+            }
+            currServerAddr = server;
+            try {
+                port = stoi(currServerAddr.substr(currServerAddr.find(":")+1));
+                if(port <= 0) {
+                    fprintf(stderr, "Invalid port provided! Exiting\n");
+                    exit(-1);
+                }
+            } catch (const std::invalid_argument &ia) {
+                fprintf(stderr, "Server port not found! Exiting\n");
+                exit(-1);
+            }
+        }
+        serverNum += 1;
+    }
+    fclose(f);
+
 	// change dir to server's designated folder with checkpoint and logfile
 	char serverDir[MAX_LEN_SERVER_DIR];
-	sprintf(serverDir, "server_%d", serverIndx);
+	sprintf(serverDir, "server_%d", serverIdx);
 	int chdirRet = chdir(serverDir);
  	if (chdirRet == 0) {
  		debug("serverDir is: %s\n", serverDir);	
  	} else {
  		debug("no serverDir: %s\n", serverDir);	
- 		if (write(STDERR_FILENO, "please create server directory", strlen("please create server directory")) < 0) {
+ 		if (fprintf(stderr, "Please create server directory\n") < 0) {
  			perror("invalid write: ");
  		}
  		exit(-1);
@@ -841,6 +878,7 @@ int main(int argc, char *argv[]) {
  	printKvLoc();
  	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
 
+    debug("Connecting to port: %d\n", port);
 	rpc::server srv(port);
 	srv.bind("put", &put);
 	srv.bind("get", &get);
@@ -850,9 +888,6 @@ int main(int argc, char *argv[]) {
 	srv.run();
 
     return 0;
-
-
-
 }
 
 // run as ./kvServer -v -p 10000

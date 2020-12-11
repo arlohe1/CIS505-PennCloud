@@ -18,20 +18,27 @@
 #include <vector>
 #include <rpc/client.h>
 #include <rpc/rpc_error.h>
+#include <regex>
 
 std::string greeting =
 		"+OK Server ready (Author: Prasanna Poudyal / poudyal)\r\n";
 std::string goodbye = "+OK Goodbye!\r\n";
 std::string error_msg = "-ERR Server shutting down\r\n";
 std::string unknown_cmd = "-ERR Unknown command\r\n";
-std::string kvs_addr = "";
+std::string kvMaster_addr = "";
 std::string mail_addr = "";
 std::string storage_addr = "";
+std::string my_address;
 std::vector<pthread_t> pthread_ids;
 pthread_mutex_t fd_mutex;
 std::set<int*> fd;
 volatile bool verbose = false;
+int vflag = 0;
 volatile bool shut_down = false;
+volatile bool load_balancer = false;
+volatile int l_balancer_index = 0;
+volatile int session_id_counter = rand();
+std::vector<std::string> frontend_server_list;
 
 using resp_tuple = std::tuple<int, std::string>;
 
@@ -63,34 +70,44 @@ std::map<int, struct http_session> id_to_session;
 /******************************* Start Util functions     ******************************/
 
 // From HW2
-void computeDigest(char *data, int dataLengthBytes, unsigned char *digestBuffer) {
-    /* The digest will be written to digestBuffer, which must be at least MD5_DIGEST_LENGTH bytes long */
-    MD5_CTX c;
-    MD5_Init(&c);
-    MD5_Update(&c, data, dataLengthBytes);
-    MD5_Final(digestBuffer, &c);
+void computeDigest(char *data, int dataLengthBytes,
+		unsigned char *digestBuffer) {
+	/* The digest will be written to digestBuffer, which must be at least MD5_DIGEST_LENGTH bytes long */
+	MD5_CTX c;
+	MD5_Init(&c);
+	MD5_Update(&c, data, dataLengthBytes);
+	MD5_Final(digestBuffer, &c);
 }
 
 std::string generateStringHash(std::string strToHash) {
-        unsigned char *digestBuff = (unsigned char *)malloc(MD5_DIGEST_LENGTH * sizeof(unsigned char) + 1);
-        char* strToHashCStr = strdup(strToHash.c_str());
-        computeDigest(strToHashCStr, strToHash.length()+1, digestBuff);
-        free(strToHashCStr);
-        digestBuff[MD5_DIGEST_LENGTH] = '\0';
-        char *stringHash = (char *)malloc((32+1) * sizeof(char));
-        for (int i = 0; i < 16; i++) {
-            stringHash[2 * i] = "0123456789ABCDEF"[digestBuff[i] / 16];
-            stringHash[2 * i + 1] = "0123456789ABCDEF"[digestBuff[i] % 16];
-        }
-        free(digestBuff);
-        stringHash[32] = '\0';
-        return std::string(stringHash);
+	unsigned char *digestBuff = (unsigned char*) malloc(
+			MD5_DIGEST_LENGTH * sizeof(unsigned char) + 1);
+	char *strToHashCStr = strdup(strToHash.c_str());
+	computeDigest(strToHashCStr, strToHash.length() + 1, digestBuff);
+	free(strToHashCStr);
+	digestBuff[MD5_DIGEST_LENGTH] = '\0';
+	char *stringHash = (char*) malloc((32 + 1) * sizeof(char));
+	for (int i = 0; i < 16; i++) {
+		stringHash[2 * i] = "0123456789ABCDEF"[digestBuff[i] / 16];
+		stringHash[2 * i + 1] = "0123456789ABCDEF"[digestBuff[i] % 16];
+	}
+	free(digestBuff);
+	stringHash[32] = '\0';
+	return std::string(stringHash);
 
 }
 
 void log(std::string str) {
-	if (verbose)
+	if (!verbose)
+		return;
+	if (str.size() <= 1000) {
 		std::cerr << str << "\n";
+	} else {
+		std::cerr << "<LOG STRING TOO LONG! LOGGING LENGTH INSTEAD> "
+				<< str.size() << "\n";
+		std::cerr << "<AND THE STARTING 500 BYTES> " << str.substr(0, 500)
+				<< "\n";
+	}
 }
 
 int readNBytes(int *client_fd, int n, char *buffer) {
@@ -99,8 +116,10 @@ int readNBytes(int *client_fd, int n, char *buffer) {
 	int message_read = 0;
 	while (message_read < n) {
 		int rlen = read(*client_fd, &buffer[message_read], n - message_read);
-		if (rlen > 0) message_read += rlen;
-		if(rlen <= 0) return message_read;
+		if (rlen > 0)
+			message_read += rlen;
+		if (rlen <= 0)
+			return message_read;
 	}
 	return message_read;
 }
@@ -124,7 +143,7 @@ void sigint_handler(int sig) {
 }
 
 std::deque<std::string> split(std::string str, std::string delimiter) {
-	std::deque<std::string> ret;
+	std::deque < std::string > ret;
 
 	size_t pos = 0;
 
@@ -190,278 +209,375 @@ std::string getAddrFromString(std::string fullServAddr) {
 
 /*********************** KVS Util function ***********************************/
 
+std::list<std::string> whereKVS(std::string row) {
+	log("row");
+	log(row);
+	log("row");
+	int masterPortNo = getPortNoFromString(kvMaster_addr);
+	std::string masterServAddress = getAddrFromString(kvMaster_addr);
+	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
+	try {
+		log("MASTERNODE WHERE: " + row);
+		using where_resp_tuple = std::tuple<int,std::list<std::string>>;
+		where_resp_tuple resp = masterNodeRPCClient.call("where", row).as<
+				where_resp_tuple>();
+		log(
+				"whereKVS Response Status: "
+						+ std::to_string(std::get < 0 > (resp)));
+		std::list < std::string > serverList = std::get < 1 > (resp);
+		for (std::string server : serverList) {
+			log("whereKVS Response Server: " + server);
+		}
+		return serverList;
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN whereKVS TRY CATCH"); // TODO
+	}
+	std::list < std::string > emptyList { };
+	return emptyList;
+}
+
 resp_tuple putKVS(std::string row, std::string column, std::string value) {
-	int serverPortNo = getPortNoFromString(kvs_addr);
-	std::string servAddress = getAddrFromString(kvs_addr);
-    rpc::client kvsRPCClient(servAddress, serverPortNo);
-    resp_tuple resp;
-    try {
-        log("KVS PUT: "+row+", "+column+", "+value);
-        resp = kvsRPCClient.call("put", row, column, value).as<resp_tuple>();
-        log("putKVS Response Status: "+ std::to_string(std::get<0>(resp)));
-        log("putKVS Response Value: "+ std::get<1>(resp));
-    } catch (rpc::rpc_error &e) {
-        /*
-        std::cout << std::endl << e.what() << std::endl;
-        std::cout << "in function " << e.get_function_name() << ": ";
-        using err_t = std::tuple<std::string, std::string>;
-        auto err = e.get_error().as<err_t>();
-        */
-        log("UNHANDLED ERROR IN putKVS TRY CATCH"); // TODO
-    }
-    return resp;
+	std::list < std::string > serverList = whereKVS(row);
+	if (serverList.size() <= 0) {
+		// TODO error
+	}
+	std::string targetServer = serverList.front();
+	int serverPortNo = getPortNoFromString(targetServer);
+	std::string servAddress = getAddrFromString(targetServer);
+	rpc::client kvsRPCClient(servAddress, serverPortNo);
+	resp_tuple resp;
+	try {
+		log("KVS PUT: " + row + ", " + column + ", " + value);
+		resp = kvsRPCClient.call("put", row, column, value).as<resp_tuple>();
+		log("putKVS Response Status: " + std::to_string(std::get < 0 > (resp)));
+		log("putKVS Response Value: " + std::get < 1 > (resp));
+	} catch (rpc::rpc_error &e) {
+		/*
+		 std::cout << std::endl << e.what() << std::endl;
+		 std::cout << "in function " << e.get_function_name() << ": ";
+		 using err_t = std::tuple<std::string, std::string>;
+		 auto err = e.get_error().as<err_t>();
+		 */
+		log("UNHANDLED ERROR IN putKVS TRY CATCH"); // TODO
+	}
+	return resp;
+}
+
+resp_tuple cputKVS(std::string row, std::string column, std::string old,
+		std::string value) {
+	std::list < std::string > serverList = whereKVS(row);
+	if (serverList.size() <= 0) {
+		// TODO error
+	}
+	std::string targetServer = serverList.front();
+	int serverPortNo = getPortNoFromString(targetServer);
+	std::string servAddress = getAddrFromString(targetServer);
+	rpc::client kvsRPCClient(servAddress, serverPortNo);
+	resp_tuple resp;
+	try {
+		log("KVS CPUT: " + row + ", " + column + ", " + old + ", " + value);
+		resp =
+				kvsRPCClient.call("cput", row, column, old, value).as<resp_tuple>();
+		log(
+				"cputKVS Response Status: "
+						+ std::to_string(std::get < 0 > (resp)));
+		log("cputKVS Response Value: " + std::get < 1 > (resp));
+	} catch (rpc::rpc_error &e) {
+		/*
+		 std::cout << std::endl << e.what() << std::endl;
+		 std::cout << "in function " << e.get_function_name() << ": ";
+		 using err_t = std::tuple<std::string, std::string>;
+		 auto err = e.get_error().as<err_t>();
+		 */
+		log("UNHANDLED ERROR IN cputKVS TRY CATCH"); // TODO
+	}
+	return resp;
 }
 
 resp_tuple getKVS(std::string row, std::string column) {
-	int serverPortNo = getPortNoFromString(kvs_addr);
-	std::string servAddress = getAddrFromString(kvs_addr);
-    rpc::client kvsRPCClient(servAddress, serverPortNo);
-    using resp_tuple = std::tuple<int, std::string>;
-    resp_tuple resp;
-    try {
-        log("KVS GET: "+row+", "+column);
-        resp = kvsRPCClient.call("get", row, column).as<resp_tuple>();
-        log("getKVS Response Status: "+ std::to_string(std::get<0>(resp)));
-        log("getKVS Response Value: "+ std::get<1>(resp));
-    } catch (rpc::rpc_error &e) {
-        /*
-        std::cout << std::endl << e.what() << std::endl;
-        std::cout << "in function " << e.get_function_name() << ": ";
-        using err_t = std::tuple<std::string, std::string>;
-        auto err = e.get_error().as<err_t>();
-        */
-        log("UNHANDLED ERROR IN getKVS TRY CATCH"); // TODO
-    }
-    return resp;
+	std::list < std::string > serverList = whereKVS(row);
+	if (serverList.size() <= 0) {
+		// TODO error
+	} else if (serverList.size() > 1) {
+		serverList.pop_front(); // don't send to leader in cluster if > 1 server available
+	}
+	std::string targetServer = serverList.front();
+	int serverPortNo = getPortNoFromString(targetServer);
+	std::string servAddress = getAddrFromString(targetServer);
+	rpc::client kvsRPCClient(servAddress, serverPortNo);
+	using resp_tuple = std::tuple<int, std::string>;
+	resp_tuple resp;
+	try {
+		log("KVS GET: " + row + ", " + column);
+		resp = kvsRPCClient.call("get", row, column).as<resp_tuple>();
+		log("getKVS Response Status: " + std::to_string(std::get < 0 > (resp)));
+		log("getKVS Response Value: " + std::get < 1 > (resp));
+	} catch (rpc::rpc_error &e) {
+		/*
+		 std::cout << std::endl << e.what() << std::endl;
+		 std::cout << "in function " << e.get_function_name() << ": ";
+		 using err_t = std::tuple<std::string, std::string>;
+		 auto err = e.get_error().as<err_t>();
+		 */
+		log("UNHANDLED ERROR IN getKVS TRY CATCH"); // TODO
+	}
+	return resp;
 }
 
 resp_tuple deleteKVS(std::string row, std::string column) {
-	int serverPortNo = getPortNoFromString(kvs_addr);
-	std::string servAddress = getAddrFromString(kvs_addr);
-    rpc::client kvsRPCClient(servAddress, serverPortNo);
-    using resp_tuple = std::tuple<int, std::string>;
-    resp_tuple resp;
-    try {
-        log("KVS DELETE: "+row+", "+column);
-        resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
-        log("deleteKVS Response Status: "+ std::to_string(std::get<0>(resp)));
-        log("deleteKVS Response Value: "+ std::get<1>(resp));
-    } catch (rpc::rpc_error &e) {
-        /*
-        std::cout << std::endl << e.what() << std::endl;
-        std::cout << "in function " << e.get_function_name() << ": ";
-        using err_t = std::tuple<std::string, std::string>;
-        auto err = e.get_error().as<err_t>();
-        */
-        log("UNHANDLED ERROR IN deleteKVS TRY CATCH"); // TODO
-    }
-    return resp;
+	std::list < std::string > serverList = whereKVS(row);
+	if (serverList.size() <= 0) {
+		// TODO error
+	}
+	std::string targetServer = serverList.front();
+	int serverPortNo = getPortNoFromString(targetServer);
+	std::string servAddress = getAddrFromString(targetServer);
+	rpc::client kvsRPCClient(servAddress, serverPortNo);
+	using resp_tuple = std::tuple<int, std::string>;
+	resp_tuple resp;
+	try {
+		log("KVS DELETE: " + row + ", " + column);
+		resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
+		log(
+				"deleteKVS Response Status: "
+						+ std::to_string(std::get < 0 > (resp)));
+		log("deleteKVS Response Value: " + std::get < 1 > (resp));
+	} catch (rpc::rpc_error &e) {
+		/*
+		 std::cout << std::endl << e.what() << std::endl;
+		 std::cout << "in function " << e.get_function_name() << ": ";
+		 using err_t = std::tuple<std::string, std::string>;
+		 auto err = e.get_error().as<err_t>();
+		 */
+		log("UNHANDLED ERROR IN deleteKVS TRY CATCH"); // TODO
+	}
+	return resp;
 }
 
 int kvsResponseStatusCode(resp_tuple resp) {
-        return std::get<0>(resp);
+	return std::get < 0 > (resp);
 }
 
 std::string kvsResponseMsg(resp_tuple resp) {
-        return std::get<1>(resp);
+	return std::get < 1 > (resp);
 }
 
 /***************************** Start storage service functions ************************/
 
 void uploadFile(struct http_request req, std::string filepath) {
-	std::string username = req.cookies["username"]; 
-	username = "amit"; // TODO change hardcoding
+	std::string username = req.cookies["username"];
 	std::string filename = req.formData["filename"];
 	std::string fileData = req.formData["file"];
 
 	// Construct filepath of new file
-    std::string filenameHash = generateStringHash(username+filepath+filename);
+	std::string filenameHash = generateStringHash(
+			username + filepath + filename);
 	std::string kvsCol = "ss1_" + filenameHash;
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, filepath);
-    resp_tuple putCmdResponse;
-    if(kvsResponseStatusCode(getCmdResponse) == 0) {
-        std::string fileList = kvsResponseMsg(getCmdResponse);
-        // Adding new file to existing file list (IF new file!)
-        std::string newEntry = filename+","+kvsCol+"\n";
-        if(fileList.find(newEntry) == std::string::npos) {
-            fileList += newEntry;
-            // PUT length,row,col,value for MODIFIED FILE LIST
-            putCmdResponse = putKVS(username, filepath, fileList);
-        }
-        // PUT username,kvsCol,filedata
-        putCmdResponse = putKVS(username, kvsCol, fileData);
-    }
+	resp_tuple putCmdResponse;
+	if (kvsResponseStatusCode(getCmdResponse) == 0) {
+		std::string fileList = kvsResponseMsg(getCmdResponse);
+		// Adding new file to existing file list (IF new file!)
+		std::string newEntry = filename + "," + kvsCol + "\n";
+		if (fileList.find(newEntry) == std::string::npos) {
+			fileList += newEntry;
+			// PUT length,row,col,value for MODIFIED FILE LIST
+			putCmdResponse = putKVS(username, filepath, fileList);
+		}
+		// PUT username,kvsCol,filedata
+		putCmdResponse = putKVS(username, kvsCol, fileData);
+	}
 }
 
-void deleteFile(struct http_request req, std::string containingDir, std::string itemToDeleteHash) {
-	std::string username = req.cookies["username"]; 
-	username = "amit"; // TODO change hardcoding
+void deleteFile(struct http_request req, std::string containingDir,
+		std::string itemToDeleteHash) {
+	std::string username = req.cookies["username"];
 
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, containingDir);
-    resp_tuple putCmdResponse;
-    if(kvsResponseStatusCode(getCmdResponse) == 0) {
-        std::string fileList = kvsResponseMsg(getCmdResponse);
-        // Removing itemToDelete hash from  existing file list
-        size_t hashPos = fileList.find(itemToDeleteHash);
-        size_t startLine = fileList.substr(0, hashPos).find_last_of("\n");
-        size_t endLine = fileList.find("\n", hashPos);
-        if(startLine != std::string::npos) {
-            fileList = fileList.replace(startLine+1, endLine-startLine, "");
-        }
-        // PUT length,row,col,value for MODIFIED FILE LIST
-        putCmdResponse = putKVS(username, containingDir, fileList);
-    }
-    // DELETE username,itemToDeleteHash
-    putCmdResponse = deleteKVS(username, itemToDeleteHash);
+	resp_tuple putCmdResponse;
+	if (kvsResponseStatusCode(getCmdResponse) == 0) {
+		std::string fileList = kvsResponseMsg(getCmdResponse);
+		// Removing itemToDelete hash from  existing file list
+		size_t hashPos = fileList.find(itemToDeleteHash);
+		size_t startLine = fileList.substr(0, hashPos).find_last_of("\n");
+		size_t endLine = fileList.find("\n", hashPos);
+		if (startLine != std::string::npos) {
+			fileList = fileList.replace(startLine + 1, endLine - startLine, "");
+		}
+		// PUT length,row,col,value for MODIFIED FILE LIST
+		putCmdResponse = putKVS(username, containingDir, fileList);
+	}
+	// DELETE username,itemToDeleteHash
+	putCmdResponse = deleteKVS(username, itemToDeleteHash);
 }
 
-void deleteDirectory(struct http_request req, std::string containingDir, std::string itemToDeleteHash) {
-	std::string username = req.cookies["username"]; 
-	username = "amit"; // TODO change hardcoding
+void deleteDirectory(struct http_request req, std::string containingDir,
+		std::string itemToDeleteHash) {
+	std::string username = req.cookies["username"];
 
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, containingDir);
-    resp_tuple putCmdResponse;
-    if(kvsResponseStatusCode(getCmdResponse) == 0) {
-        std::string fileList = kvsResponseMsg(getCmdResponse);
-        // Removing itemToDelete hash from  existing file list
-        size_t hashPos = fileList.find(itemToDeleteHash);
-        size_t startLine = fileList.substr(0, hashPos).find_last_of("\n");
-        size_t endLine = fileList.find("\n", hashPos);
-        if(startLine != std::string::npos) {
-            fileList = fileList.replace(startLine+1, endLine-startLine, "");
-        }
-        // PUT length,row,col,value for MODIFIED FILE LIST
-        putCmdResponse = putKVS(username, containingDir, fileList);
-    }
+	resp_tuple putCmdResponse;
+	if (kvsResponseStatusCode(getCmdResponse) == 0) {
+		std::string fileList = kvsResponseMsg(getCmdResponse);
+		// Removing itemToDelete hash from  existing file list
+		size_t hashPos = fileList.find(itemToDeleteHash);
+		size_t startLine = fileList.substr(0, hashPos).find_last_of("\n");
+		size_t endLine = fileList.find("\n", hashPos);
+		if (startLine != std::string::npos) {
+			fileList = fileList.replace(startLine + 1, endLine - startLine, "");
+		}
+		// PUT length,row,col,value for MODIFIED FILE LIST
+		putCmdResponse = putKVS(username, containingDir, fileList);
+	}
 	resp_tuple recursiveDeleteResp = getKVS(username, itemToDeleteHash);
-    int respStatus = kvsResponseStatusCode(recursiveDeleteResp);
-    std::string respValue = kvsResponseMsg(recursiveDeleteResp);
-    if(respStatus == 0) {
-        // DELETE username,itemToDeleteHash
-        putCmdResponse = deleteKVS(username, itemToDeleteHash);
-        std::deque<std::string> splt = split(respValue, "\n");
-        int lineNum = 0;
-        for (std::string line : splt) {
-            if(line.length() > 0) {
-                std::deque<std::string> lineSplt = split(line, ",");
-                if(lineNum != 0) {
-                    // Delete Child Files or Directories
-                    if(lineSplt[1].at(2) == '1') {
-                        deleteFile(req, itemToDeleteHash, lineSplt[1]);
-                    } else if(lineSplt[1].at(2) == '0') {
-                        deleteDirectory(req, itemToDeleteHash, lineSplt[1]);
-                    }
-                }
-                lineNum++;
-            }
-        }
-    }
+	int respStatus = kvsResponseStatusCode(recursiveDeleteResp);
+	std::string respValue = kvsResponseMsg(recursiveDeleteResp);
+	if (respStatus == 0) {
+		// DELETE username,itemToDeleteHash
+		putCmdResponse = deleteKVS(username, itemToDeleteHash);
+		std::deque < std::string > splt = split(respValue, "\n");
+		int lineNum = 0;
+		for (std::string line : splt) {
+			if (line.length() > 0) {
+				std::deque < std::string > lineSplt = split(line, ",");
+				if (lineNum != 0) {
+					// Delete Child Files or Directories
+					if (lineSplt[1].at(2) == '1') {
+						deleteFile(req, itemToDeleteHash, lineSplt[1]);
+					} else if (lineSplt[1].at(2) == '0') {
+						deleteDirectory(req, itemToDeleteHash, lineSplt[1]);
+					}
+				}
+				lineNum++;
+			}
+		}
+	}
 }
 
 std::string getParentDirLink(std::string fileHash) {
-    std::string link="<li>Go back<a href=/files/"+fileHash+">Link</a>";
-    return link;
+	std::string link = "<li>Go back<a href=/files/" + fileHash + ">Link</a>";
+	return link;
 }
 
-std::string getFileLink(std::string fileName, std::string fileHash, std::string containingDirectory) {
-    std::string link="<li>"+fileName+"<a download=\""+fileName+"\" href=/files/"+fileHash+">Download</a>";
-    link += "<form action=\"/ss_delete\" method=\"post\">"
-        "<input type=\"hidden\" name=\"containingDirectory\" value=\""+containingDirectory+"\" />"
-        "<input type=\"hidden\" name=\"itemToDelete\" value=\""+fileHash+"\" />"
-        "<input type=\"submit\" name=\"submit\" value=\"Delete\" />"
-        "</form>";
-    return link;
+std::string getFileLink(std::string fileName, std::string fileHash,
+		std::string containingDirectory) {
+	std::string link;
+	if (fileHash.substr(0, 3).compare("ss0") == 0) {
+		// Directory
+		link = "<li>" + fileName + "<a href=/files/" + fileHash
+				+ ">Open Directory</a>";
+	} else {
+		// File
+		link = "<li>" + fileName + "<a download=\"" + fileName
+				+ "\" href=/files/" + fileHash + ">Download</a>";
+	}
+	link += "<form action=\"/ss_delete\" method=\"post\">"
+			"<input type=\"hidden\" name=\"containingDirectory\" value=\""
+			+ containingDirectory + "\" />"
+					"<input type=\"hidden\" name=\"itemToDelete\" value=\""
+			+ fileHash + "\" />"
+					"<input type=\"submit\" name=\"submit\" value=\"Delete\" />"
+					"</form>";
+	return link;
 }
 
 std::string getFileList(struct http_request req, std::string filepath) {
-	std::string username = req.cookies["username"]; 
-	username = "amit"; // TODO change hardcoding
-    resp_tuple filesResp = getKVS("amit", filepath);
-    int respStatus = kvsResponseStatusCode(filesResp);
-    std::string respValue = kvsResponseMsg(filesResp);
-    int lineNum = 0;
-    if(respStatus == 0) {
-        if(respValue.length() == 0) {
-            return "This directory is empty.";
-        }
-        std::string result = "<ul>";
-        std::deque<std::string> splt = split(respValue, "\n");
-        for (std::string line : splt) {
-            if(line.length() > 0) {
-                std::deque<std::string> lineSplt = split(line, ",");
-                if(lineNum == 0) {
-                    // Parent Directory Line
-                    if(!(lineSplt[0].compare("ROOT") == 0 && lineSplt[1].compare("ROOT") == 0)) {
-                        result += getParentDirLink(lineSplt[1]);
-                    }
-                } else {
-                    // Child Files or Directories
-                    result += getFileLink(lineSplt[0], lineSplt[1], filepath);
-                }
-                lineNum++;
-            }
-        }
-        result += "</ul>";
-        if(lineNum <= 1) {
-            result+= "<p>This directory is empty</p>";
-        }
-        return result;
-    } else {
-        return "No files available";
-    }
+	std::string username = req.cookies["username"];
+	resp_tuple filesResp = getKVS(username, filepath);
+	int respStatus = kvsResponseStatusCode(filesResp);
+	std::string respValue = kvsResponseMsg(filesResp);
+	int lineNum = 0;
+	if (respStatus == 0) {
+		if (respValue.length() == 0) {
+			return "This directory is empty.";
+		}
+		std::string result = "<ul>";
+		std::deque < std::string > splt = split(respValue, "\n");
+		for (std::string line : splt) {
+			if (line.length() > 0) {
+				std::deque < std::string > lineSplt = split(line, ",");
+				if (lineNum == 0) {
+					// Parent Directory Line
+					if (!(lineSplt[0].compare("ROOT") == 0
+							&& lineSplt[1].compare("ROOT") == 0)) {
+						result += getParentDirLink(lineSplt[1]);
+					}
+				} else {
+					// Child Files or Directories
+					result += getFileLink(lineSplt[0], lineSplt[1], filepath);
+				}
+				lineNum++;
+			}
+		}
+		result += "</ul>";
+		if (lineNum <= 1) {
+			result += "<p>This directory is empty</p>";
+		}
+		return result;
+	} else {
+		return "No files available";
+	}
 }
 
 bool isFileRouteDirectory(std::string filepath) {
-    // All directories should end with a '/'
-    return (filepath.length() > 4 && filepath.substr(0, 4).compare("ss0_") == 0);
+	// All directories should end with a '/'
+	return (filepath.length() > 4 && filepath.substr(0, 4).compare("ss0_") == 0);
 }
 
-void createDirectory(struct http_request req, std::string filepath, std::string dirName) {
-	std::string username = req.cookies["username"]; //TODO change hardcoding
-	username = "amit";
+void createDirectory(struct http_request req, std::string filepath,
+		std::string dirName) {
+	std::string username = req.cookies["username"];
 
 	// Construct filepath of new directory
-    std::string dirNameHash = generateStringHash(username+filepath+dirName);
+	std::string dirNameHash = generateStringHash(username + filepath + dirName);
 	std::string kvsCol = "ss0_" + dirNameHash;
 	// Reading in response to GET --> list of files at filepath
 	resp_tuple getCmdResponse = getKVS(username, filepath);
-    resp_tuple putCmdResponse;
-    if(kvsResponseStatusCode(getCmdResponse) == 0) {
-        std::string fileList = kvsResponseMsg(getCmdResponse);
-        // Adding new directory to existing file list (IF new dir!)
-        std::string newEntry = dirName+","+kvsCol+"\n";
-        // Adding new file to existing file list
-        // disallow creation of duplicate named directories
-        if(fileList.find(newEntry) == std::string::npos) {
-            fileList += newEntry;
-            // PUT length,row,col,value for MODIFIED FILE LIST
-            putCmdResponse = putKVS(username, filepath, fileList);
-            // PUT new column for new directory
-            putCmdResponse = putKVS(username, kvsCol, "PARENT_DIR,"+filepath+"\n");
-        }
-    }
+	resp_tuple putCmdResponse;
+	if (kvsResponseStatusCode(getCmdResponse) == 0) {
+		std::string fileList = kvsResponseMsg(getCmdResponse);
+		// Adding new directory to existing file list (IF new dir!)
+		std::string newEntry = dirName + "," + kvsCol + "\n";
+		// Adding new file to existing file list
+		// disallow creation of duplicate named directories
+		if (fileList.find(newEntry) == std::string::npos) {
+			fileList += newEntry;
+			// PUT length,row,col,value for MODIFIED FILE LIST
+			putCmdResponse = putKVS(username, filepath, fileList);
+			// PUT new column for new directory
+			putCmdResponse = putKVS(username, kvsCol,
+					"PARENT_DIR," + filepath + "\n");
+		}
+	}
 }
 
 void createRootDirForNewUser(struct http_request req) {
-	std::string username = req.cookies["username"];
-	username = "amit"; //TODO change hardcoding
-    std::string dirNameHash = generateStringHash(username + "/");
-    // PUT new column for root directory
+	std::string username = req.formData["username"];
+	std::string dirNameHash = generateStringHash(username + "/");
+	// PUT new column for root directory
 	putKVS(username, "ss0_" + dirNameHash, "ROOT,ROOT\n");
 }
 
 /***************************** End storage service functions ************************/
 
 /*********************** Http Util function **********************************/
+std::string generateSessionID(){
+	return generateStringHash(my_address + std::to_string(++session_id_counter));
+}
+
 std::string getBoundary(std::string &type) {
-	std::deque<std::string> splt = split(type, ";");
+	std::deque < std::string > splt = split(type, ";");
 	for (std::string potent : splt) {
 		if (potent.find("boundary") != std::string::npos) {
 			std::string boundary = trim(potent.substr(potent.find("=") + 1));
-			return boundary + "\r\n";
+			return "--" + boundary + "\r\n";
 		}
 	}
 	return "";
@@ -472,6 +588,7 @@ void processMultiPart(struct http_request &req) {
 	std::string boundary = getBoundary(req.headers["content-type"]);
 	std::string content(req.content);
 	std::string segment = "";
+	content.erase(0, content.find(boundary) + boundary.length());
 
 	while (trim((segment = content.substr(0, content.find(boundary)))).compare(
 			"") != 0) {
@@ -482,13 +599,13 @@ void processMultiPart(struct http_request &req) {
 			if (line.find("filename") != std::string::npos)
 				segment_is_file = true;
 			if (lower(line).find("content-disposition") != std::string::npos) {
-				std::deque<std::string> data = split((split(line, ":")[1]),
+				std::deque < std::string > data = split((split(line, ":")[1]),
 						";");
 				for (std::string d : data) {
 					if (d.find("filename") != std::string::npos) {
 						filename = trim(split(d, "=")[1]);
 						removeQuotes(filename);
-                        req.formData["filename"] = filename;
+						req.formData["filename"] = filename;
 					} else if (d.find("name") != std::string::npos) {
 						fieldname = trim(split(d, "=")[1]);
 						removeQuotes(fieldname);
@@ -496,9 +613,7 @@ void processMultiPart(struct http_request &req) {
 				}
 			}
 		}
-		segment =
-				(segment.find("--") == std::string::npos) ?
-						segment : segment.substr(0, segment.find("--"));
+
 		if (segment_is_file) {
 			req.formData["filename"] = filename;
 			req.formData["file"] = segment;
@@ -511,12 +626,14 @@ void processMultiPart(struct http_request &req) {
 	log("Form data: ");
 	for (std::map<std::string, std::string>::iterator it = req.formData.begin();
 			it != req.formData.end(); it++) {
-		log("Key : " + it->first + " value : " + it->second);
+		log(
+				"Key : " + it->first + " value : "
+						+ std::to_string((it->second).size()));
 	}
 }
 
 void processForm(struct http_request &req) {
-	std::deque<std::string> queryPairs = split(req.content, "&");
+	std::deque < std::string > queryPairs = split(req.content, "&");
 	for (std::string pair : queryPairs) {
 		size_t pos = pair.find("=");
 		std::string key =
@@ -540,7 +657,7 @@ void processForm(struct http_request &req) {
 void processCookies(struct http_request &req) {
 	if (req.headers.find("cookie") == req.headers.end())
 		return;
-	std::deque<std::string> cookies = split(req.headers["cookie"], ";");
+	std::deque < std::string > cookies = split(req.headers["cookie"], ";");
 	for (std::string cookie : cookies) {
 		size_t pos = cookie.find("=");
 		std::string key =
@@ -594,7 +711,7 @@ struct http_request parseRequest(int *client_fd) {
 		req.valid = false;
 		return req;
 	}
-	std::deque<std::string> headr = split(trim(first_line), " ");
+	std::deque < std::string > headr = split(trim(first_line), " ");
 	req.type = trim(headr.at(0));
 	req.filepath = trim(headr.at(1));
 	req.version = trim(headr.at(2));
@@ -642,8 +759,10 @@ struct http_request parseRequest(int *client_fd) {
 			log(
 					"Trying to read content of length "
 							+ req.headers["content-length"]);
-			char * buffer;
-			while ((buffer = (char *) malloc(sizeof(char) * (content_length + 1))) == NULL);
+			char *buffer;
+			while ((buffer = (char*) malloc(sizeof(char) * (content_length + 1)))
+					== NULL)
+				;
 			int rlen = readNBytes(client_fd, content_length, buffer);
 			req.content.append(buffer, rlen);
 			free(buffer);
@@ -667,6 +786,75 @@ struct http_request parseRequest(int *client_fd) {
 	return req;
 }
 
+std::string escape(std::string input) {
+	std::string output = "";
+	output.reserve(input.size());
+	for (const char c : input) {
+		switch (c) {
+		case '<':
+			output += "&lt;";
+			break;
+		case '>':
+			output += "&gt;";
+			break;
+		default:
+			output += c;
+			break;
+		}
+	}
+	return output;
+}
+
+///////////////////////////////////////////////////////////////////////////
+
+// Attributed to arthurafarias on Github: https://gist.github.com/arthurafarias/56fec2cd49a32f374c02d1df2b6c350f
+
+std::string decodeURIComponent(std::string encoded) {
+
+	std::string decoded = encoded;
+	std::smatch sm;
+	std::string haystack;
+
+	int dynamicLength = decoded.size() - 2;
+
+	if (decoded.size() < 3)
+		return decoded;
+
+	for (int i = 0; i < dynamicLength; i++) {
+
+		haystack = decoded.substr(i, 3);
+
+		if (std::regex_match(haystack, sm, std::regex("%[0-9A-F]{2}"))) {
+			haystack = haystack.replace(0, 1, "0x");
+			std::string rc = { (char) std::stoi(haystack, nullptr, 16) };
+			decoded = decoded.replace(decoded.begin() + i,
+					decoded.begin() + i + 3, rc);
+		}
+
+		dynamicLength = decoded.size() - 2;
+
+	}
+
+	return decoded;
+}
+
+std::string encodeURIComponent(std::string decoded) {
+
+	std::ostringstream oss;
+	std::regex r("[!'\\(\\)*-.0-9A-Za-z_~]");
+
+	for (char &c : decoded) {
+		if (std::regex_match((std::string ) { c }, r)) {
+			oss << c;
+		} else {
+			oss << "%" << std::uppercase << std::hex << (0xff & c);
+		}
+	}
+	return oss.str();
+}
+
+///////////////////////////////////////////////////////////////////////////
+
 struct http_response processRequest(struct http_request &req) {
 	struct http_response resp;
 	for (std::map<std::string, std::string>::iterator it = req.cookies.begin();
@@ -674,20 +862,39 @@ struct http_response processRequest(struct http_request &req) {
 		resp.cookies[it->first] = it->second;
 	}
 
+	/* Check to see if I'm the load balancer and if this request needs to be redirected */
+	if (load_balancer && frontend_server_list.size() > 1
+			&& req.cookies.find("redirected") == req.cookies.end()) {
+		std::string redirect_server = frontend_server_list[l_balancer_index];
+		l_balancer_index = (l_balancer_index + 1) % frontend_server_list.size();
+
+		if (redirect_server.compare(my_address) == 0) {
+			resp.cookies["redirected"] = "true";
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "http://" + redirect_server + "/";
+			resp.cookies["redirected"] = "true";
+			return resp;
+		}
+	}
+
 	if (req.formData["dir_name"].size() > 0) {
-            // File present to upload
-            if(req.filepath.substr(0,7).compare("/files/") == 0 && req.filepath.length() > 7) {
-                std::string filepath = req.filepath.substr(7);
-                createDirectory(req, filepath, req.formData["dir_name"]);
-            }
+		// File present to upload
+		if (req.filepath.substr(0, 7).compare("/files/") == 0
+				&& req.filepath.length() > 7) {
+			std::string filepath = req.filepath.substr(7);
+			createDirectory(req, filepath, req.formData["dir_name"]);
+		}
 	}
 
 	if (req.formData["file"].size() > 0) {
-            // File present to upload
-            if(req.filepath.substr(0,7).compare("/files/") == 0 && req.filepath.length() > 7) {
-                std::string filepath = req.filepath.substr(7);
-                uploadFile(req, filepath);
-            }
+		// File present to upload
+		if (req.filepath.substr(0, 7).compare("/files/") == 0
+				&& req.filepath.length() > 7) {
+			std::string filepath = req.filepath.substr(7);
+			uploadFile(req, filepath);
+		}
 	}
 
 	if (req.filepath.compare("/") == 0) {
@@ -707,14 +914,15 @@ struct http_response processRequest(struct http_request &req) {
 				}
 			}
 			resp.content =
-					"<html><body "
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
 							"center;\">" + test
 							+ "<form id=\"login\" style=\"display:"
 							+ (signuperr ? "none" : "block")
 							+ ";\" action=\"/login\" enctype=\"multipart/form-data\" method=\"POST\""
-									"<label for =\"username\">Username:</label><br/><input name=\"username\" type=\"text\"/><br/>"
-									"<label for=\"password\">Password:</label><br/><input name=\"password\" "
+									"<label for =\"username\">Username:</label><br/><input required name=\"username\" type=\"text\"/><br/>"
+									"<label for=\"password\">Password:</label><br/><input required name=\"password\" "
 									"type=\"password\"/><br/>"
 									"<br/><input type=\"submit\" name=\"submit\" value=\"Log In\"><br/>"
 									"</form>"
@@ -723,15 +931,19 @@ struct http_response processRequest(struct http_request &req) {
 							+ ";\" action=\"/signup\" "
 									"enctype=\"multipart/form-data\" "
 									"method=\"POST\""
-									"<label for =\"username\">Username:</label><br/><input name=\"username\" type=\"text\"/><br/>"
-									"<label for=\"password\">Password:</label><br/><input name=\"password\" "
+									"<label for =\"username\">Username:</label><br/><input required name=\"username\" type=\"text\"/><br/>"
+									"<label for=\"password\">Password:</label><br/><input required name=\"password\" "
 									"type=\"password\"/><br/>"
-									"<label for=\"confirm_password\">Confirm Password:</label><br/><input "
+									"<label for=\"confirm_password\">Confirm Password:</label><br/><input required "
 									"name=\"confirm_password\" "
 									"type=\"password\"/><br/>"
 									"<br/><input type=\"submit\" name=\"submit\" value=\"Sign Up\"><br/>"
 									"</form>"
-									"<br/><button id=\"switchButton\" type=\"button\">Don't have an account? Sign up!</button>"
+									"<br/><button id=\"switchButton\" type=\"button\">"
+							+ (signuperr ?
+									"Have an account? Log in!" :
+									"Don't have an account? Sign up!")
+							+ "</button>"
 									"<script>"
 									"var switchButton=document.getElementById('switchButton');"
 									"switchButton.onclick=function(){var "
@@ -745,15 +957,6 @@ struct http_response processRequest(struct http_request &req) {
 									"== 'none') ? 'block' : 'none';}"
 									"</script>"
 									"</body></html>";
-			/* resp.content =
-			 "<html><body>"
-			 "<form action=\"/submitdummy\" enctype=\"multipart/form-data\" method=\"POST\""
-			 "<label for =\"username\">Username</label><br/><input name=\"username\" type=\"text\"/><br/>"
-			 "<label for=\"password\">Password:</label><br/><input name=\"password\"
-			 type=\"password\"/><br/>"
-			 "<label for=\"file\">File</label><br/><input type=\"file\" name=\"file\"/><br/>"
-			 "<label for=\"submit\">Submit</label><br/><input type=\"submit\" name=\"submit\"><br/>"
-			 "</form></body></html>";*/
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -763,24 +966,37 @@ struct http_response processRequest(struct http_request &req) {
 		}
 	} else if (req.filepath.compare("/login") == 0) {
 		if (req.cookies.find("username") == req.cookies.end()) {
-            resp_tuple getResp = getKVS(req.formData["username"], "password");
-            std::string getRespMsg = kvsResponseMsg(getResp);
-			if (req.formData["username"] == ""
-					|| getRespMsg == "") {
+			if (req.formData["username"] == "") {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] = "Invalid username.";
-			} else if (getRespMsg != req.formData["password"]) {
-				resp.status_code = 307;
-				resp.status = "Temporary Redirect";
-				resp.headers["Location"] = "/";
-				resp.cookies["error"] = "Invalid password.";
 			} else {
-				resp.status_code = 307;
-				resp.status = "Temporary Redirect";
-				resp.headers["Location"] = "/dashboard";
-				resp.cookies["username"] = req.formData["username"];
+				resp_tuple getResp = getKVS(req.formData["username"],
+						"password");
+				std::string getRespMsg = kvsResponseMsg(getResp);
+				int getRespStatusCode = kvsResponseStatusCode(getResp);
+				if (getRespStatusCode != 0) {
+					resp.status_code = 307;
+					resp.status = "Temporary Redirect";
+					resp.headers["Location"] = "/";
+					resp.cookies["error"] = "Invalid username.";
+				} else if (getRespMsg != req.formData["password"]) {
+					resp.status_code = 307;
+					resp.status = "Temporary Redirect";
+					resp.headers["Location"] = "/";
+					resp.cookies["error"] = "Invalid password.";
+				} else {
+					resp.status_code = 307;
+					resp.status = "Temporary Redirect";
+					if(req.formData["username"].compare("admin") != 0){
+						resp.headers["Location"] = "/dashboard";
+					} else {
+						resp.headers["Location"] = "/admin";
+					}
+					resp.cookies["username"] = req.formData["username"];
+					resp.cookies["sessionid"] = generateSessionID();
+				}
 			}
 		} else {
 			resp.status_code = 307;
@@ -794,9 +1010,6 @@ struct http_response processRequest(struct http_request &req) {
 				if (!isalnum(req.formData["username"][i]))
 					valid = false;
 			}
-            resp_tuple getResp = getKVS(req.formData["username"], "password");
-            std::string getRespMsg = kvsResponseMsg(getResp);
-            int getRespStatusCode = kvsResponseStatusCode(getResp);
 			if (req.formData["username"].size() == 0 || !valid) {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
@@ -820,20 +1033,28 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] = "Passwords do not match.";
 				resp.cookies["signuperr"] = "1";
-			} else if (getRespStatusCode == 0) {
-				resp.status_code = 307;
-				resp.status = "Temporary Redirect";
-				resp.headers["Location"] = "/";
-				resp.cookies["error"] = "User already exists.";
-				resp.cookies["signuperr"] = "1";
 			} else {
-				putKVS(req.formData["username"], "password",
-						req.formData["password"]);
-				resp.status_code = 307;
-				resp.status = "Temporary Redirect";
-				resp.headers["Location"] = "/dashboard";
-				resp.cookies["username"] = req.formData["username"];
-                createRootDirForNewUser(req);
+				resp_tuple getResp = getKVS(req.formData["username"],
+						"mailbox");
+				std::string getRespMsg = kvsResponseMsg(getResp);
+				int getRespStatusCode = kvsResponseStatusCode(getResp);
+				if (getRespStatusCode == 0) {
+					resp.status_code = 307;
+					resp.status = "Temporary Redirect";
+					resp.headers["Location"] = "/";
+					resp.cookies["error"] = "User already exists.";
+					resp.cookies["signuperr"] = "1";
+				} else {
+					putKVS(req.formData["username"], "password",
+							req.formData["password"]);
+					putKVS(req.formData["username"], "mailbox", "");
+					resp.status_code = 307;
+					resp.status = "Temporary Redirect";
+					resp.headers["Location"] = "/dashboard";
+					resp.cookies["username"] = req.formData["username"];
+					resp.cookies["sessionid"] = generateSessionID();
+					createRootDirForNewUser(req);
+				}
 			}
 		} else {
 			resp.status_code = 307;
@@ -845,97 +1066,521 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
-            std::string username = "amit"; // TODO change hardcoding
-            std::string userRootDir = "ss0_" + generateStringHash(username + "/");
+			std::string userRootDir = "ss0_"
+					+ generateStringHash(req.cookies["username"] + "/");
 			resp.content =
-					"<html><body "
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
 							"center;\">"
-							"<form action=\"/mail\" method=\"POST\"> <input type = \"submit\" value=\"My Mailbox\" /></form>"
+							"<form action=\"/mailbox\" method=\"POST\"> <input type = \"submit\" value=\"Mailbox\" /></form>"
 							"<form action=\"/compose\" method=\"POST\"> <input type = \"submit\" value=\"Compose Email\" /></form>"
-							"<form action=\"/files/"+userRootDir+"\" method=\"POST\"> <input type = \"submit\" value=\"Storage Service\" /></form>"
-							"<form action=\"/logout\" method=\"POST\"><input type = \"submit\" value=\"Logout\" /></form>"
-							"</body></html>";
+							"<form action=\"/files/" + userRootDir
+							+ "\" method=\"POST\"> <input type = \"submit\" value=\"Storage Service\" /></form>"
+									"<form action=\"/logout\" method=\"POST\"><input type = \"submit\" value=\"Logout\" /></form>"
+									"</body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
-			resp.headers["Location"] = "/login";
+			resp.headers["Location"] = "/";
 		}
-	} else if (req.filepath.compare(0,7,"/files/") == 0) {
-            if(req.filepath.length() > 7) {
-                    std::string filepath = req.filepath.substr(7);
-                    resp_tuple getFileResp = getKVS("amit", filepath); // TODO change hardcoded username
-                    if(kvsResponseStatusCode(getFileResp) == 0) {
-                            // display list of files if route = directory. else, display file contents
-                            if(isFileRouteDirectory(filepath)) {
-                                    resp.status_code = 200;
-                                    resp.status = "OK";
-                                    resp.headers["Content-type"] = "text/html";
-                                    std::string fileList = getFileList(req, filepath);
-                                    resp.content =
-                                    "<html><body>"
-                                    ""+fileList+"<br/>"
-                                    "<form action=\"/files/"+filepath+"\" enctype=\"multipart/form-data\" method=\"POST\""
-                                    "<label for=\"file\">Upload a new File</label><br/><input type=\"file\" name=\"file\"/><br/>"
-                                    "<input type=\"submit\" name=\"submit\" value=\"Upload\"><br/>"
-                                    "</form>"
-                                    "<form action=\"/files/"+filepath+"\" enctype=\"multipart/form-data\" method=\"POST\""
-                                    "<label for=\"dir_name\">New Directory Name</label><br/><input type=\"text\" name=\"dir_name\" placeholder=\"Create Directory\"/><br/>"
-                                    "<input type=\"submit\" name=\"submit\" value=\"Submit\"><br/>"
-                                    "</form>"
-                                    "</body></html>";
-                            } else {
-                                    resp.status_code = 200;
-                                    resp.status = "OK";
-                                    resp.headers["Content-type"] = "text/plain";
-                                    resp.content = kvsResponseMsg(getFileResp);
-                            }
-                    } else {
-                            resp.status_code = 404;
-                            resp.status = "Not found";
-                            resp.headers["Content-type"] = "text/html";
-                            resp.content =
-                            "<html><body>"
-                            "Requested file not found!"
-                            "</body></html>";
-                    }
-            } else {
-                    resp.status_code = 404;
-                    resp.status = "Not found";
-                    resp.headers["Content-type"] = "text/html";
-                    resp.content =
-                    "<html><body>"
-                    "Requested file not found!"
-                    "</body></html>";
-            }
-	} else if (req.filepath.compare(0,11,"/ss_delete") == 0) {
-        std::string containingDirectory = req.formData["containingDirectory"];
-        std::string itemToDelete= req.formData["itemToDelete"];
-        if(containingDirectory.length() > 0 && itemToDelete.length() > 0) {
-            if(itemToDelete.at(2) == '1') {
-                // itemToDelete is a FILE
-                deleteFile(req, containingDirectory, itemToDelete);
-            } else if(itemToDelete.at(2) == '0') {
-                // itemToDelete is a DIRECTORY
-                // Recursively delete all subdirectories and files
-                deleteDirectory(req, containingDirectory, itemToDelete);
-            }
-            resp.status_code = 307;
-            resp.status = "Temporary Redirect";
-            resp.headers["Location"] = "/files/"+containingDirectory;
-        }
+	} else if (req.filepath.compare(0, 7, "/files/") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			if (req.filepath.length() > 7) {
+				std::string filepath = req.filepath.substr(7);
+				resp_tuple getFileResp = getKVS(req.cookies["username"],
+						filepath);
+				if (kvsResponseStatusCode(getFileResp) == 0) {
+					// display list of files if route = directory. else, display file contents
+					if (isFileRouteDirectory(filepath)) {
+						resp.status_code = 200;
+						resp.status = "OK";
+						resp.headers["Content-type"] = "text/html";
+						std::string fileList = getFileList(req, filepath);
+						resp.content =
+								"<head><meta charset=\"UTF-8\"></head>"
+										"<html><body>"
+										"" + fileList + "<br/>"
+										"<form action=\"/files/" + filepath
+										+ "\" enctype=\"multipart/form-data\" method=\"POST\""
+												"<label for=\"file\">Upload a new File</label><br/><input type=\"file\" name=\"file\"/><br/>"
+												"<input type=\"submit\" name=\"submit\" value=\"Upload\"><br/>"
+												"</form>"
+												"<form action=\"/files/"
+										+ filepath
+										+ "\" enctype=\"multipart/form-data\" method=\"POST\""
+												"<label for=\"dir_name\">New Directory Name</label><br/><input type=\"text\" name=\"dir_name\" placeholder=\"Create Directory\"/><br/>"
+												"<input type=\"submit\" name=\"submit\" value=\"Submit\"><br/>"
+												"</form>"
+												"</body></html>";
+					} else {
+						resp.status_code = 200;
+						resp.status = "OK";
+						resp.headers["Content-type"] = "text/plain";
+						resp.content = kvsResponseMsg(getFileResp);
+					}
+				} else {
+					resp.status_code = 404;
+					resp.status = "Not found";
+					resp.headers["Content-type"] = "text/html";
+					resp.content = "<head><meta charset=\"UTF-8\"></head>"
+							"<html><body>"
+							"Requested file not found!"
+							"</body></html>";
+				}
+			} else {
+				resp.status_code = 404;
+				resp.status = "Not found";
+				resp.headers["Content-type"] = "text/html";
+				resp.content = "<head><meta charset=\"UTF-8\"></head>"
+						"<html><body>"
+						"Requested file not found!"
+						"</body></html>";
+			}
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare(0, 11, "/ss_delete") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			std::string containingDirectory =
+					req.formData["containingDirectory"];
+			std::string itemToDelete = req.formData["itemToDelete"];
+			if (containingDirectory.length() > 0 && itemToDelete.length() > 0) {
+				if (itemToDelete.at(2) == '1') {
+					// itemToDelete is a FILE
+					deleteFile(req, containingDirectory, itemToDelete);
+				} else if (itemToDelete.at(2) == '0') {
+					// itemToDelete is a DIRECTORY
+					// Recursively delete all subdirectories and files
+					deleteDirectory(req, containingDirectory, itemToDelete);
+				}
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/files/" + containingDirectory;
+			}
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
 	} else if (req.filepath.compare("/logout") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.cookies.erase("username");
 		}
+		if (req.cookies.find("sessionid") != req.cookies.end()) {
+			resp.cookies.erase("sessionid");
+		}
 		resp.status_code = 307;
 		resp.status = "Temporary Redirect";
 		resp.headers["Location"] = "/";
+	} else if (req.filepath.compare("/mailbox") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+			resp_tuple getResp = getKVS(req.cookies["username"], "mailbox");
+			std::string getRespMsg = kvsResponseMsg(getResp);
+			std::stringstream ss(getRespMsg);
+			std::string to;
+			std::string display = "";
+			if (getRespMsg != "") {
+				while (std::getline(ss, to, '\n')) {
+					if (to.rfind("From <", 0) == 0) {
+						display +=
+								"<ul style=\"border-top: 1px solid black; padding:15px; margin: 0;\">";
+						display +=
+								"<div style=\"display:flex; flex-direction: row;\">"
+										"<form action=\"/email\" method=\"post\" style=\"margin: 0;\">"
+										"<input type=\"hidden\" name=\"header\" value=\""
+										+ encodeURIComponent(to) + "\" />"
+										+ "<label for =\"submit\" style=\"padding-right: 20px;\">"
+										+ escape(to)
+										+ "</label><input type=\"submit\" name=\"submit\" value=\"View\" />"
+												"</form>"
+												"<form style=\"padding-left:15px; padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
+												"<input type=\"hidden\" name=\"type\" value=\"reply\">"
+												"<input type=\"hidden\" name=\"header\" value=\""
+										+ encodeURIComponent(to)
+										+ "\" />"
+												"<input type = \"submit\" value=\"Reply\" /></form>"
+												"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
+												"<input type=\"hidden\" name=\"type\" value=\"forward\">"
+												"<input type=\"hidden\" name=\"header\" value=\""
+										+ encodeURIComponent(to)
+										+ "\" />" "<input type = \"submit\" value=\"Forward\" /></form>"
+												"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
+												"<input type=\"hidden\" name=\"header\" value=\""
+										+ encodeURIComponent(to)
+										+ "\" />" "<input type = \"submit\" value=\"Delete\" /></form></div>";
+						display += "</ul>";
+					}
+				}
+			}
+			if (display == "") {
+				display +=
+						"<ul style=\"border-top: 1px solid black; padding:15px; margin: 0;\">No mail yet!</ul>";
+			}
+			display +=
+					"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>";
+			resp.content =
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
+							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input type = \"submit\" value=\"Dashboard\" /></form>"
+							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Compose Email\"/></form></div>"
+							+ display + "</body></html>";
+			resp.headers["Content-length"] = std::to_string(
+					resp.content.size());
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare("/compose") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+			std::string header = "";
+			if (req.formData.find("header") != req.formData.end()) {
+				header = decodeURIComponent(req.formData["header"]);
+				header = decodeURIComponent(header);
+				size_t index = 0;
+				while (true) {
+					index = header.find("%D", index);
+					if (index == std::string::npos)
+						break;
+					header.replace(index, 2, "\r");
+					index += 2;
+				}
+			}
+			std::string type = "";
+			if (req.formData.find("type") != req.formData.end()) {
+				type = req.formData["type"];
+			}
+			resp_tuple getResp = getKVS(req.cookies["username"], "mailbox");
+			std::string getRespMsg = kvsResponseMsg(getResp);
+			int getRespStatusCode = kvsResponseStatusCode(getResp);
+			std::string existing = "";
+			std::string fullHeader = "";
+			std::string rec = "";
+			if (header != "" && (type == "forward" || type == "reply")) {
+				std::stringstream ss(getRespMsg);
+				std::string to;
+				if (getRespMsg != "") {
+					bool found = false;
+					while (std::getline(ss, to, '\n')) {
+						if (!found && to.rfind(header, 0) == 0) {
+							fullHeader = to;
+							found = true;
+						} else if (found) {
+							if (to.rfind("From <", 0) == 0) {
+								break;
+							} else {
+								existing += to + "\n";
+							}
+						}
+					}
+				}
+				if (existing != "") {
+					std::string temp;
+					if (type == "forward") {
+						temp =
+								"\n\n\n----------------------------------------\n\nFwd:&nbsp;"
+										+ fullHeader + "\n\n";
+					} else {
+						temp =
+								"\n\n\n----------------------------------------\n\nRe:&nbsp;"
+										+ fullHeader + "\n\n";
+						unsigned first = fullHeader.find('<');
+						unsigned last = fullHeader.find('>');
+						rec = fullHeader.substr(first + 1, last - first - 1);
+
+					}
+					temp += existing;
+					existing = temp;
+				}
+			}
+			resp.content =
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
+							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/mailbox\" method=\"POST\"> <input type = \"submit\" value=\"Discard\" /></form>"
+							"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
+							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Send\" /></form></div>"
+							"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
+							"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
+							"<label form=\"compose\" for=\"to\" style=\"height:30px; display: flex; align-items: center;\">To:&nbsp;</label><input required form=\"compose\" style=\"flex:1;\" name=\"to\" type=\"text\" value=\""
+							+ rec
+							+ "\"/></div>"
+									"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
+									"<div style=\"padding:15px\">"
+									"<textarea name=\"content\" form=\"compose\" style=\"width:100%; height: 450px;\">"
+							+ existing + "</textarea>"
+									"</div>"
+									"</body></html>";
+			resp.headers["Content-length"] = std::to_string(
+					resp.content.size());
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare("/email") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			if (req.formData.find("header") != req.formData.end()) {
+				resp.status_code = 200;
+				resp.status = "OK";
+				resp.headers["Content-type"] = "text/html";
+				resp_tuple getResp = getKVS(req.cookies["username"], "mailbox");
+				std::string getRespMsg = kvsResponseMsg(getResp);
+				std::stringstream ss(getRespMsg);
+				std::string to;
+				std::string display = "";
+				std::string header = decodeURIComponent(req.formData["header"]);
+				header = decodeURIComponent(header);
+				size_t index = 0;
+				while (true) {
+					index = header.find("%D", index);
+					if (index == std::string::npos)
+						break;
+					header.replace(index, 2, "\r");
+					index += 2;
+				}
+				if (getRespMsg != "") {
+					bool found = false;
+					std::string message = "";
+					while (std::getline(ss, to, '\n')) {
+						if (!found && to.rfind(header, 0) == 0) {
+							display +=
+									"<ul style=\"border-bottom: 1px solid black; padding:15px; margin: 0;\">";
+							display += escape(to);
+							display += "</ul>";
+							found = true;
+							display +=
+									"<span style=\"white-space: pre-wrap; padding:15px;\">";
+						} else if (found) {
+							if (to.rfind("From <", 0) == 0) {
+								break;
+							} else {
+								message += to + "\n";
+							}
+						}
+					}
+					if (found) {
+						display += escape(message);
+						display += "</span>";
+					}
+				}
+				resp.content =
+						"<head><meta charset=\"UTF-8\"></head>"
+								"<html><body "
+								"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+								"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input type = \"submit\" value=\"Dashboard\" /></form>"
+								"<form action=\"/mailbox\" method=\"POST\" style=\"padding-right: 15px; margin-bottom:18px;\"> <input type = \"submit\" value=\"Mailbox\" /></form>"
+								"<form style=\"padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
+								"<input type=\"hidden\" name=\"type\" value=\"reply\">"
+								"<input type=\"hidden\" name=\"header\" value=\""
+								+ encodeURIComponent(header)
+								+ "\" />"
+										"<input type = \"submit\" value=\"Reply\" /></form>"
+										"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
+										"<input type=\"hidden\" name=\"type\" value=\"forward\">"
+										"<input type=\"hidden\" name=\"header\" value=\""
+								+ encodeURIComponent(header)
+								+ "\" />" "<input type = \"submit\" value=\"Forward\" /></form>"
+										"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
+										"<input type=\"hidden\" name=\"header\" value=\""
+								+ encodeURIComponent(header)
+								+ "\" />" "<input type = \"submit\" value=\"Delete\" /></form></div>"
+										"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
+								+ display + "</body></html>";
+				resp.headers["Content-length"] = std::to_string(
+						resp.content.size());
+			} else {
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/mailbox";
+			}
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare("/delete") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			if (req.formData.find("header") != req.formData.end()) {
+				std::string header = decodeURIComponent(req.formData["header"]);
+				header = decodeURIComponent(header);
+				size_t index = 0;
+				while (true) {
+					index = header.find("%D", index);
+					if (index == std::string::npos)
+						break;
+					header.replace(index, 2, "\r");
+					index += 2;
+				}
+				int respStatus2 = 1;
+				while (respStatus2 != 0) {
+					resp_tuple getResp = getKVS(req.cookies["username"],
+							"mailbox");
+					std::string getRespMsg = kvsResponseMsg(getResp);
+					std::stringstream ss(getRespMsg);
+					std::string to;
+					std::string final = "";
+					if (getRespMsg != "") {
+						bool found = false;
+						bool done = true;
+						while (std::getline(ss, to, '\n')) {
+							if (!found && to.rfind(header, 0) == 0) {
+								found = true;
+								done = false;
+							} else if (found && !done) {
+								if (to.rfind("From <", 0) == 0) {
+									done = true;
+									final += to + "\n";
+								}
+							} else {
+								final += to + "\n";
+							}
+						}
+					}
+					resp_tuple resp2 = cputKVS(req.cookies["username"],
+							"mailbox", getRespMsg, final);
+					respStatus2 = kvsResponseStatusCode(resp2);
+				}
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/mailbox";
+			} else {
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/mailbox";
+			}
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare("/send") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			if (req.formData.find("to") != req.formData.end()) {
+				std::string to = decodeURIComponent(req.formData["to"]);
+				to = decodeURIComponent(to);
+				size_t index = 0;
+				while (true) {
+					index = to.find("%D", index);
+					if (index == std::string::npos)
+						break;
+					to.replace(index, 2, "\r");
+					index += 2;
+				}
+				std::string message = "";
+				if (req.formData.find("content") != req.formData.end()) {
+					message = req.formData["content"];
+				}
+				message = decodeURIComponent(message);
+				message = decodeURIComponent(message);
+				index = 0;
+				while (true) {
+					index = message.find("%D", index);
+					if (index == std::string::npos)
+						break;
+					message.replace(index, 2, "\r");
+					index += 2;
+				}
+				std::vector < std::string > toSend;
+				std::istringstream ss { to };
+				std::string token;
+				bool local;
+				std::string ending = "@localhost";
+				std::string sender = req.cookies["username"] + ending;
+				time_t rawtime;
+				struct tm *timeinfo;
+				time(&rawtime);
+				timeinfo = localtime(&rawtime);
+				std::string temp = "From <" + sender + "> " + asctime(timeinfo)
+						+ "\n";
+				temp[temp.length() - 2] = '\r';
+				while (std::getline(ss, token, ',')) {
+					if (!token.empty()) {
+						if (token.length() >= ending.length()) {
+							local = (0
+									== token.compare(
+											token.length() - ending.length(),
+											ending.length(), ending));
+						} else {
+							local = false;
+						}
+						if (!local) {
+							toSend.push_back(token);
+						} else {
+							std::string addr = token.substr(0, token.find("@"));
+							resp_tuple getResp = getKVS(addr, "mailbox");
+							std::string current = kvsResponseMsg(getResp);
+							int getRespStatusCode = kvsResponseStatusCode(
+									getResp);
+							if (getRespStatusCode == 0) {
+								temp += message;
+								temp += "\r\n";
+								std::string final = temp;
+								final += current;
+								resp_tuple resp2 = cputKVS(addr, "mailbox",
+										current, final);
+								int respStatus2 = kvsResponseStatusCode(resp2);
+								while (respStatus2 != 0) {
+									getResp = getKVS(addr, "mailbox");
+									getRespStatusCode = kvsResponseStatusCode(
+											getResp);
+									current = kvsResponseMsg(getResp);
+									final = temp;
+									final += current;
+									resp2 = cputKVS(addr, "mailbox", current,
+											final);
+									respStatus2 = kvsResponseStatusCode(resp2);
+								}
+							}
+						}
+					}
+				}
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/mailbox";
+			} else {
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/mailbox";
+			}
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if(req.filepath.compare("/admin") == 0){
+		if(req.cookies.find("username") != req.cookies.end()){
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+
+			std::string message = "<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+					"<input type = \"submit\" value=\"Logout\" /></form></body></html>";
+			resp.headers["Content-length"] = message.size();
+			resp.content = message;
+		}
 	} else {
-		resp.status_code = 404;
-		resp.status = "Not Found";
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/dashboard";
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
 	}
 	return resp;
 }
@@ -964,6 +1609,9 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 	}
 	if (resp.cookies.find("username") == resp.cookies.end()) {
 		response += "Set-cookie: username=deleted; Max-Age=-1\r\n";
+	}
+	if (resp.cookies.find("sessionid") == resp.cookies.end()) {
+		response += "Set-cookie: sessionid=deleted; Max-Age=-1\r\n";
 	}
 	if (resp.content.compare("") != 0) {
 		response += "\r\n" + resp.content;
@@ -1000,23 +1648,403 @@ void* handleClient(void *arg) {
 	return NULL;
 }
 
-// TODO: Bharath adds his stuff
-void * handle_smtp_connections(void * arg){
-	int *client_fd = (int *) arg;
-
-	std::string message = "Hi! no mails yet\n";
-	write(*client_fd, message.data(), message.size());
-
-	// Close client connection and exit thread
-	pthread_mutex_lock(&fd_mutex);
-	fd.erase(client_fd);
-	pthread_mutex_unlock(&fd_mutex);
-	close(*client_fd);
-	free(client_fd);
-	return NULL;
+bool do_write(int fd, char *buf, int len) {
+	int sent = 0;
+	while (sent < len) {
+		int n = write(fd, &buf[sent], len - sent);
+		if (n < 0)
+			return false;
+		sent += n;
+	}
+	return true;
 }
 
-int create_thread(int socket_fd, bool http){
+void* handle_smtp_connections(void *arg) {
+	sigset_t newmask;
+	sigemptyset(&newmask);
+	sigaddset(&newmask, SIGINT);
+	pthread_sigmask(SIG_BLOCK, &newmask, NULL);
+	int comm_fd = *(int*) arg;
+	struct timeval timeout;
+	timeout.tv_sec = 100;
+	timeout.tv_usec = 0;
+	if (setsockopt(comm_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
+			sizeof(timeout)) < 0)
+		log("setsockopt failed\n");
+	free(arg);
+	char buf[1000];
+	std::string sender;
+	std::string recipient;
+	std::vector < std::string > recipients;
+	std::string dataLine;
+	std::vector < std::string > data;
+	int len = 0;
+	int rcvd;
+	int start;
+	int index;
+	int checkIndex;
+	bool checked = false;
+	bool alreadySet;
+	int state = 0;
+	char helo[] = "250 localhost\r\n";
+	char stateError[] = "503 Bad sequence of commands\r\n";
+	char paramError[] = "501 Syntax error in parameters or arguments\r\n";
+	char commandError[] = "500 Syntax error, command unrecognized\r\n";
+	char quit[] = "221 localhost Service closing transmission channel\r\n";
+	char ok[] = "250 OK\r\n";
+	char localhost[] = "@localhost";
+	char notLocalError[] = "551 User not local\r\n";
+	char noUserError[] = "550 No such user here\r\n";
+	char intermediateReply[] =
+			"354 Start mail input; end with <CRLF>.<CRLF>\r\n";
+	char shutDown[] = "421 localhost Service not available\r\n";
+	while (true) {
+		alreadySet = false;
+		if (checked) {
+			rcvd = read(comm_fd, &buf[len], 1000 - len);
+		} else
+			rcvd = 0;
+		len += rcvd;
+		if (checked)
+			start = len - rcvd;
+		else
+			start = 0;
+		checked = true;
+		printf("%s\n", buf);
+		// Check for complete command in unchecked or newly read buffer.
+		for (int i = start; i < len - 1; i++) {
+			if (buf[i] == '\r' && buf[i + 1] == '\n') {
+				if (vflag)
+					fprintf(stderr, "[%d] C: %.*s", comm_fd, i + 2, &buf[0]);
+				// Handle HELO command.
+				if (tolower(buf[0]) == 'h' && i > 3 && tolower(buf[1]) == 'e'
+						&& tolower(buf[2]) == 'l' && tolower(buf[3]) == 'o'
+						&& (i == 4 || buf[4] == ' ')) {
+					if (state != 0 && state != 1) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else if (i > 5 && buf[5] != ' ') {
+						// Successful HELO command.
+						do_write(comm_fd, helo, sizeof(helo) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(helo) - 1, helo);
+						state = 1;
+					} else {
+						do_write(comm_fd, paramError, sizeof(paramError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(paramError) - 1, paramError);
+					}
+				} // Handle MAIL command.
+				else if (tolower(buf[0]) == 'm' && i > 3
+						&& tolower(buf[1]) == 'a' && tolower(buf[2]) == 'i'
+						&& tolower(buf[3]) == 'l'
+						&& (i == 4 || buf[4] == ' ')) {
+					if (state == 0) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else if (i > 14 && tolower(buf[5]) == 'f'
+							&& tolower(buf[6]) == 'r' && tolower(buf[7]) == 'o'
+							&& tolower(buf[8]) == 'm' && buf[9] == ':'
+							&& buf[10] == '<' && buf[i - 1] == '>') {
+						bool validAddress = false;
+						for (int j = 12; j < i - 2; j++) {
+							if (buf[j] == '@')
+								validAddress = true;
+						}
+						if (validAddress) {
+							// Successful MAIL command.
+							sender = "";
+							for (int j = 11; j < i - 1; j++) {
+								sender = sender + buf[j];
+							}
+							recipients.clear();
+							data.clear();
+							state = 2;
+							do_write(comm_fd, ok, sizeof(ok) - 1);
+							if (vflag)
+								fprintf(stderr, "[%d] S: %.*s", comm_fd,
+										(int) sizeof(ok) - 1, ok);
+						} else {
+							do_write(comm_fd, paramError,
+									sizeof(paramError) - 1);
+							if (vflag)
+								fprintf(stderr, "[%d] S: %.*s", comm_fd,
+										(int) sizeof(paramError) - 1,
+										paramError);
+						}
+					} else {
+						do_write(comm_fd, paramError, sizeof(paramError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(paramError) - 1, paramError);
+					}
+				} // Handle RCPT command.
+				else if (tolower(buf[0]) == 'r' && i > 3
+						&& tolower(buf[1]) == 'c' && tolower(buf[2]) == 'p'
+						&& tolower(buf[3]) == 't'
+						&& (i == 4 || buf[4] == ' ')) {
+					if (state != 2 && state != 3) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else if (i > 12 && tolower(buf[5]) == 't'
+							&& tolower(buf[6]) == 'o' && buf[7] == ':'
+							&& buf[8] == '<' && buf[i - 1] == '>') {
+						bool validAddress = false;
+						for (int j = 10; j < i - 2; j++) {
+							if (buf[j] == '@')
+								validAddress = true;
+						}
+						if (validAddress) {
+							checkIndex = 0;
+							bool validDomain = true;
+							for (int j = i - 11; j < i - 1; j++) {
+								if (tolower(buf[j]) != localhost[checkIndex])
+									validDomain = false;
+								checkIndex++;
+							}
+							if (validDomain) {
+								// Successful RCPT command.
+								recipient = "";
+								for (int j = 9; j < i - 11; j++) {
+									recipient = recipient + buf[j];
+								}
+								resp_tuple resp = getKVS(recipient, "mailbox");
+								int respStatus = kvsResponseStatusCode(resp);
+								if (respStatus == 0) {
+									recipients.push_back(recipient);
+									state = 3;
+									do_write(comm_fd, ok, sizeof(ok) - 1);
+									if (vflag)
+										fprintf(stderr, "[%d] S: %.*s", comm_fd,
+												(int) sizeof(ok) - 1, ok);
+								} else {
+									do_write(comm_fd, noUserError,
+											sizeof(noUserError) - 1);
+									if (vflag)
+										fprintf(stderr, "[%d] S: %.*s", comm_fd,
+												(int) sizeof(noUserError) - 1,
+												noUserError);
+								}
+							} else {
+								do_write(comm_fd, notLocalError,
+										sizeof(notLocalError) - 1);
+								if (vflag)
+									fprintf(stderr, "[%d] S: %.*s", comm_fd,
+											(int) sizeof(notLocalError) - 1,
+											notLocalError);
+							}
+						} else {
+							do_write(comm_fd, paramError,
+									sizeof(paramError) - 1);
+							if (vflag)
+								fprintf(stderr, "[%d] S: %.*s", comm_fd,
+										(int) sizeof(paramError) - 1,
+										paramError);
+						}
+					} else {
+						do_write(comm_fd, paramError, sizeof(paramError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(paramError) - 1, paramError);
+					}
+				} // Handle DATA command.
+				else if (tolower(buf[0]) == 'd' && i > 3
+						&& tolower(buf[1]) == 'a' && tolower(buf[2]) == 't'
+						&& tolower(buf[3]) == 'a' && i == 4) {
+					if (state != 3) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else {
+						// Successful DATA command.
+						do_write(comm_fd, intermediateReply,
+								sizeof(intermediateReply) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(intermediateReply) - 1,
+									intermediateReply);
+						index = 0;
+						for (int j = i + 2; j < len; j++) {
+							buf[index] = buf[j];
+							index++;
+						}
+						len = index;
+						if (len > 0)
+							checked = false;
+						bool dataComplete = false;
+						bool seenAlready = false;
+						bool isPeriodEnd = false;
+						// Read text of email.
+						while (!dataComplete) {
+							if (checked)
+								rcvd = read(comm_fd, &buf[len], 1000 - len);
+							else
+								rcvd = 0;
+							len += rcvd;
+							if (checked)
+								start = len - rcvd;
+							else
+								start = 0;
+							checked = true;
+							for (int j = start; j < len - 1; j++) {
+								if (buf[j] == '\r' && buf[j + 1] == '\n') {
+									dataLine = "";
+									for (int k = start; k < j + 2; k++) {
+										dataLine = dataLine + buf[k];
+									}
+									index = 0;
+									if (j < len - 3 && buf[j + 2] == '.'
+											&& buf[j + 3] == '\r'
+											&& buf[j + 4] == '\n') {
+										dataComplete = true;
+										for (int k = j + 5; k < len; k++) {
+											buf[index] = buf[k];
+											index++;
+										}
+										alreadySet = true;
+									} else if (j == start + 1
+											&& buf[start] == '.'
+											&& seenAlready) {
+										dataComplete = true;
+										isPeriodEnd = true;
+										for (int k = j + 2; k < len; k++) {
+											buf[index] = buf[k];
+											index++;
+										}
+										alreadySet = true;
+									} else {
+										for (int k = j + 2; k < len; k++) {
+											buf[index] = buf[k];
+											index++;
+										}
+									}
+									if (!isPeriodEnd)
+										data.push_back(dataLine);
+									len = index;
+									if (len > 0)
+										checked = false;
+									seenAlready = true;
+									break;
+								}
+							}
+						}
+						time_t rawtime;
+						struct tm *timeinfo;
+						time(&rawtime);
+						timeinfo = localtime(&rawtime);
+						std::string temp = "From <" + sender + "> "
+								+ asctime(timeinfo) + "\n";
+						temp[temp.length() - 2] = '\r';
+						// Write email to all recipient mailboxes.
+						for (std::size_t a = 0; a < recipients.size(); a++) {
+							for (std::size_t b = 0; b < data.size(); b++) {
+								temp += data[b];
+							}
+							resp_tuple resp = getKVS(recipients[a], "mailbox");
+							int respStatus = kvsResponseStatusCode(resp);
+							std::string current = kvsResponseMsg(resp);
+							std::string final = temp;
+							final += current;
+							resp_tuple resp2 = cputKVS(recipients[a], "mailbox",
+									current, final);
+							int respStatus2 = kvsResponseStatusCode(resp2);
+							while (respStatus2 != 0) {
+								resp = getKVS(recipients[a], "mailbox");
+								respStatus = kvsResponseStatusCode(resp);
+								current = kvsResponseMsg(resp);
+								final = temp;
+								final += current;
+								resp2 = cputKVS(recipients[a], "mailbox",
+										current, final);
+								respStatus2 = kvsResponseStatusCode(resp2);
+							}
+						}
+						state = 1;
+						do_write(comm_fd, ok, sizeof(ok) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(ok) - 1, ok);
+					}
+				} // Handle RSET command.
+				else if (tolower(buf[0]) == 'r' && i > 3
+						&& tolower(buf[1]) == 's' && tolower(buf[2]) == 'e'
+						&& tolower(buf[3]) == 't' && i == 4) {
+					if (state == 0) {
+						do_write(comm_fd, stateError, sizeof(stateError) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
+					} else {
+						// Successful RSET command.
+						sender = "";
+						recipients.clear();
+						data.clear();
+						state = 1;
+						do_write(comm_fd, ok, sizeof(ok) - 1);
+						if (vflag)
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(ok) - 1, ok);
+					}
+				} // Handle NOOP command.
+				else if (tolower(buf[0]) == 'n' && i > 3
+						&& tolower(buf[1]) == 'o' && tolower(buf[2]) == 'o'
+						&& tolower(buf[3]) == 'p' && i == 4) {
+					do_write(comm_fd, ok, sizeof(ok) - 1);
+					if (vflag)
+						fprintf(stderr, "[%d] S: %.*s", comm_fd,
+								(int) sizeof(ok) - 1, ok);
+				} // Handle QUIT command.
+				else if (tolower(buf[0]) == 'q' && i > 3
+						&& tolower(buf[1]) == 'u' && tolower(buf[2]) == 'i'
+						&& tolower(buf[3]) == 't' && i == 4) {
+					do_write(comm_fd, quit, sizeof(quit) - 1);
+					if (vflag)
+						fprintf(stderr, "[%d] S: %.*s", comm_fd,
+								(int) sizeof(quit) - 1, quit);
+					close(comm_fd);
+					if (vflag)
+						fprintf(stderr, "[%d] Connection closed\n", comm_fd);
+					pthread_detach (pthread_self());pthread_exit
+					(NULL);
+				} // Handle unknown command.
+				else {
+					do_write(comm_fd, commandError, sizeof(commandError) - 1);
+					if (vflag)
+						fprintf(stderr, "[%d] S: %.*s", comm_fd,
+								(int) sizeof(commandError) - 1, commandError);
+				}
+				if (!alreadySet) {
+					index = 0;
+					for (int j = i + 2; j < len; j++) {
+						buf[index] = buf[j];
+						index++;
+					}
+					len = index;
+					if (len > 0)
+						checked = false;
+				}
+				break;
+			}
+		}
+	}
+	do_write(comm_fd, shutDown, sizeof(shutDown) - 1);
+	close(comm_fd);
+	if (vflag)
+		fprintf(stderr, "[%d] Connection closed\n", comm_fd);
+	pthread_detach (pthread_self());pthread_exit
+	(NULL);
+}
+
+int create_thread(int socket_fd, bool http) {
 	struct sockaddr_in client_addr;
 	unsigned int clientaddrlen = sizeof(client_addr);
 	int *client_fd = (int*) malloc(sizeof(int));
@@ -1031,10 +2059,11 @@ int create_thread(int socket_fd, bool http){
 		return -1;
 	} else {
 		pthread_t pthread_id;
-		if(http){
+		if (http) {
 			pthread_create(&pthread_id, NULL, handleClient, client_fd);
 		} else {
-			pthread_create(&pthread_id, NULL, handle_smtp_connections, client_fd);
+			pthread_create(&pthread_id, NULL, handle_smtp_connections,
+					client_fd);
 		}
 		if (shut_down) {
 			write(*client_fd, error_msg.data(), error_msg.size());
@@ -1063,10 +2092,15 @@ int main(int argc, char *argv[]) {
 	/* Parse command line args */
 	int port_no = 10000;
 	int smtp_port_no = 15000;
+	std::string list_of_frontend;
 	for (int i = 0; i < argc; i++) {
 		if (strstr(argv[i], "-v") != NULL
 				&& strcmp(strstr(argv[i], "-v"), "-v") == 0) {
 			verbose = true;
+			vflag = 1;
+		} else if (strstr(argv[i], "-l") != NULL
+				&& strcmp(strstr(argv[i], "-l"), "-l") == 0) {
+			load_balancer = true;
 		} else if (strstr(argv[i], "-p") != NULL
 				&& strcmp(strstr(argv[i], "-p"), "-p") == 0) {
 			if (i + 1 < argc) {
@@ -1080,10 +2114,23 @@ int main(int argc, char *argv[]) {
 				std::cerr
 						<< "'-p' should be followed by a number! Using port 10000\n";
 			}
+		} else if (strstr(argv[i], "-q") != NULL
+				&& strcmp(strstr(argv[i], "-q"), "-q") == 0) {
+			if (i + 1 < argc) {
+				smtp_port_no = atoi(argv[++i]);
+				if (smtp_port_no == 0) {
+					std::cerr
+							<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
+					smtp_port_no = 15000;
+				}
+			} else {
+				std::cerr
+						<< "'-q' should be followed by a number! Using port 15000 for smtp\n";
+			}
 		} else if (strstr(argv[i], "-k") != NULL
 				&& strcmp(strstr(argv[i], "-k"), "-k") == 0) {
 			if (i + 1 < argc) {
-				kvs_addr = trim(std::string(argv[++i]));
+				kvMaster_addr = trim(std::string(argv[++i]));
 			} else {
 				std::cerr << "'-k' should be followed by an address!\n";
 			}
@@ -1101,11 +2148,36 @@ int main(int argc, char *argv[]) {
 			} else {
 				std::cerr << "'-s' should be followed by an address!\n";
 			}
+		} else if (strstr(argv[i], "-f") != NULL
+				&& strcmp(strstr(argv[i], "-f"), "-f") == 0) {
+			if (i + 1 < argc) {
+				list_of_frontend = trim(std::string(argv[++i]));
+			} else {
+				std::cerr << "'-f' should be followed by a file name!\n";
+			}
 		} else if (strstr(argv[i], "-a") != NULL
 				&& strcmp(strstr(argv[i], "-a"), "-a") == 0) {
 			std::cerr << "Full name: Prasanna Poudyal\nSEAS login: poudyal\n";
 			exit(0);
 		}
+	}
+
+	/* Add the list of all frontend servers to queue for load balancing if this node is load balancer */
+	if (load_balancer) {
+		FILE *f = fopen(list_of_frontend.c_str(), "r");
+		if (f == NULL) {
+			std::cerr
+					<< "Provide a valid list of frontend servers to the load balancer!"
+					<< "File " << list_of_frontend
+					<< " not found or couldn't be opened!\n";
+			exit(-1);
+		}
+		char buffer[300];
+		while (fgets(buffer, 300, f)) {
+			frontend_server_list.push_back(trim(std::string(buffer)));
+		}
+		fclose(f);
+		log("Successfully initialized load balancer!");
 	}
 
 	/* Initialize socket */
@@ -1119,9 +2191,9 @@ int main(int argc, char *argv[]) {
 	}
 	int true_opt = 1;
 	if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt, sizeof(int))
-			< 0 ||
-		setsockopt(smtp_socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt, sizeof(int))
-			< 0) {
+			< 0
+			|| setsockopt(smtp_socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt,
+					sizeof(int)) < 0) {
 		if (verbose)
 			std::cerr << "Setsockopt failed\n";
 	}
@@ -1139,24 +2211,26 @@ int main(int argc, char *argv[]) {
 	servaddr.sin_port = htons(port_no);
 	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
+	/* Store my address */
+	my_address = std::string(inet_ntoa(servaddr.sin_addr)) + ":"
+			+ std::to_string(ntohs(servaddr.sin_port));
+
 	smtp_servaddr.sin_family = AF_INET;
 	smtp_servaddr.sin_port = htons(smtp_port_no);
 	smtp_servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
 	/* Bind socket */
-	if (bind(socket_fd, (struct sockaddr*) &servaddr, sizeof(servaddr)) != 0 ||
-		bind(smtp_socket_fd, (struct sockaddr*) &smtp_servaddr, sizeof(smtp_servaddr)) != 0) {
+	if (bind(socket_fd, (struct sockaddr*) &servaddr, sizeof(servaddr)) != 0
+			|| bind(smtp_socket_fd, (struct sockaddr*) &smtp_servaddr,
+					sizeof(smtp_servaddr)) != 0) {
 		std::cerr << "Sockets couldn't bind\n";
 		exit(-1);
 	} else if (verbose) {
 		std::cerr << "Sockets Successfully binded\n";
 	}
 
-    // connectToRPCServer(kvs_addr);
-
 	/* Start listening */
-	if (listen(socket_fd, 20) != 0 ||
-		listen(smtp_socket_fd, 20) != 0	) {
+	if (listen(socket_fd, 20) != 0 || listen(smtp_socket_fd, 20) != 0) {
 		std::cerr << "Listening failed!\n";
 		exit(-1);
 	} else if (verbose) {
@@ -1170,9 +2244,14 @@ int main(int argc, char *argv[]) {
 	struct timeval timeout;
 	timeout.tv_sec = 3;
 	timeout.tv_usec = 0;
-	if (setsockopt (socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,sizeof(timeout)) < 0 ||
-		setsockopt (smtp_socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,sizeof(timeout)) < 0)
+	if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
+			sizeof(timeout)) < 0
+			|| setsockopt(smtp_socket_fd, SOL_SOCKET, SO_RCVTIMEO,
+					(char*) &timeout, sizeof(timeout)) < 0)
 		log("setsockopt failed\n");
+
+	//set up admin account (preferably in only one place: load balancer) TODO
+	//putKVS("admin", "password", "505");
 
 	while (!shut_down) {
 		/* Initialize read set for select and call select */
@@ -1182,15 +2261,18 @@ int main(int argc, char *argv[]) {
 		FD_SET(smtp_socket_fd, &read_set);
 		int nfds = std::max(smtp_socket_fd, socket_fd) + 1;
 		int r = 0;
-		while (r <=0 && !shut_down){
+		while (r <= 0 && !shut_down) {
 			r = pselect(nfds, &read_set, NULL, NULL, NULL, &empty_set);
 		}
-		if(r <= 0 || shut_down) continue;
+		if (r <= 0 || shut_down)
+			continue;
 
-		if(FD_ISSET(socket_fd, &read_set)){
-			if(create_thread(socket_fd, true) < 0) break;
-		} else if (FD_ISSET(smtp_socket_fd, &read_set)){
-			if(create_thread(smtp_socket_fd, false) < 0) break;
+		if (FD_ISSET(socket_fd, &read_set)) {
+			if (create_thread(socket_fd, true) < 0)
+				break;
+		} else if (FD_ISSET(smtp_socket_fd, &read_set)) {
+			if (create_thread(smtp_socket_fd, false) < 0)
+				break;
 		}
 	}
 
