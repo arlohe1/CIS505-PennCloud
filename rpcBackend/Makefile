@@ -16,8 +16,12 @@ master:
 clean:
 	rm -f kvServer
 	rm -f masterNode
-	#rm -r server_1/log.txt
 	: > server_1/log.txt # cleares logfile
+	: > server_2/log.txt # cleares logfile
+	: > server_3/log.txt # cleares logfile
 	rm -r server_1/checkpoint/* # empties checkpoint directory (add -r for removing folders in checkpoint)
+	rm -r server_2/checkpoint/* # empties checkpoint directory (add -r for removing folders in checkpoint)
+	rm -r server_3/checkpoint/* # empties checkpoint directory (add -r for removing folders in checkpoint)
+	#find  . -wholename 'server_*/log.txt' -exec rm -r {} \;
 
 

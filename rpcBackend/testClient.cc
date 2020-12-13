@@ -25,6 +25,9 @@ void isCorrectStrings(std::string exp, std::string resp) {
 int main() {
     //rpc::client c("localhost", rpc::constants::DEFAULT_PORT);
     rpc::client c("localhost", 10000);
+    rpc::client c1("localhost", 10000);
+    rpc::client c2("localhost", 10001);
+    rpc::client c3("localhost", 10002);
 
     try {
         std::string rowString("lianap");
@@ -36,6 +39,23 @@ int main() {
         std::string newValString("newVal");
         resp_tuple resp;
         
+
+        // // consistnecy tests
+        // std::cout << "ON SERV(p=10001): put(lianap, name, Lee) = ";
+        // resp = c2.call("put", "lianap", "name", "Lee").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("OK", std::get<1>(resp));
+
+        // std::cout << "ON SERV(p=10000) put(lianap, email, Hi! What's Up???) = ";
+        // resp = c1.call("put", "lianap", "email", "Hi! What's Up???").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("OK", std::get<1>(resp));
+
+        // std::cout << "ON SERV(p=10002) put(lianap, file, homework 2) = ";
+        // resp = c3.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
+        // std::cout << std::get<1>(resp) << std::endl;
+        // isCorrect("OK", std::get<1>(resp));
+
         // // multiple puts (for log and checkpoint testing - will need to check log and checkpoint files for correct output)
         std::cout << "put(lianap, name, Lee) = ";
         resp = c.call("put", "lianap", "name", "Lee").as<resp_tuple>();

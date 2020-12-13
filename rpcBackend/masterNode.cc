@@ -19,7 +19,8 @@ bool testMode;
 int serverIndx = 1;
 int numClusters = 1;
 std::valarray<int> rowVals (36);
-std::map<int, std::list<std::string>> clusterToServersMap;
+std::map<int, std::list<std::string>> clusterToServersMap; // cluser (int 1, 2, 3) -> [ip: port]
+// TODO - maintain cluster to leader map
 std::string masterNodeAddr;
 
 void stderr_msg(std::string str) {
@@ -88,7 +89,7 @@ int main(int argc, char *argv[]) {
 				break;
 		}
 	}
-
+    
     if(optind < argc) {
         serverListFile = argv[optind];
     }

@@ -3,9 +3,13 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
-#include <rpc/server.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+
+
+#include <rpc/server.h>
+#include "rpc/client.h"
+#include "rpc/rpc_error.h"
 
 #include <errno.h>
 #include <sys/socket.h>
@@ -31,6 +35,10 @@
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
 #define COM_PER_CHECKPOINT 10
+
+
+using resp_tuple = std::tuple<int, std::string>;
+
 enum Command {GET, PUT, CPUT, DELETE};
 
 
@@ -41,7 +49,7 @@ int replay = 0;
 int numCommandsSinceLastCheckpoint = 0;
 
 
-int serverIdx = 1;
+int serverIdx;
 int maxCache;
 int startCacheThresh;
 int cacheSize = 0;
@@ -50,6 +58,45 @@ std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-
 FILE* logfile = NULL;
 FILE* logfileRead = NULL;
 std::string currServerAddr;
+
+
+//TODO read these from the config file instead of hardcoding
+std::string masterIP;
+std::map<int, std::tuple<std::string, int>> clusterMembers;
+std::tuple<std::string, int> myIp; // set after setting serverIdx
+std::tuple<std::string, int> primaryIp;
+
+// semphores
+std::map<std::string, pthread_mutex_t> rwSemaphores; // row -> rw semaphore
+std::map<std::string, pthread_mutex_t> countSemaphores; // row -> count semaphore
+volatile int readcount = 0;
+
+
+
+
+
+// TODO read from config fiel
+void setClusterMembership(int serverIndx) {
+	masterIP = "127.0.0.1:8000";
+	clusterMembers[1] = std::make_tuple("127.0.0.1", 10000);
+	clusterMembers[2] = std::make_tuple("127.0.0.1", 10001);
+	clusterMembers[3] = std::make_tuple("127.0.0.1", 10002);
+	// clusterMembers[2] = "127.0.0.1:10001";
+	// clusterMembers[3] = "127.0.0.1:10002"; 
+	myIp = clusterMembers[serverIndx]; // set after setting serverIdx
+	primaryIp = std::make_tuple("127.0.0.1", 10000);
+
+}
+
+
+// checks if this node is the primary - returns 1 for yes else 0
+int isPrimary() {
+	if (primaryIp == myIp) {
+		return 1;
+	} 
+	return 0;
+}
+
 
 void debugTime() {
 	if (debugFlag) {
@@ -182,61 +229,6 @@ int chdirToRow(const char* dirName) {
 
 }
 
-// // todo add threshold arg, write calloc wrapper that runs checkpoint if calloc fails
-// // returns -1 if row, col doesnt exist, -2 if cannot calloc, -3 for other error
-// int moveFromDiskToLocal(char* row, char* col) {
-// // 	// check that this row,col exists and is not in kv cache already
-// 	if (kvLoc.count(row) > 0) {
-// 		if (kvLoc.count(col) > 0) {
-// 			// check that kvLoc val is 0 (on disk) and not 1 or -1
-// 			if (kvLoc[row][col] == 1) {
-// 				debugDetailed("row (%s) col (%s) already in local cache\n", row, col);
-// 			} else if (kvLoc[row][col] == -1) {
-// 				debugDetailed("row (%s) col (%s) was deleted, nothing to move to local from disk\n", row, col);
-// 			} else {
-// 				// need to retrieve from disk
-// 				chdirToCheckpoint();
-// 				chdirToRow((const char*) row);
-// 				FILE* colFilePtr;
-// 				if ((colFilePtr = fopen(col.c_str(), "r")) == NULL) {
-// 					debugDetailed("fopen failed when opening %s\n", nextColFile->d_name);
-// 					perror("invalid fopen of a checkpoint col file: ");			
-// 					debugDetailed("%s\n", "---------Finished  moveFromDiskToLocal WITH ERROR");
-// 					return -3;
-// 				}
-// 				// read from column file the formatted length
-// 				char headerBuf[MAX_LEN_LOG_HEADER];
-// 				memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
-// 				if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
-// 					perror("invalid fgets when trying to read col file reader: ");	
-// 					return -3;
-// 				}
-// 				headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
-// 				int valLen = (atoi(headerBuf));
-// 				debugDetailed("buf read from checkpoint file (%s) is: %s, valLen:%d\n", nextColFile->d_name, headerBuf, valLen);
-// 				char* val = (char*) calloc(valLen, sizeof(char)); //TODO check if calloc fails and check if length will be too long
-// 				if (val != NULL) {
-// 					fread(val, sizeof(char), valLen, colFilePtr);
-// 				} else {
-// 					perror("cannot calloc value in moveFromDiskToLocal()");
-// 					return -2;
-// 				}
-// 				// enter into kvMap
-// 				std::string rowString(row);
-// 				std::string colString(col);
-// 				std::string valString(val, valLen);
-// 				kvMap[rowString][colString] = valString;
-// 				//free calloc, close file
-// 				free(val);
-// 				fclose(colFilePtr);
-// 			}
-// 			return 0;
-// 		}
-// 	}
-
-// 	debugDetailed("---row, col, val not in kvLoc - row: %s, column: %s\n", row.c_str(), col.c_str());
-// 	return -1;	 
-// }
 
 
 // TODO - make sure deleted rows are handled correclty
@@ -372,7 +364,7 @@ int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, ch
 		if (val != NULL) {
 			fread(val, sizeof(char), valLen, fptr);
 		} else {
-			perror("cannot calloc value in loadKvStoreFromDisk()");
+			perror("cannot calloc value in readAndLoadValIfSpace()");
 			return -1;
 		}
 		//update kvMap and kvLoc
@@ -393,6 +385,8 @@ int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, ch
 	}
 }
 
+
+// call on server start
 int loadKvStoreFromDisk() {
 	// loop over all files in checkpoint dir and read each row file
 	debugDetailed("%s\n", "---------Entered loadKvStoreFromDisk");
@@ -523,41 +517,35 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 }
 
 
-// // returns 0 if there was space, and -1 if not
-// int putIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, char* col) {
-// 	// check if space
-// 	if (cacheSize + valLen < cacheThresh) {
-// 		// read in val 
-// 		char* val = (char*) calloc(valLen, sizeof(char));
-// 		if (val != NULL) {
-// 			fread(val, sizeof(char), valLen, fptr);
-// 		} else {
-// 			perror("cannot calloc value in loadKvStoreFromDisk()");
-// 			return -1;
-// 		}
-// 		//update kvMap and kvLoc
-// 		std::string rowString(row);
-// 		std::string colString(col);
-// 		std::string valString(val, valLen);
-// 		kvMap[rowString][colString] = valString;
-// 		cacheSize = cacheSize + valLen;
-// 		kvLoc[rowString][colString] = 1;
-// 		free(val);
-// 		return 0;
-// 	} else {
-// 		// update kvLoc
-// 		std::string rowString(row);
-// 		std::string colString(col);
-// 		kvLoc[rowString][colString] = 0;
-// 		return -1;
-// 	}
-// }
 
+// helper to compare responses
+resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, std::string>> respSet) {
+	std::tuple<int, std::string> firstVal = std::make_tuple(0, "");
+	std::tuple<int, std::string> resp = std::make_tuple(0, "");
+	for (const auto& x : respSet) {
+		//x.first is ip:port, x.second is resp_tuple
+    	if (firstVal == std::make_tuple(0, "")) {
+    		firstVal = x.second;
+    		resp = x.second;
+    	} else {
+    		if (x.second != firstVal) {
+    			resp = std::make_tuple(3, "Error with consistency");
+    			return (resp_tuple) resp;
+    		}
+    	}	
+	}
+	if (firstVal == std::make_tuple(0, "")) {
+		debugDetailed("%s\n", "error in combine resps - empty respSet arg");
+		resp = std::make_tuple(-1, "Error: empty resp set");
+	}
+	return (resp_tuple) resp;
+	//return respSet[myIp];
+}
 
 std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
     debugDetailed("---PUT entered - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
     int oldLen = kvMap[row][col].length();
-    int ranCheckPoint = 0;
+    int ranCheckPoint = 0; // need this flag to properly update chacheSize
 
     // check if can store in local cache
     if (val.length() + cacheSize - oldLen > maxCache) {
@@ -586,11 +574,101 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
     }
 }
 
+std::tuple<int, std::string> putApproved(std::string row, std::string col, std::string val) {
+	// claim semaphore on row
+	if (rwSemaphores.count(row) == 0) {
+		// initalize semaphore for this row
+		//rwSemaphores[row] = NULL;
+		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
+			perror("invalid pthread_mutex_init:");
+			return std::make_tuple(1, "ERR");
+		}
+	} 
+	// claim semaphore
+	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+		debugDetailed("%s\n", "error obtaining mutex lock");
+		return std::make_tuple(1, "ERR");
+	}	
+
+	resp_tuple resp =  put(row, col, val);
+
+	// release semaphor on row
+	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+		debug("%s\n", "error unlocking mutex");
+		return std::make_tuple(1, "ERR");
+	}
+	return resp;
+}
+
+
+std::tuple<int, std::string> putReq(std::string row, std::string col, std::string val) {
+	debugDetailed("---PUTREQ entered, primary is: %s:%d\n", std::get<0>(primaryIp).c_str(), std::get<1>(primaryIp));
+	std::map<std::tuple<std::string, int>, resp_tuple> respSet; // map from ip:port -> resp tuple 
+	resp_tuple resp;
+	// handle whether of not receiving node is a primary
+    if (isPrimary() == 1) {
+    	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
+    	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+			debugDetailed("%s\n", "error obtaining mutex lock");
+			return std::make_tuple(1, "ERR");
+		}	
+    	respSet[myIp] = put(row, col, val);
+    	debugDetailed("---PUTREQ entered - I am primary: %s\n", "local put completed");
+    	for (const auto& server : clusterMembers) {
+    		// server.first is serverIndx, server.second is tuple (ip string, port int)
+    		if (server.second != myIp) {
+    			rpc::client client(std::get<0>(server.second), std::get<1>(server.second));
+				try { // TODO - on timeout, query connection state and retry if connected
+			        // default timeout is 5000 milliseconds TODO: adjust timeout as needed
+			        const uint64_t short_timeout = 5000;
+			        client.set_timeout(short_timeout);
+			        debugDetailed("---PUTREQ entered: %s: %s:%d\n", "trying remote put to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
+			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
+			        resp = client.call("putApproved", row, col, val).as<resp_tuple>();
+			        respSet[server.second] = resp;
+			    } catch (rpc::timeout &t) {
+			        // will display a message like
+			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
+			        std::cout << t.what() << std::endl;
+			    } catch (rpc::rpc_error &e) {
+				    std::cout << std::endl << e.what() << std::endl;
+				    std::cout << "in function " << e.get_function_name() << ": ";
+
+				    using err_t = std::tuple<int, std::string>;
+				    auto err = e.get_error().as<err_t>();
+				    std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
+				              << std::endl;
+				    return std::make_tuple(1, "ERR");
+			    }
+    		}
+		}
+		// release semaphor on row
+		if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+			debug("%s\n", "error unlocking mutex");
+			return std::make_tuple(1, "ERR");
+		}
+		debugDetailed("---PUTREQ entered - primary: %s\n", "calling combineResps");
+		// return resp tuple
+		resp = combineResps(respSet);
+		return resp;
+		//return respSet[myIp];
+    } else {
+    	debugDetailed("---PUTREQ entered - I am NOT primary: %s\n", "sending to primary");
+    	// send put Req to primary //TODO need to handle case where primary has failed
+    	//std::cout << "received a put request and reached putReq fct " << std::endl;
+    	rpc::client client(std::get<0>(primaryIp), std::get<1>(primaryIp));
+    	resp = client.call("put", row, col, val).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
+    	//debugDetailed("---PUTREQ entered - I am NOT primary: %s\n", "local put completed");
+    	return resp;
+    }
+    return std::make_tuple(-1, "ERR");
+
+}
 
 // get val if known to exist
 std::string getValDiskorLocal(std::string row, std::string col) {
 	std::string val;
-	if (kvLoc[row][col] == 0) {
+	if (kvLoc[row][col] == 0) { // TODO would need to claim semaphore here in this case on checkpoint where eviction happens
 		debugDetailed("%s\n", "row, col, val on disk, retrieiving..");
 		// try to load from disk, and run checkpoint if needed
 		FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
@@ -612,7 +690,26 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 	if (kvLoc.count(row) > 0) {
 		if (kvLoc[row].count(col) > 0) {
 			if (kvLoc[row][col] != -1) {
-				std::string val = getValDiskorLocal(row, col);			
+				// claim semaphore on row
+				if (rwSemaphores.count(row) == 0) {
+					// initalize semaphore for this row
+					//rwSemaphores[row] = NULL;
+					if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
+						perror("invalid pthread_mutex_init:");
+						return std::make_tuple(1, "ERR");
+					}
+				} 
+				// claim semaphore
+				if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+					debugDetailed("%s\n", "error obtaining mutex lock");
+					return std::make_tuple(1, "ERR");
+				}	
+				std::string val = getValDiskorLocal(row, col);	
+				// release semaphor on row
+				if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+					debug("%s\n", "error unlocking mutex");
+					return std::make_tuple(1, "ERR");
+				}		
 				debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
 				printKvMap();
 				//logCommand(GET, 2, row, col, row, row);
@@ -674,6 +771,97 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 	return std::make_tuple(1, "No such row, column pair");
 }
 
+std::tuple<int, std::string> cputApproved(std::string row, std::string col, std::string val, std::string newVal) {
+	// claim semaphore on row
+	if (rwSemaphores.count(row) == 0) {
+		// initalize semaphore for this row
+		//rwSemaphores[row] = NULL;
+		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
+			perror("invalid pthread_mutex_init:");
+			return std::make_tuple(1, "ERR");
+		}
+	} 
+	// claim semaphore
+	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+		debugDetailed("%s\n", "error obtaining mutex lock");
+		return std::make_tuple(1, "ERR");
+	}	
+
+	resp_tuple resp =  cput(row, col, val, newVal);
+
+	// release semaphor on row
+	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+		debug("%s\n", "error unlocking mutex");
+		return std::make_tuple(1, "ERR");
+	}
+	return resp;
+}
+
+
+std::tuple<int, std::string> cputReq(std::string row, std::string col, std::string val, std::string newVal) {
+	debugDetailed("---CPUTREQ entered, primary is: %s:%d\n", std::get<0>(primaryIp).c_str(), std::get<1>(primaryIp));
+	std::map<std::tuple<std::string, int>, resp_tuple> respSet; // map from ip:port -> resp tuple 
+	resp_tuple resp;
+	// handle whether of not receiving node is a primary
+    if (isPrimary() == 1) {
+    	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
+    	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+			debugDetailed("%s\n", "error obtaining mutex lock");
+			return std::make_tuple(1, "ERR");
+		}	
+    	respSet[myIp] = cput(row, col, val, newVal);
+    	debugDetailed("---CPUTREQ entered - I am primary: %s\n", "local cput completed");
+    	for (const auto& server : clusterMembers) {
+    		// server.first is serverIndx, server.second is tuple (ip string, port int)
+    		if (server.second != myIp) {
+    			rpc::client client(std::get<0>(server.second), std::get<1>(server.second));
+				try { // TODO - on timeout, query connection state and retry if connected
+			        // default timeout is 5000 milliseconds TODO: adjust timeout as needed
+			        const uint64_t short_timeout = 5000;
+			        client.set_timeout(short_timeout);
+			        debugDetailed("---CPUTREQ entered: %s: %s:%d\n", "trying remote cput to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
+			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
+			        resp = client.call("cputApproved", row, col, val, newVal).as<resp_tuple>();
+			        respSet[server.second] = resp;
+			    } catch (rpc::timeout &t) {
+			        // will display a message like
+			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
+			        std::cout << t.what() << std::endl;
+			    } catch (rpc::rpc_error &e) {
+				    std::cout << std::endl << e.what() << std::endl;
+				    std::cout << "in function " << e.get_function_name() << ": ";
+
+				    using err_t = std::tuple<int, std::string>;
+				    auto err = e.get_error().as<err_t>();
+				    std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
+				              << std::endl;
+				    return std::make_tuple(1, "ERR");
+			    }
+    		}
+		}
+		// release semaphor on row
+		if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+			debug("%s\n", "error unlocking mutex");
+			return std::make_tuple(1, "ERR");
+		}
+		debugDetailed("---CPUTREQ entered - primary: %s\n", "calling combineResps");
+		// return resp tuple
+		resp = combineResps(respSet);
+		return resp;
+		//return respSet[myIp];
+    } else {
+    	debugDetailed("---CPUTREQ entered - I am NOT primary: %s\n", "sending to primary");
+    	// send put Req to primary //TODO need to handle case where primary has failed
+    	//std::cout << "received a put request and reached putReq fct " << std::endl;
+    	rpc::client client(std::get<0>(primaryIp), std::get<1>(primaryIp));
+    	resp = client.call("cput", row, col, val, newVal).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
+    	//debugDetailed("---PUTREQ entered - I am NOT primary: %s\n", "local put completed");
+    	return resp;
+    }
+    return std::make_tuple(-1, "ERR");
+
+}
+
 std::tuple<int, std::string> del(std::string row, std::string col) {
 	debugDetailed("%s\n", "del entered");
 	printKvMap();
@@ -699,6 +887,98 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 	printKvMap();
 	//logCommand(DELETE, 2, row, col, row, row);
 	return std::make_tuple(1, "No such row, column pair");
+}
+
+
+std::tuple<int, std::string> delApproved(std::string row, std::string col) {
+	// claim semaphore on row
+	if (rwSemaphores.count(row) == 0) {
+		// initalize semaphore for this row
+		//rwSemaphores[row] = NULL;
+		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
+			perror("invalid pthread_mutex_init:");
+			return std::make_tuple(1, "ERR");
+		}
+	} 
+	// claim semaphore
+	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+		debugDetailed("%s\n", "error obtaining mutex lock");
+		return std::make_tuple(1, "ERR");
+	}	
+
+	resp_tuple resp =  del(row, col);
+
+	// release semaphor on row
+	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+		debug("%s\n", "error unlocking mutex");
+		return std::make_tuple(1, "ERR");
+	}
+	return resp;
+}
+
+
+std::tuple<int, std::string> delReq(std::string row, std::string col) {
+	debugDetailed("---delREQ entered, primary is: %s:%d\n", std::get<0>(primaryIp).c_str(), std::get<1>(primaryIp));
+	std::map<std::tuple<std::string, int>, resp_tuple> respSet; // map from ip:port -> resp tuple 
+	resp_tuple resp;
+	// handle whether of not receiving node is a primary
+    if (isPrimary() == 1) {
+    	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
+    	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+			debugDetailed("%s\n", "error obtaining mutex lock");
+			return std::make_tuple(1, "ERR");
+		}	
+    	respSet[myIp] = del(row, col);
+    	debugDetailed("---delREQ entered - I am primary: %s\n", "local del completed");
+    	for (const auto& server : clusterMembers) {
+    		// server.first is serverIndx, server.second is tuple (ip string, port int)
+    		if (server.second != myIp) {
+    			rpc::client client(std::get<0>(server.second), std::get<1>(server.second));
+				try { // TODO - on timeout, query connection state and retry if connected
+			        // default timeout is 5000 milliseconds TODO: adjust timeout as needed
+			        const uint64_t short_timeout = 5000;
+			        client.set_timeout(short_timeout);
+			        debugDetailed("---delREQ entered: %s: %s:%d\n", "trying remote put to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
+			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
+			        resp = client.call("delApproved", row, col).as<resp_tuple>();
+			        respSet[server.second] = resp;
+			    } catch (rpc::timeout &t) {
+			        // will display a message like
+			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
+			        std::cout << t.what() << std::endl;
+			    } catch (rpc::rpc_error &e) {
+				    std::cout << std::endl << e.what() << std::endl;
+				    std::cout << "in function " << e.get_function_name() << ": ";
+
+				    using err_t = std::tuple<int, std::string>;
+				    auto err = e.get_error().as<err_t>();
+				    std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
+				              << std::endl;
+				    return std::make_tuple(1, "ERR");
+			    }
+    		}
+		}
+		// release semaphor on row
+		if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+			debug("%s\n", "error unlocking mutex");
+			return std::make_tuple(1, "ERR");
+		}
+		debugDetailed("---delREQ entered - primary: %s\n", "calling combineResps");
+		// return resp tuple
+		resp = combineResps(respSet);
+		return resp;
+		//return respSet[myIp];
+    } else {
+    	debugDetailed("---delREQ entered - I am NOT primary: %s\n", "sending to primary");
+    	// send put Req to primary //TODO need to handle case where primary has failed
+    	//std::cout << "received a put request and reached putReq fct " << std::endl;
+    	rpc::client client(std::get<0>(primaryIp), std::get<1>(primaryIp));
+    	resp = client.call("del", row, col).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
+    	//debugDetailed("---PUTREQ entered - I am NOT primary: %s\n", "local put completed");
+    	return resp;
+    }
+    return std::make_tuple(-1, "ERR");
+
 }
 
 
@@ -838,6 +1118,10 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Provide a valid list of backend servers\n");
         exit(-1);
     }
+
+    setClusterMembership(serverIdx); // TODO need to fix this funciton
+
+
     int serverNum = 0;
     char buffer[300];
     int port = 0;
@@ -890,12 +1174,21 @@ int main(int argc, char *argv[]) {
 
     debug("Connecting to port: %d\n", port);
 	rpc::server srv(port);
-	srv.bind("put", &put);
+	srv.bind("putApproved", &putApproved); 
+	srv.bind("put", &putReq);
+	srv.bind("cputApproved", &cputApproved); 
+	srv.bind("cput", &cputReq);
+	srv.bind("delApproved", &delApproved); 
+	srv.bind("del", &delReq);
 	srv.bind("get", &get);
-	srv.bind("cput", &cput);
-	srv.bind("del", &del);
+	//srv.bind("cput", &cput);
+	//srv.bind("del", &del);
 
-	srv.run();
+	srv.async_run(10);
+
+	while(1) {
+		sleep(10);
+	}
 
     return 0;
 }
