@@ -19,7 +19,7 @@ bool testMode;
 int serverIndx = 1;
 int numClusters = 1;
 std::valarray<int> rowVals (36);
-std::map<int, std::list<std::string>> clusterToServersMap;
+std::map<int, std::deque<std::string>> clusterToServersMap;
 std::string masterNodeAddr;
 
 void stderr_msg(std::string str) {
@@ -31,35 +31,32 @@ void log(std::string str) {
         stderr_msg(str);
 }
 
-// Returns cluster that contains row-col-val based on first letter of row
-// Returns 0 w/ list of servers in cluster on success
-// Returns -1 w/ empty list on failure
-std::tuple<int,std::list<std::string>> where(std::string row) {
+// Returns an active server from the cluster that contains row-col-val based on first letter of row
+// Returns 0 w/ active server in cluster on success
+// Returns 1 w/ "Error" on failure
+std::tuple<int, std::string> where(std::string row) {
     log("Received WHERE: " + row);
-    std::list<std::string> serverList {};
     if(row.length() <= 0 || !isalnum(row.at(0))) {
         // error
-         return std::make_tuple(-1, serverList);
+         return std::make_tuple(1, "Error");
     }
 
     if(testMode) {
-        serverList.push_back("127.0.0.1:10000");
-        serverList.push_back("127.0.0.1:10000");
-        return std::make_tuple(0, serverList);
+        return std::make_tuple(0, std::string("127.0.0.1:10000"));
     }
 
     char firstChar = toupper(row.at(0));
+    std::deque<std::string> clusterToChooseFrom;
     if(firstChar >= '0' && firstChar <= '9') {
-         return std::make_tuple(0, clusterToServersMap[0 % numClusters]);
+         clusterToChooseFrom = clusterToServersMap[0 % numClusters];
     } else if(firstChar >= 'A' && firstChar <= 'I') {
-         return std::make_tuple(0, clusterToServersMap[1 % numClusters]);
+         clusterToChooseFrom = clusterToServersMap[1 % numClusters];
     } else if(firstChar >= 'J' && firstChar <= 'R') {
-         return std::make_tuple(0, clusterToServersMap[2 % numClusters]);
+         clusterToChooseFrom = clusterToServersMap[2 % numClusters];
     } else if(firstChar >= 'S' && firstChar <= 'Z') {
-         return std::make_tuple(0, clusterToServersMap[3 % numClusters]);
+         clusterToChooseFrom = clusterToServersMap[3 % numClusters];
     }
-    serverList.clear();
-    return std::make_tuple(-1, serverList);
+    return std::make_tuple(0, clusterToChooseFrom[rand() % clusterToChooseFrom.size()]);
 }
 
 int main(int argc, char *argv[]) {	
@@ -109,7 +106,7 @@ int main(int argc, char *argv[]) {
             }
             int currCluster = serverNum/3;
             if(clusterToServersMap.count(currCluster) <= 0) {
-                clusterToServersMap[currCluster] = std::list<std::string> {};
+                clusterToServersMap[currCluster] = std::deque<std::string> {};
             }
             clusterToServersMap[currCluster].push_back(server);
         } else {

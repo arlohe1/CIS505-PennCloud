@@ -39,6 +39,8 @@ volatile bool load_balancer = false;
 volatile int l_balancer_index = 0;
 volatile int session_id_counter = rand();
 std::vector<std::string> frontend_server_list;
+// maps session IDs to a specific backend server as specified by whereKVS
+std::map<std::string, std::string> sessionToServerMap;
 
 using resp_tuple = std::tuple<int, std::string>;
 
@@ -209,26 +211,27 @@ std::string getAddrFromString(std::string fullServAddr) {
 
 /*********************** KVS Util function ***********************************/
 
-std::list<std::string> whereKVS(std::string row) {
-	log("row");
-	log(row);
-	log("row");
+int kvsResponseStatusCode(resp_tuple resp) {
+	return std::get < 0 > (resp);
+}
+
+std::string kvsResponseMsg(resp_tuple resp) {
+	return std::get < 1 > (resp);
+}
+
+std::string whereKVS(std::string session_id, std::string row) {
 	int masterPortNo = getPortNoFromString(kvMaster_addr);
 	std::string masterServAddress = getAddrFromString(kvMaster_addr);
 	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
 	try {
 		log("MASTERNODE WHERE: " + row);
-		using where_resp_tuple = std::tuple<int,std::list<std::string>>;
-		where_resp_tuple resp = masterNodeRPCClient.call("where", row).as<
-				where_resp_tuple>();
-		log(
-				"whereKVS Response Status: "
-						+ std::to_string(std::get < 0 > (resp)));
-		std::list < std::string > serverList = std::get < 1 > (resp);
-		for (std::string server : serverList) {
-			log("whereKVS Response Server: " + server);
-		}
-		return serverList;
+		resp_tuple resp = masterNodeRPCClient.call("where", row).as<resp_tuple>();
+		log("whereKVS Response Status: "
+						+ std::to_string(kvsResponseStatusCode(resp)));
+		std::string server = kvsResponseMsg(resp);
+        log("whereKVS Response Server: " + server);
+        sessionToServerMap[session_id] = server;
+		return server;
 	} catch (rpc::rpc_error &e) {
 		std::cout << std::endl << e.what() << std::endl;
 		std::cout << "in function " << e.get_function_name() << ": ";
@@ -236,16 +239,14 @@ std::list<std::string> whereKVS(std::string row) {
 		auto err = e.get_error().as<err_t>();
 		log("UNHANDLED ERROR IN whereKVS TRY CATCH"); // TODO
 	}
-	std::list < std::string > emptyList { };
-	return emptyList;
+	return "Error in whereKVS";
 }
 
-resp_tuple putKVS(std::string row, std::string column, std::string value) {
-	std::list < std::string > serverList = whereKVS(row);
-	if (serverList.size() <= 0) {
-		// TODO error
-	}
-	std::string targetServer = serverList.front();
+resp_tuple putKVS(std::string session_id, std::string row, std::string column, std::string value) {
+    if(sessionToServerMap.count(session_id) <= 0) {
+        sessionToServerMap[session_id] = whereKVS(session_id, row);
+    }
+    std::string targetServer = sessionToServerMap[session_id];
 	int serverPortNo = getPortNoFromString(targetServer);
 	std::string servAddress = getAddrFromString(targetServer);
 	rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -267,13 +268,12 @@ resp_tuple putKVS(std::string row, std::string column, std::string value) {
 	return resp;
 }
 
-resp_tuple cputKVS(std::string row, std::string column, std::string old,
+resp_tuple cputKVS(std::string session_id, std::string row, std::string column, std::string old,
 		std::string value) {
-	std::list < std::string > serverList = whereKVS(row);
-	if (serverList.size() <= 0) {
-		// TODO error
-	}
-	std::string targetServer = serverList.front();
+    if(sessionToServerMap.count(session_id) <= 0) {
+        sessionToServerMap[session_id] = whereKVS(session_id, row);
+    }
+    std::string targetServer = sessionToServerMap[session_id];
 	int serverPortNo = getPortNoFromString(targetServer);
 	std::string servAddress = getAddrFromString(targetServer);
 	rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -298,14 +298,11 @@ resp_tuple cputKVS(std::string row, std::string column, std::string old,
 	return resp;
 }
 
-resp_tuple getKVS(std::string row, std::string column) {
-	std::list < std::string > serverList = whereKVS(row);
-	if (serverList.size() <= 0) {
-		// TODO error
-	} else if (serverList.size() > 1) {
-		serverList.pop_front(); // don't send to leader in cluster if > 1 server available
-	}
-	std::string targetServer = serverList.front();
+resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
+    if(sessionToServerMap.count(session_id) <= 0) {
+        sessionToServerMap[session_id] = whereKVS(session_id, row);
+    }
+    std::string targetServer = sessionToServerMap[session_id];
 	int serverPortNo = getPortNoFromString(targetServer);
 	std::string servAddress = getAddrFromString(targetServer);
 	rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -328,12 +325,11 @@ resp_tuple getKVS(std::string row, std::string column) {
 	return resp;
 }
 
-resp_tuple deleteKVS(std::string row, std::string column) {
-	std::list < std::string > serverList = whereKVS(row);
-	if (serverList.size() <= 0) {
-		// TODO error
-	}
-	std::string targetServer = serverList.front();
+resp_tuple deleteKVS(std::string session_id, std::string row, std::string column) {
+    if(sessionToServerMap.count(session_id) <= 0) {
+        sessionToServerMap[session_id] = whereKVS(session_id, row);
+    }
+    std::string targetServer = sessionToServerMap[session_id];
 	int serverPortNo = getPortNoFromString(targetServer);
 	std::string servAddress = getAddrFromString(targetServer);
 	rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -358,18 +354,12 @@ resp_tuple deleteKVS(std::string row, std::string column) {
 	return resp;
 }
 
-int kvsResponseStatusCode(resp_tuple resp) {
-	return std::get < 0 > (resp);
-}
-
-std::string kvsResponseMsg(resp_tuple resp) {
-	return std::get < 1 > (resp);
-}
 
 /***************************** Start storage service functions ************************/
 
 void uploadFile(struct http_request req, std::string filepath) {
 	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
 	std::string filename = req.formData["filename"];
 	std::string fileData = req.formData["file"];
 
@@ -378,7 +368,7 @@ void uploadFile(struct http_request req, std::string filepath) {
 			username + filepath + filename);
 	std::string kvsCol = "ss1_" + filenameHash;
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(username, filepath);
+	resp_tuple getCmdResponse = getKVS(sessionid, username, filepath);
 	resp_tuple putCmdResponse;
 	if (kvsResponseStatusCode(getCmdResponse) == 0) {
 		std::string fileList = kvsResponseMsg(getCmdResponse);
@@ -387,19 +377,20 @@ void uploadFile(struct http_request req, std::string filepath) {
 		if (fileList.find(newEntry) == std::string::npos) {
 			fileList += newEntry;
 			// PUT length,row,col,value for MODIFIED FILE LIST
-			putCmdResponse = putKVS(username, filepath, fileList);
+			putCmdResponse = putKVS(sessionid, username, filepath, fileList);
 		}
 		// PUT username,kvsCol,filedata
-		putCmdResponse = putKVS(username, kvsCol, fileData);
+		putCmdResponse = putKVS(sessionid, username, kvsCol, fileData);
 	}
 }
 
 void deleteFile(struct http_request req, std::string containingDir,
 		std::string itemToDeleteHash) {
 	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
 
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(username, containingDir);
+	resp_tuple getCmdResponse = getKVS(sessionid, username, containingDir);
 	resp_tuple putCmdResponse;
 	if (kvsResponseStatusCode(getCmdResponse) == 0) {
 		std::string fileList = kvsResponseMsg(getCmdResponse);
@@ -411,18 +402,19 @@ void deleteFile(struct http_request req, std::string containingDir,
 			fileList = fileList.replace(startLine + 1, endLine - startLine, "");
 		}
 		// PUT length,row,col,value for MODIFIED FILE LIST
-		putCmdResponse = putKVS(username, containingDir, fileList);
+		putCmdResponse = putKVS(sessionid, username, containingDir, fileList);
 	}
 	// DELETE username,itemToDeleteHash
-	putCmdResponse = deleteKVS(username, itemToDeleteHash);
+	putCmdResponse = deleteKVS(sessionid, username, itemToDeleteHash);
 }
 
 void deleteDirectory(struct http_request req, std::string containingDir,
 		std::string itemToDeleteHash) {
 	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
 
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(username, containingDir);
+	resp_tuple getCmdResponse = getKVS(sessionid, username, containingDir);
 	resp_tuple putCmdResponse;
 	if (kvsResponseStatusCode(getCmdResponse) == 0) {
 		std::string fileList = kvsResponseMsg(getCmdResponse);
@@ -434,14 +426,14 @@ void deleteDirectory(struct http_request req, std::string containingDir,
 			fileList = fileList.replace(startLine + 1, endLine - startLine, "");
 		}
 		// PUT length,row,col,value for MODIFIED FILE LIST
-		putCmdResponse = putKVS(username, containingDir, fileList);
+		putCmdResponse = putKVS(sessionid, username, containingDir, fileList);
 	}
-	resp_tuple recursiveDeleteResp = getKVS(username, itemToDeleteHash);
+	resp_tuple recursiveDeleteResp = getKVS(sessionid, username, itemToDeleteHash);
 	int respStatus = kvsResponseStatusCode(recursiveDeleteResp);
 	std::string respValue = kvsResponseMsg(recursiveDeleteResp);
 	if (respStatus == 0) {
 		// DELETE username,itemToDeleteHash
-		putCmdResponse = deleteKVS(username, itemToDeleteHash);
+		putCmdResponse = deleteKVS(sessionid, username, itemToDeleteHash);
 		std::deque < std::string > splt = split(respValue, "\n");
 		int lineNum = 0;
 		for (std::string line : splt) {
@@ -490,7 +482,8 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 
 std::string getFileList(struct http_request req, std::string filepath) {
 	std::string username = req.cookies["username"];
-	resp_tuple filesResp = getKVS(username, filepath);
+	std::string sessionid = req.cookies["sessionid"];
+	resp_tuple filesResp = getKVS(sessionid, username, filepath);
 	int respStatus = kvsResponseStatusCode(filesResp);
 	std::string respValue = kvsResponseMsg(filesResp);
 	int lineNum = 0;
@@ -534,12 +527,13 @@ bool isFileRouteDirectory(std::string filepath) {
 void createDirectory(struct http_request req, std::string filepath,
 		std::string dirName) {
 	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
 
 	// Construct filepath of new directory
 	std::string dirNameHash = generateStringHash(username + filepath + dirName);
 	std::string kvsCol = "ss0_" + dirNameHash;
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(username, filepath);
+	resp_tuple getCmdResponse = getKVS(sessionid, username, filepath);
 	resp_tuple putCmdResponse;
 	if (kvsResponseStatusCode(getCmdResponse) == 0) {
 		std::string fileList = kvsResponseMsg(getCmdResponse);
@@ -550,9 +544,9 @@ void createDirectory(struct http_request req, std::string filepath,
 		if (fileList.find(newEntry) == std::string::npos) {
 			fileList += newEntry;
 			// PUT length,row,col,value for MODIFIED FILE LIST
-			putCmdResponse = putKVS(username, filepath, fileList);
+			putCmdResponse = putKVS(sessionid, username, filepath, fileList);
 			// PUT new column for new directory
-			putCmdResponse = putKVS(username, kvsCol,
+			putCmdResponse = putKVS(sessionid, username, kvsCol,
 					"PARENT_DIR," + filepath + "\n");
 		}
 	}
@@ -560,9 +554,10 @@ void createDirectory(struct http_request req, std::string filepath,
 
 void createRootDirForNewUser(struct http_request req) {
 	std::string username = req.formData["username"];
+	std::string sessionid = req.cookies["sessionid"];
 	std::string dirNameHash = generateStringHash(username + "/");
 	// PUT new column for root directory
-	putKVS(username, "ss0_" + dirNameHash, "ROOT,ROOT\n");
+	putKVS(sessionid, username, "ss0_" + dirNameHash, "ROOT,ROOT\n");
 }
 
 /***************************** End storage service functions ************************/
@@ -972,7 +967,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] = "Invalid username.";
 			} else {
-				resp_tuple getResp = getKVS(req.formData["username"],
+				resp_tuple getResp = getKVS(req.formData["username"], req.formData["username"],
 						"password");
 				std::string getRespMsg = kvsResponseMsg(getResp);
 				int getRespStatusCode = kvsResponseStatusCode(getResp);
@@ -996,7 +991,7 @@ struct http_response processRequest(struct http_request &req) {
 					}
 					resp.cookies["username"] = req.formData["username"];
 					resp.cookies["sessionid"] = generateSessionID();
-					putKVS("session", resp.cookies["sessionid"],
+					putKVS("session", "session", resp.cookies["sessionid"],
 							resp.cookies["username"]);
 				}
 			}
@@ -1036,8 +1031,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.cookies["error"] = "Passwords do not match.";
 				resp.cookies["signuperr"] = "1";
 			} else {
-				resp_tuple getResp = getKVS(req.formData["username"],
-						"mailbox");
+				resp_tuple getResp = getKVS(req.formData["username"], req.formData["username"], "mailbox");
 				std::string getRespMsg = kvsResponseMsg(getResp);
 				int getRespStatusCode = kvsResponseStatusCode(getResp);
 				if (getRespStatusCode == 0) {
@@ -1047,16 +1041,16 @@ struct http_response processRequest(struct http_request &req) {
 					resp.cookies["error"] = "User already exists.";
 					resp.cookies["signuperr"] = "1";
 				} else {
-					putKVS(req.formData["username"], "password",
-							req.formData["password"]);
-					putKVS(req.formData["username"], "mailbox", "");
 					resp.status_code = 307;
 					resp.status = "Temporary Redirect";
 					resp.headers["Location"] = "/dashboard";
 					resp.cookies["username"] = req.formData["username"];
 					resp.cookies["sessionid"] = generateSessionID();
-					putKVS("session", resp.cookies["sessionid"],
+					putKVS("session", "session", resp.cookies["sessionid"],
 							resp.cookies["username"]);
+					putKVS(req.cookies["sessionid"], req.formData["username"], "password",
+							req.formData["password"]);
+					putKVS(req.cookies["sessionid"], req.formData["username"], "mailbox", "");
 					createRootDirForNewUser(req);
 				}
 			}
@@ -1094,7 +1088,7 @@ struct http_response processRequest(struct http_request &req) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.filepath.length() > 7) {
 				std::string filepath = req.filepath.substr(7);
-				resp_tuple getFileResp = getKVS(req.cookies["username"],
+				resp_tuple getFileResp = getKVS(req.cookies["sessionid"], req.cookies["username"],
 						filepath);
 				if (kvsResponseStatusCode(getFileResp) == 0) {
 					// display list of files if route = directory. else, display file contents
@@ -1186,7 +1180,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
-			resp_tuple getResp = getKVS(req.cookies["username"], "mailbox");
+			resp_tuple getResp = getKVS(req.cookies["sessionid"], req.cookies["username"], "mailbox");
 			std::string getRespMsg = kvsResponseMsg(getResp);
 			std::stringstream ss(getRespMsg);
 			std::string to;
@@ -1266,7 +1260,7 @@ struct http_response processRequest(struct http_request &req) {
 			if (req.formData.find("type") != req.formData.end()) {
 				type = req.formData["type"];
 			}
-			resp_tuple getResp = getKVS(req.cookies["username"], "mailbox");
+			resp_tuple getResp = getKVS(req.cookies["sessionid"], req.cookies["username"], "mailbox");
 			std::string getRespMsg = kvsResponseMsg(getResp);
 			int getRespStatusCode = kvsResponseStatusCode(getResp);
 			std::string existing = "";
@@ -1340,7 +1334,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.status_code = 200;
 				resp.status = "OK";
 				resp.headers["Content-type"] = "text/html";
-				resp_tuple getResp = getKVS(req.cookies["username"], "mailbox");
+				resp_tuple getResp = getKVS(req.cookies["sessionid"], req.cookies["username"], "mailbox");
 				std::string getRespMsg = kvsResponseMsg(getResp);
 				std::stringstream ss(getRespMsg);
 				std::string to;
@@ -1430,7 +1424,7 @@ struct http_response processRequest(struct http_request &req) {
 				}
 				int respStatus2 = 1;
 				while (respStatus2 != 0) {
-					resp_tuple getResp = getKVS(req.cookies["username"],
+					resp_tuple getResp = getKVS(req.cookies["sessionid"], req.cookies["username"],
 							"mailbox");
 					std::string getRespMsg = kvsResponseMsg(getResp);
 					std::stringstream ss(getRespMsg);
@@ -1453,7 +1447,7 @@ struct http_response processRequest(struct http_request &req) {
 							}
 						}
 					}
-					resp_tuple resp2 = cputKVS(req.cookies["username"],
+					resp_tuple resp2 = cputKVS(req.cookies["sessionid"], req.cookies["username"],
 							"mailbox", getRespMsg, final);
 					respStatus2 = kvsResponseStatusCode(resp2);
 				}
@@ -1524,7 +1518,7 @@ struct http_response processRequest(struct http_request &req) {
 							toSend.push_back(token);
 						} else {
 							std::string addr = token.substr(0, token.find("@"));
-							resp_tuple getResp = getKVS(addr, "mailbox");
+							resp_tuple getResp = getKVS(addr, addr, "mailbox");
 							std::string current = kvsResponseMsg(getResp);
 							int getRespStatusCode = kvsResponseStatusCode(
 									getResp);
@@ -1533,17 +1527,17 @@ struct http_response processRequest(struct http_request &req) {
 								temp += "\r\n";
 								std::string final = temp;
 								final += current;
-								resp_tuple resp2 = cputKVS(addr, "mailbox",
+								resp_tuple resp2 = cputKVS(addr, addr, "mailbox",
 										current, final);
 								int respStatus2 = kvsResponseStatusCode(resp2);
 								while (respStatus2 != 0) {
-									getResp = getKVS(addr, "mailbox");
+									getResp = getKVS(addr, addr, "mailbox");
 									getRespStatusCode = kvsResponseStatusCode(
 											getResp);
 									current = kvsResponseMsg(getResp);
 									final = temp;
 									final += current;
-									resp2 = cputKVS(addr, "mailbox", current,
+									resp2 = cputKVS(addr, addr, "mailbox", current,
 											final);
 									respStatus2 = kvsResponseStatusCode(resp2);
 								}
@@ -1821,7 +1815,7 @@ void* handle_smtp_connections(void *arg) {
 								for (int j = 9; j < i - 11; j++) {
 									recipient = recipient + buf[j];
 								}
-								resp_tuple resp = getKVS(recipient, "mailbox");
+								resp_tuple resp = getKVS(recipient, recipient, "mailbox");
 								int respStatus = kvsResponseStatusCode(resp);
 								if (respStatus == 0) {
 									recipients.push_back(recipient);
@@ -1954,21 +1948,21 @@ void* handle_smtp_connections(void *arg) {
 							for (std::size_t b = 0; b < data.size(); b++) {
 								temp += data[b];
 							}
-							resp_tuple resp = getKVS(recipients[a], "mailbox");
+							resp_tuple resp = getKVS(recipients[a], recipients[a], "mailbox");
 							int respStatus = kvsResponseStatusCode(resp);
 							std::string current = kvsResponseMsg(resp);
 							std::string final = temp;
 							final += current;
-							resp_tuple resp2 = cputKVS(recipients[a], "mailbox",
+							resp_tuple resp2 = cputKVS(recipients[a], recipients[a], "mailbox",
 									current, final);
 							int respStatus2 = kvsResponseStatusCode(resp2);
 							while (respStatus2 != 0) {
-								resp = getKVS(recipients[a], "mailbox");
+								resp = getKVS(recipients[a], recipients[a], "mailbox");
 								respStatus = kvsResponseStatusCode(resp);
 								current = kvsResponseMsg(resp);
 								final = temp;
 								final += current;
-								resp2 = cputKVS(recipients[a], "mailbox",
+								resp2 = cputKVS(recipients[a], recipients[a], "mailbox",
 										current, final);
 								respStatus2 = kvsResponseStatusCode(resp2);
 							}
