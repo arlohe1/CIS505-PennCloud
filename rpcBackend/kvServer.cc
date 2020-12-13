@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <rpc/server.h>
+#include <rpc/client.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 
@@ -50,6 +51,8 @@ std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-
 FILE* logfile = NULL;
 FILE* logfileRead = NULL;
 std::string currServerAddr;
+std::string masterNodeAddrPort;
+std::string myClusterLeader;
 
 void debugTime() {
 	if (debugFlag) {
@@ -785,6 +788,23 @@ int replayLog() {
 	return 0;
 }
 
+int notifyOfNewLeader(std::string newLeader) {
+    debug("Notified of new leader. Cluster leader set to %s\n", newLeader.c_str());
+    myClusterLeader = newLeader;
+    return 0;
+}
+
+void registerWithMasterNode() {
+    debug("%s\n", "Registering with masterNode");
+    int masterNodePort = stoi(masterNodeAddrPort.substr(masterNodeAddrPort.find(":")+1));
+	std::string masterNodeAddr = masterNodeAddrPort.substr(0, masterNodeAddrPort.find(":"));
+	rpc::client masterNodeRPCClient(masterNodeAddr, masterNodePort);
+    std::tuple<int, std::string> resp = masterNodeRPCClient.call("registerWithMaster", currServerAddr).as<std::tuple<int, std::string>>();
+    myClusterLeader = std::get<0>(resp);
+    debug("%s\n", "Finished registering with masterNode");
+    debug("Cluster leader set to %s\n", myClusterLeader.c_str());
+}
+
 
 int main(int argc, char *argv[]) {	
 	int opt;
@@ -843,10 +863,10 @@ int main(int argc, char *argv[]) {
     int port = 0;
     while(fgets(buffer, 300, f)){
         std::string server = std::string(buffer);
+        if(server.at(server.length()-1) == '\n') {
+            server = server.substr(0, server.length()-1);
+        }
         if(serverNum == serverIdx) {
-            if(server.at(server.length()-1) == '\n') {
-                server = server.substr(0, server.length()-1);
-            }
             currServerAddr = server;
             try {
                 port = stoi(currServerAddr.substr(currServerAddr.find(":")+1));
@@ -858,6 +878,8 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Server port not found! Exiting\n");
                 exit(-1);
             }
+        } else if(serverNum == 0) {
+            masterNodeAddrPort = server;
         }
         serverNum += 1;
     }
@@ -888,12 +910,15 @@ int main(int argc, char *argv[]) {
  	printKvLoc();
  	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
 
+    registerWithMasterNode();
+
     debug("Connecting to port: %d\n", port);
 	rpc::server srv(port);
 	srv.bind("put", &put);
 	srv.bind("get", &get);
 	srv.bind("cput", &cput);
 	srv.bind("del", &del);
+	srv.bind("notifyOfNewLeader", &notifyOfNewLeader);
 
 	srv.run();
 
