@@ -67,6 +67,7 @@ std::tuple<std::string, int> myIp; // set after setting serverIdx
 std::tuple<std::string, int> primaryIp;
 
 // semphores
+pthread_mutex_t checkpointSemaphore;
 std::map<std::string, pthread_mutex_t> rwSemaphores; // row -> rw semaphore
 //std::map<std::string, pthread_mutex_t> countSemaphores; // row -> count semaphore
 volatile int readcount = 0;
@@ -229,16 +230,37 @@ int chdirToRow(const char* dirName) {
 
 }
 
+int lockCheckpoint() {
+	if (pthread_mutex_lock(&checkpointSemaphore) != 0) {
+		debugDetailed("%s\n", "error obtaining checkpoint mutex lock");
+		return -1;
+	}
+	debugDetailed("-----LOCK CHECKPOINT------: %s\n", "lock obtained, returning");
+	return 0;
+}
 
+int unlockCheckpoint() {
+	if (pthread_mutex_unlock(&checkpointSemaphore) != 0) {
+		debug("%s\n", "error unlocking checkpoint mutex");
+		return -1;
+	}
+	debugDetailed("-----UNLOCK CHECKPOINT------: %s\n", "completed unlock, returning");
+	return 0;
+}
 
 // TODO - make sure deleted rows are handled correclty
 void runCheckpoint() {
 	int valLen;
 	debugDetailed("%s,\n", "--------RUNNING CHECKPOINT--------");
+	if (lockCheckpoint() < 0) {
+		return;
+	}
 	printKvMap();
 	printKvLoc();
+	
 	// cd into checkpoint directory
-	chdirToCheckpoint();
+	chdirToCheckpoint(); 
+
 	// loop over rows in create folder for each
 	FILE* colFilePtr;
 	for (const auto& x: kvLoc) {
@@ -316,6 +338,9 @@ void runCheckpoint() {
 	printKvMap();
 	printKvLoc();
 	debugDetailed("%s,\n", "--------checkpoint finished and return--------");
+	if (unlockCheckpoint() < 0) {
+		return;
+	}
 	return;
 	
 
@@ -324,6 +349,9 @@ void runCheckpoint() {
 }
 
 FILE * openValFile(char* row, char* col, const char* mode) {
+	if (lockCheckpoint() < 0) {
+		exit(-1);
+	}
 	std::string filePath("checkpoint");
 	std::string rowString(row);
 	std::string colString(col);
@@ -334,6 +362,9 @@ FILE * openValFile(char* row, char* col, const char* mode) {
 		debugDetailed("openValFile error in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
 	}
 	debugDetailed("openValFile finished in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
+	if (unlockCheckpoint() < 0) {
+		exit(-1);
+	}
 	return ret;
 
 }
@@ -436,6 +467,7 @@ int loadKvStoreFromDisk() {
 		chdir("..");
 	}
 	chdir("..");
+	fclose(dir);
 	
 	debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk");
 
@@ -555,11 +587,16 @@ int lockRow(std::string row) {
 		debugDetailed("%s\n", "error obtaining mutex lock");
 		return -1;
 	}
-	debugDetailed("-----LOCK ROW------: %s, row:%s\n", "new lock obtained, returning", row.c_str());
+	debugDetailed("-----LOCK ROW------: %s, row:%s\n", "lock obtained, returning", row.c_str());
 	return 0;
 }
 
 int unlockRow(std::string row) {
+	if (rwSemaphores.count(row) == 0) {
+		// initalize semaphore for this row
+		debugDetailed("ERROR IN UNLOCK ROW: %s", "unlock called on nonexistent mutex");
+		exit(-1);
+	}
 	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
 		debug("%s\n", "error unlocking mutex");
 		return -1;
@@ -567,6 +604,8 @@ int unlockRow(std::string row) {
 	debugDetailed("-----UNLOCK ROW------: %s, row:%s\n", "completed unlock, returning", row.c_str());
 	return 0;
 }
+
+
 
 
 std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
@@ -1099,6 +1138,11 @@ int main(int argc, char *argv[]) {
     }
 
     setClusterMembership(serverIdx); // TODO need to fix this funciton
+    //initialize checkpoint semaphore
+    if (pthread_mutex_init(&checkpointSemaphore, NULL) != 0) {
+    	perror("invalid pthread_mutex_init for checkpointSemaphore:");
+		return -1;
+    }
 
 
     int serverNum = 0;
