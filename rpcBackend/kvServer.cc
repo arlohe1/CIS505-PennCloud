@@ -800,7 +800,7 @@ void registerWithMasterNode() {
 	std::string masterNodeAddr = masterNodeAddrPort.substr(0, masterNodeAddrPort.find(":"));
 	rpc::client masterNodeRPCClient(masterNodeAddr, masterNodePort);
     std::tuple<int, std::string> resp = masterNodeRPCClient.call("registerWithMaster", currServerAddr).as<std::tuple<int, std::string>>();
-    myClusterLeader = std::get<0>(resp);
+    myClusterLeader = std::get<1>(resp);
     debug("%s\n", "Finished registering with masterNode");
     debug("Cluster leader set to %s\n", myClusterLeader.c_str());
 }

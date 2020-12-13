@@ -47,8 +47,8 @@ void log(std::string str) {
 // Returns an active server from the cluster that contains row-col-val based on first letter of row
 // Returns 0 w/ active server in cluster on success
 // Returns 1 w/ "Error" on failure
-std::tuple<int, std::string> where(std::string row) {
-    log("Received WHERE: " + row);
+std::tuple<int, std::string> where(std::string row, std::string session_id) {
+    log("Received WHERE: " + row+" for Session "+session_id);
     if(row.length() <= 0 || !isalnum(row.at(0))) {
         // error
          return std::make_tuple(1, "Error");

@@ -224,8 +224,8 @@ std::string whereKVS(std::string session_id, std::string row) {
 	std::string masterServAddress = getAddrFromString(kvMaster_addr);
 	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
 	try {
-		log("MASTERNODE WHERE: " + row);
-		resp_tuple resp = masterNodeRPCClient.call("where", row).as<resp_tuple>();
+		log("MASTERNODE WHERE: (" + row+") for session ("+session_id+")");
+		resp_tuple resp = masterNodeRPCClient.call("where", row, session_id).as<resp_tuple>();
 		log("whereKVS Response Status: "
 						+ std::to_string(kvsResponseStatusCode(resp)));
 		std::string server = kvsResponseMsg(resp);
@@ -244,6 +244,7 @@ std::string whereKVS(std::string session_id, std::string row) {
 
 resp_tuple putKVS(std::string session_id, std::string row, std::string column, std::string value) {
     if(sessionToServerMap.count(session_id) <= 0) {
+        log("putKVS: No server for session "+ session_id+". Calling whereKVS.");
         sessionToServerMap[session_id] = whereKVS(session_id, row);
     }
     std::string targetServer = sessionToServerMap[session_id];
@@ -252,7 +253,7 @@ resp_tuple putKVS(std::string session_id, std::string row, std::string column, s
 	rpc::client kvsRPCClient(servAddress, serverPortNo);
 	resp_tuple resp;
 	try {
-		log("KVS PUT: " + row + ", " + column + ", " + value);
+		log("KVS PUT with kvServer "+targetServer+": " + row + ", " + column + ", " + value);
 		resp = kvsRPCClient.call("put", row, column, value).as<resp_tuple>();
 		log("putKVS Response Status: " + std::to_string(std::get < 0 > (resp)));
 		log("putKVS Response Value: " + std::get < 1 > (resp));
@@ -271,6 +272,7 @@ resp_tuple putKVS(std::string session_id, std::string row, std::string column, s
 resp_tuple cputKVS(std::string session_id, std::string row, std::string column, std::string old,
 		std::string value) {
     if(sessionToServerMap.count(session_id) <= 0) {
+        log("cputKVS: No server for session "+ session_id+". Calling whereKVS.");
         sessionToServerMap[session_id] = whereKVS(session_id, row);
     }
     std::string targetServer = sessionToServerMap[session_id];
@@ -279,7 +281,7 @@ resp_tuple cputKVS(std::string session_id, std::string row, std::string column, 
 	rpc::client kvsRPCClient(servAddress, serverPortNo);
 	resp_tuple resp;
 	try {
-		log("KVS CPUT: " + row + ", " + column + ", " + old + ", " + value);
+		log("KVS CPUT with kvServer "+targetServer+": " + row + ", " + column + ", " + old + ", " + value);
 		resp =
 				kvsRPCClient.call("cput", row, column, old, value).as<resp_tuple>();
 		log(
@@ -300,6 +302,7 @@ resp_tuple cputKVS(std::string session_id, std::string row, std::string column, 
 
 resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
     if(sessionToServerMap.count(session_id) <= 0) {
+        log("getKVS: No server for session "+ session_id+". Calling whereKVS.");
         sessionToServerMap[session_id] = whereKVS(session_id, row);
     }
     std::string targetServer = sessionToServerMap[session_id];
@@ -309,7 +312,7 @@ resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
 	using resp_tuple = std::tuple<int, std::string>;
 	resp_tuple resp;
 	try {
-		log("KVS GET: " + row + ", " + column);
+		log("KVS GET with kvServer "+targetServer+": " + row + ", " + column);
 		resp = kvsRPCClient.call("get", row, column).as<resp_tuple>();
 		log("getKVS Response Status: " + std::to_string(std::get < 0 > (resp)));
 		log("getKVS Response Value: " + std::get < 1 > (resp));
@@ -327,6 +330,7 @@ resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
 
 resp_tuple deleteKVS(std::string session_id, std::string row, std::string column) {
     if(sessionToServerMap.count(session_id) <= 0) {
+        log("deleteKVS: No server for session "+ session_id+". Calling whereKVS.");
         sessionToServerMap[session_id] = whereKVS(session_id, row);
     }
     std::string targetServer = sessionToServerMap[session_id];
@@ -336,7 +340,7 @@ resp_tuple deleteKVS(std::string session_id, std::string row, std::string column
 	using resp_tuple = std::tuple<int, std::string>;
 	resp_tuple resp;
 	try {
-		log("KVS DELETE: " + row + ", " + column);
+		log("KVS DELETE with kvServer "+targetServer+": " + row + ", " + column);
 		resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
 		log(
 				"deleteKVS Response Status: "
@@ -552,9 +556,8 @@ void createDirectory(struct http_request req, std::string filepath,
 	}
 }
 
-void createRootDirForNewUser(struct http_request req) {
+void createRootDirForNewUser(struct http_request req, std::string sessionid) {
 	std::string username = req.formData["username"];
-	std::string sessionid = req.cookies["sessionid"];
 	std::string dirNameHash = generateStringHash(username + "/");
 	// PUT new column for root directory
 	putKVS(sessionid, username, "ss0_" + dirNameHash, "ROOT,ROOT\n");
@@ -1048,10 +1051,10 @@ struct http_response processRequest(struct http_request &req) {
 					resp.cookies["sessionid"] = generateSessionID();
 					putKVS("session", "session", resp.cookies["sessionid"],
 							resp.cookies["username"]);
-					putKVS(req.cookies["sessionid"], req.formData["username"], "password",
+					putKVS(resp.cookies["sessionid"], req.formData["username"], "password",
 							req.formData["password"]);
-					putKVS(req.cookies["sessionid"], req.formData["username"], "mailbox", "");
-					createRootDirForNewUser(req);
+					putKVS(resp.cookies["sessionid"], req.formData["username"], "mailbox", "");
+					createRootDirForNewUser(req, resp.cookies["sessionid"]);
 				}
 			}
 		} else {
