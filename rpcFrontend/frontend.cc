@@ -568,7 +568,7 @@ void createRootDirForNewUser(struct http_request req) {
 /***************************** End storage service functions ************************/
 
 /*********************** Http Util function **********************************/
-std::string generateSessionID(){
+std::string generateSessionID() {
 	return generateStringHash(my_address + std::to_string(++session_id_counter));
 }
 
@@ -989,13 +989,15 @@ struct http_response processRequest(struct http_request &req) {
 				} else {
 					resp.status_code = 307;
 					resp.status = "Temporary Redirect";
-					if(req.formData["username"].compare("admin") != 0){
+					if (req.formData["username"].compare("admin") != 0) {
 						resp.headers["Location"] = "/dashboard";
 					} else {
 						resp.headers["Location"] = "/admin";
 					}
 					resp.cookies["username"] = req.formData["username"];
 					resp.cookies["sessionid"] = generateSessionID();
+					putKVS("session", resp.cookies["sessionid"],
+							resp.cookies["username"]);
 				}
 			}
 		} else {
@@ -1053,6 +1055,8 @@ struct http_response processRequest(struct http_request &req) {
 					resp.headers["Location"] = "/dashboard";
 					resp.cookies["username"] = req.formData["username"];
 					resp.cookies["sessionid"] = generateSessionID();
+					putKVS("session", resp.cookies["sessionid"],
+							resp.cookies["username"]);
 					createRootDirForNewUser(req);
 				}
 			}
@@ -1560,14 +1564,15 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
-	} else if(req.filepath.compare("/admin") == 0){
-		if(req.cookies.find("username") != req.cookies.end()){
+	} else if (req.filepath.compare("/admin") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
 
-			std::string message = "<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
-					"<input type = \"submit\" value=\"Logout\" /></form></body></html>";
+			std::string message =
+					"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+							"<input type = \"submit\" value=\"Logout\" /></form></body></html>";
 			resp.headers["Content-length"] = message.size();
 			resp.content = message;
 		}
