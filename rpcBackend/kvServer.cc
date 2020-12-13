@@ -68,7 +68,7 @@ std::tuple<std::string, int> primaryIp;
 
 // semphores
 std::map<std::string, pthread_mutex_t> rwSemaphores; // row -> rw semaphore
-std::map<std::string, pthread_mutex_t> countSemaphores; // row -> count semaphore
+//std::map<std::string, pthread_mutex_t> countSemaphores; // row -> count semaphore
 volatile int readcount = 0;
 
 
@@ -542,6 +542,33 @@ resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, s
 	//return respSet[myIp];
 }
 
+int lockRow(std::string row) {
+	if (rwSemaphores.count(row) == 0) {
+		// initalize semaphore for this row
+		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
+			perror("invalid pthread_mutex_init:");
+			return -1;
+		}
+		debugDetailed("-----LOCK ROW------: %s, row: %s\n", "new lock created", row.c_str());
+	}
+	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+		debugDetailed("%s\n", "error obtaining mutex lock");
+		return -1;
+	}
+	debugDetailed("-----LOCK ROW------: %s, row:%s\n", "new lock obtained, returning", row.c_str());
+	return 0;
+}
+
+int unlockRow(std::string row) {
+	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+		debug("%s\n", "error unlocking mutex");
+		return -1;
+	}
+	debugDetailed("-----UNLOCK ROW------: %s, row:%s\n", "completed unlock, returning", row.c_str());
+	return 0;
+}
+
+
 std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
     debugDetailed("---PUT entered - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
     int oldLen = kvMap[row][col].length();
@@ -576,25 +603,14 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
 
 std::tuple<int, std::string> putApproved(std::string row, std::string col, std::string val) {
 	// claim semaphore on row
-	if (rwSemaphores.count(row) == 0) {
-		// initalize semaphore for this row
-		//rwSemaphores[row] = NULL;
-		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
-			perror("invalid pthread_mutex_init:");
-			return std::make_tuple(1, "ERR");
-		}
-	} 
-	// claim semaphore
-	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
-		debugDetailed("%s\n", "error obtaining mutex lock");
+	if (lockRow(row) < 0) {
 		return std::make_tuple(1, "ERR");
 	}	
 
 	resp_tuple resp =  put(row, col, val);
 
 	// release semaphor on row
-	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
-		debug("%s\n", "error unlocking mutex");
+	if (unlockRow(row) < 0) {
 		return std::make_tuple(1, "ERR");
 	}
 	return resp;
@@ -608,10 +624,9 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
 	// handle whether of not receiving node is a primary
     if (isPrimary() == 1) {
     	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
-    	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
-			debugDetailed("%s\n", "error obtaining mutex lock");
-			return std::make_tuple(1, "ERR");
-		}	
+    	if (lockRow(row) < 0) {
+    		return std::make_tuple(1, "ERR");
+    	}	
     	respSet[myIp] = put(row, col, val);
     	debugDetailed("---PUTREQ entered - I am primary: %s\n", "local put completed");
     	for (const auto& server : clusterMembers) {
@@ -643,10 +658,9 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
     		}
 		}
 		// release semaphor on row
-		if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
-			debug("%s\n", "error unlocking mutex");
-			return std::make_tuple(1, "ERR");
-		}
+		if (unlockRow(row) < 0) {
+    		return std::make_tuple(1, "ERR");
+    	}
 		debugDetailed("---PUTREQ entered - primary: %s\n", "calling combineResps");
 		// return resp tuple
 		resp = combineResps(respSet);
@@ -687,40 +701,31 @@ std::string getValDiskorLocal(std::string row, std::string col) {
 std::tuple<int, std::string> get(std::string row, std::string col) {
 	// check that row, col exists in tablet, and not deleted
 	debugDetailed("---GET entered - row: %s, column: %s\n", row.c_str(), col.c_str());
+	if (lockRow(row) < 0) {
+		return std::make_tuple(1, "ERR");
+	}
 	if (kvLoc.count(row) > 0) {
 		if (kvLoc[row].count(col) > 0) {
 			if (kvLoc[row][col] != -1) {
-				// claim semaphore on row
-				if (rwSemaphores.count(row) == 0) {
-					// initalize semaphore for this row
-					//rwSemaphores[row] = NULL;
-					if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
-						perror("invalid pthread_mutex_init:");
-						return std::make_tuple(1, "ERR");
-					}
-				} 
-				// claim semaphore
-				if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
-					debugDetailed("%s\n", "error obtaining mutex lock");
-					return std::make_tuple(1, "ERR");
-				}	
-				std::string val = getValDiskorLocal(row, col);	
-				// release semaphor on row
-				if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
-					debug("%s\n", "error unlocking mutex");
-					return std::make_tuple(1, "ERR");
-				}		
+				std::string val = getValDiskorLocal(row, col);			
 				debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
 				printKvMap();
+				if (unlockRow(row) < 0) {
+					return std::make_tuple(1, "ERR");
+				}
 				//logCommand(GET, 2, row, col, row, row);
 				return std::make_tuple(0, val);
 			}
 			
 		}
 	} 
-
+	
 	debugDetailed("---GET val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
+	// release semaphor on row
+	if (unlockRow(row) < 0) {
+		return std::make_tuple(1, "ERR");
+	}
 	//logCommand(GET, 2, row, col, row, row);
 	return std::make_tuple(1, "No such row, column pair");	
 }
@@ -773,25 +778,14 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 
 std::tuple<int, std::string> cputApproved(std::string row, std::string col, std::string val, std::string newVal) {
 	// claim semaphore on row
-	if (rwSemaphores.count(row) == 0) {
-		// initalize semaphore for this row
-		//rwSemaphores[row] = NULL;
-		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
-			perror("invalid pthread_mutex_init:");
-			return std::make_tuple(1, "ERR");
-		}
-	} 
-	// claim semaphore
-	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
-		debugDetailed("%s\n", "error obtaining mutex lock");
+	if (lockRow(row) < 0) {
 		return std::make_tuple(1, "ERR");
 	}	
 
 	resp_tuple resp =  cput(row, col, val, newVal);
 
 	// release semaphor on row
-	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
-		debug("%s\n", "error unlocking mutex");
+	if (unlockRow(row) < 0) {
 		return std::make_tuple(1, "ERR");
 	}
 	return resp;
@@ -805,10 +799,9 @@ std::tuple<int, std::string> cputReq(std::string row, std::string col, std::stri
 	// handle whether of not receiving node is a primary
     if (isPrimary() == 1) {
     	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
-    	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
-			debugDetailed("%s\n", "error obtaining mutex lock");
-			return std::make_tuple(1, "ERR");
-		}	
+    	if (lockRow(row) < 0) {
+    		return std::make_tuple(1, "ERR");
+    	}
     	respSet[myIp] = cput(row, col, val, newVal);
     	debugDetailed("---CPUTREQ entered - I am primary: %s\n", "local cput completed");
     	for (const auto& server : clusterMembers) {
@@ -840,10 +833,9 @@ std::tuple<int, std::string> cputReq(std::string row, std::string col, std::stri
     		}
 		}
 		// release semaphor on row
-		if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
-			debug("%s\n", "error unlocking mutex");
-			return std::make_tuple(1, "ERR");
-		}
+		if (unlockRow(row) < 0) {
+    		return std::make_tuple(1, "ERR");
+    	}
 		debugDetailed("---CPUTREQ entered - primary: %s\n", "calling combineResps");
 		// return resp tuple
 		resp = combineResps(respSet);
@@ -892,25 +884,14 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 
 std::tuple<int, std::string> delApproved(std::string row, std::string col) {
 	// claim semaphore on row
-	if (rwSemaphores.count(row) == 0) {
-		// initalize semaphore for this row
-		//rwSemaphores[row] = NULL;
-		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
-			perror("invalid pthread_mutex_init:");
-			return std::make_tuple(1, "ERR");
-		}
-	} 
-	// claim semaphore
-	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
-		debugDetailed("%s\n", "error obtaining mutex lock");
+	if (lockRow(row) < 0) {
 		return std::make_tuple(1, "ERR");
 	}	
 
 	resp_tuple resp =  del(row, col);
 
 	// release semaphor on row
-	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
-		debug("%s\n", "error unlocking mutex");
+	if (unlockRow(row) < 0) {
 		return std::make_tuple(1, "ERR");
 	}
 	return resp;
@@ -924,10 +905,9 @@ std::tuple<int, std::string> delReq(std::string row, std::string col) {
 	// handle whether of not receiving node is a primary
     if (isPrimary() == 1) {
     	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
-    	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
-			debugDetailed("%s\n", "error obtaining mutex lock");
-			return std::make_tuple(1, "ERR");
-		}	
+    	if (lockRow(row) < 0) {
+    		return std::make_tuple(1, "ERR");
+    	}	
     	respSet[myIp] = del(row, col);
     	debugDetailed("---delREQ entered - I am primary: %s\n", "local del completed");
     	for (const auto& server : clusterMembers) {
@@ -959,8 +939,7 @@ std::tuple<int, std::string> delReq(std::string row, std::string col) {
     		}
 		}
 		// release semaphor on row
-		if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
-			debug("%s\n", "error unlocking mutex");
+		if (unlockRow(row) < 0) {
 			return std::make_tuple(1, "ERR");
 		}
 		debugDetailed("---delREQ entered - primary: %s\n", "calling combineResps");
