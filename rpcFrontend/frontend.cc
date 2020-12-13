@@ -996,8 +996,8 @@ struct http_response processRequest(struct http_request &req) {
 					}
 					resp.cookies["username"] = req.formData["username"];
 					resp.cookies["sessionid"] = generateSessionID();
-					putKVS("session", resp.cookies["username"],
-							resp.cookies["sessionid"]);
+					putKVS("session", resp.cookies["sessionid"],
+							resp.cookies["username"]);
 				}
 			}
 		} else {
@@ -1055,8 +1055,8 @@ struct http_response processRequest(struct http_request &req) {
 					resp.headers["Location"] = "/dashboard";
 					resp.cookies["username"] = req.formData["username"];
 					resp.cookies["sessionid"] = generateSessionID();
-					putKVS("session", resp.cookies["username"],
-							resp.cookies["sessionid"]);
+					putKVS("session", resp.cookies["sessionid"],
+							resp.cookies["username"]);
 					createRootDirForNewUser(req);
 				}
 			}
