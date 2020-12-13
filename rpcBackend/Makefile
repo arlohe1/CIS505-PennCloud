@@ -10,6 +10,8 @@ test:
 	mkdir server_1 server_2 server_3
 	mkdir server_1/checkpoint server_2/checkpoint server_3/checkpoint
 	touch server_1/log.txt server_2/log.txt server_3/log.txt
+kvs:
+	$(GCC) kvServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o kvServer $(LIBS)
 	
 serverfiles:
 	mkdir server_1 server_2 server_3

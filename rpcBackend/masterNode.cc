@@ -197,9 +197,7 @@ int main(int argc, char *argv[]) {
         std::string server = std::string(buffer);
         // first line is address for master node
         if(serverNum != -1) {
-            if(server.at(server.length()-1) == '\n') {
-                server = server.substr(0, server.length()-1);
-            }
+            server = server.substr(0, server.find(","));
             int currCluster = serverNum/3;
             if(clusterToServersMap.count(currCluster) <= 0) {
                 clusterToServersMap[currCluster] = std::deque<std::string> {};
