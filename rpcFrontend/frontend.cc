@@ -29,7 +29,6 @@ std::string kvMaster_addr = "";
 std::string mail_addr = "";
 std::string storage_addr = "";
 std::string my_address;
-std::vector<pthread_t> pthread_ids;
 pthread_mutex_t fd_mutex;
 std::set<int*> fd;
 volatile bool verbose = false;
@@ -1652,7 +1651,8 @@ void* handleClient(void *arg) {
 	pthread_mutex_unlock(&fd_mutex);
 	close(*client_fd);
 	free(client_fd);
-	return NULL;
+	pthread_detach(pthread_self());
+	pthread_exit(NULL);
 }
 
 bool do_write(int fd, char *buf, int len) {
@@ -2079,7 +2079,6 @@ int create_thread(int socket_fd, bool http) {
 		} else {
 			if (verbose)
 				std::cerr << "[" << *client_fd << "] New connection\n";
-			pthread_ids.push_back(pthread_id);
 			pthread_mutex_lock(&fd_mutex);
 			fd.insert(client_fd);
 			pthread_mutex_unlock(&fd_mutex);
@@ -2270,7 +2269,7 @@ int main(int argc, char *argv[]) {
 		}
 		char buffer[300];
 		fgets(buffer, 300, f);
-		auto load_balancer_address = split(trim(std::string(buffer)), ":");
+		auto load_balancer_address = split(split(trim(std::string(buffer)), ",")[1], ":");
 		load_balancer_addr.sin_family = AF_INET;
 		load_balancer_addr.sin_port = std::stoi(load_balancer_address[1]);
 		load_balancer_addr.sin_addr.s_addr = inet_addr(load_balancer_address[0].data());

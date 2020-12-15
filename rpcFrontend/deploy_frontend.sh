@@ -66,15 +66,18 @@ do
 	if [ "$LOAD_BALANCER" = "false" ];
 	then
 		LOAD_BALANCER="true"
-		IFS=':' read -r -a addr_arr <<< "$line"
-		http_port_no=${addr_arr[1]}
+		IFS=',' read -r -a addr_arr <<< "$line"
+		IFS=':' read -r -a http_addr_arr <<< "${addr_arr[0]}"
+		IFS=':' read -r -a internal_addr_arr <<< "${addr_arr[1]}"
+		http_port_no=${http_addr_arr[1]}
+		internal_port_no=${internal_addr_arr[1]}
 		if [ $VERBOSE = 1 ];
 		then
-			echo "./frontend -v -k $BACKEND -c $CONFIG -l -p $http_port_no &> ${LOGFILE}_loadbalancer &"
-			./frontend -v -k $BACKEND -c $CONFIG -l -p $http_port_no &> ${LOGFILE}_loadbalancer &
+			echo "./frontend -v -k $BACKEND -c $CONFIG -l -p $http_port_no -r $internal_port_no &> ${LOGFILE}_loadbalancer &"
+			./frontend -v -k $BACKEND -c $CONFIG -l -p $http_port_no -r $internal_port_no &> ${LOGFILE}_loadbalancer &
 		else
-			echo "./frontend -k $BACKEND -c $CONFIG -l -p $http_port_no &> ${LOGFILE}_loadbalancer &"
-			./frontend -k $BACKEND -c $CONFIG -l -p $http_port_no &> ${LOGFILE}_loadbalancer &
+			echo "./frontend -k $BACKEND -c $CONFIG -l -p $http_port_no -r $internal_port_no &> ${LOGFILE}_loadbalancer &"
+			./frontend -k $BACKEND -c $CONFIG -l -p $http_port_no -r $internal_port_no &> ${LOGFILE}_loadbalancer &
 		fi
 	else
 		IFS=',' read -r -a addr_arr <<< "$line"
