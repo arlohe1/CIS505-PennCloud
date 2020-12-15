@@ -909,10 +909,10 @@ int main(int argc, char *argv[]) {
     char buffer[300];
     while(fgets(buffer, 300, f)){
         std::string line = std::string(buffer);
-        debug("-%s-\n", line.c_str());
         if(line.at(line.length()-1) == '\n') {
             line = line.substr(0, line.length()-1);
         }
+        debug("Reading from config file: %s\n ", line.c_str());
         if(serverNum == serverIdx) {
             myAddrPortForFrontend = line.substr(0, line.find(","));
             myAddrPortForAdmin = line.substr(line.find(",")+1);

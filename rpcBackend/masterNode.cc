@@ -31,9 +31,13 @@ int numClusters = 1;
 std::valarray<int> rowVals (36);
 std::map<int, std::deque<std::string>> clusterToServersMap;
 std::map<int, std::deque<std::string>> clusterToActiveNodesMap;
+// Maps a node's addr:port that it uses for frontend comm to its adrr:port for admin comm
+std::map<std::string, std::string> frontendAddrPortToAdminAddrPort;
 std::map<std::string, int> serverToClusterMap;
 std::map<int, std::string> clusterToLeaderMap;
 std::string masterNodeAddr;
+// Cluster Number, isClusterLeader, Addr:Port for comm w/ Frontend, Addr:Port for comm w/ Admin
+using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
 
 void stderr_msg(std::string str) {
     std::cerr << str << "\n";
@@ -155,6 +159,31 @@ std::tuple<int, std::string> registerWithMaster(std::string serverAddr) {
     return std::make_tuple(0, clusterToLeaderMap[cluster]);
 }
 
+
+std::deque<server_addr_tuple> getNodesFromMap(std::map<int, std::deque<std::string>> clusterToServers) {
+    std::deque<server_addr_tuple> result;
+    for (auto const& entry : clusterToServers) {
+        int clusterNum = entry.first;
+        for (std::string server : entry.second) {
+            bool isClusterLeader = ((clusterToLeaderMap[clusterNum]).compare(server) == 0);
+            std::string addrPortForAdmin = frontendAddrPortToAdminAddrPort[server];
+            server_addr_tuple serverInfo = std::make_tuple(clusterNum, isClusterLeader, server, addrPortForAdmin);
+            result.push_back(serverInfo);
+        }
+    }
+    return result;
+}
+
+// Returns a deque of server_addr_tuples for all active backend nodes
+std::deque<server_addr_tuple> getActiveNodes() {
+    return getNodesFromMap(clusterToActiveNodesMap);
+}
+
+// Returns a deque of server_addr_tuples for all backend nodes
+std::deque<server_addr_tuple> getAllNodes() {
+    return getNodesFromMap(clusterToServersMap);
+}
+
 int main(int argc, char *argv[]) {	
 	int opt;
 	int port = 8000;
@@ -194,10 +223,15 @@ int main(int argc, char *argv[]) {
     int serverNum = -1;
     char buffer[300];
     while(fgets(buffer, 300, f)){
-        std::string server = std::string(buffer);
+        std::string line = std::string(buffer);
+        if(line.at(line.length()-1) == '\n') {
+            line = line.substr(0, line.length()-1);
+        }
+        log("Reading from config file: "+line);
         // first line is address for master node
         if(serverNum != -1) {
-            server = server.substr(0, server.find(","));
+            std::string addrPortForAdmin = line.substr(line.find(",") + 1);
+            std::string server = line.substr(0, line.find(","));
             int currCluster = serverNum/3;
             if(clusterToServersMap.count(currCluster) <= 0) {
                 clusterToServersMap[currCluster] = std::deque<std::string> {};
@@ -207,8 +241,9 @@ int main(int argc, char *argv[]) {
             if(clusterToActiveNodesMap.count(currCluster) <= 0) {
                 clusterToActiveNodesMap[currCluster] = std::deque<std::string> {};
             }
+            frontendAddrPortToAdminAddrPort[server] = addrPortForAdmin;
         } else {
-            masterNodeAddr = server;
+            masterNodeAddr = line;
             try {
                 port = stoi(masterNodeAddr.substr(masterNodeAddr.find(":")+1));
             } catch (const std::invalid_argument &ia) {
@@ -222,6 +257,8 @@ int main(int argc, char *argv[]) {
 
 	rpc::server srv(port);
 	srv.bind("where", &where);
+	srv.bind("getActiveNodes", &getActiveNodes);
+	srv.bind("getAllNodes", &getAllNodes);
 	srv.bind("registerWithMaster", &registerWithMaster);
 
 	srv.run();
