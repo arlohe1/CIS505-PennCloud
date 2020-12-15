@@ -10,6 +10,7 @@
 #include <rpc/server.h>
 #include "rpc/client.h"
 #include "rpc/rpc_error.h"
+#include "rpc/this_server.h"
 
 #include <errno.h>
 #include <sys/socket.h>
@@ -35,6 +36,7 @@
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
 #define COM_PER_CHECKPOINT 10
+#define TIMEOUT_MILLISEC 5000
 
 
 using resp_tuple = std::tuple<int, std::string>;
@@ -46,17 +48,12 @@ int debugFlag;
 int err = -1;
 int detailed = 0;
 int replay = 0;
-int numCommandsSinceLastCheckpoint = 0;
 
 
 int serverIdx;
 int maxCache;
 int startCacheThresh;
-int cacheSize = 0;
-std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
-std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-1 for val deleted, 0 for val on disk, 1 for val in kvMap)
 FILE* logfile = NULL;
-FILE* logfileRead = NULL;
 std::string currServerAddr;
 
 
@@ -66,12 +63,17 @@ std::map<int, std::tuple<std::string, int>> clusterMembers;
 std::tuple<std::string, int> myIp; // set after setting serverIdx
 std::tuple<std::string, int> primaryIp;
 
+// shared read/write data structures for threads
+volatile int numCommandsSinceLastCheckpoint = 0;
+volatile int cacheSize = 0;
+std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
+std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-1 for val deleted, 0 for val on disk, 1 for val in kvMap)
+
 // semphores
 pthread_mutex_t checkpointSemaphore;
 std::map<std::string, pthread_mutex_t> rwSemaphores; // row -> rw semaphore
 //std::map<std::string, pthread_mutex_t> countSemaphores; // row -> count semaphore
 volatile int readcount = 0;
-
 
 
 
@@ -97,6 +99,7 @@ int isPrimary() {
 	} 
 	return 0;
 }
+
 
 
 void debugTime() {
@@ -297,7 +300,6 @@ void runCheckpoint() {
 				// 	printf("reached 1\n");
 					
 				}
-				printf("TODO --- delete file\n");
 			} else if (loc == 1) {
 				debugDetailed("checkpoint writes file: %s\n", col.c_str());
 				colFilePtr = fopen((col).c_str(), "w");
@@ -464,10 +466,11 @@ int loadKvStoreFromDisk() {
 			memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
 			fclose(colFilePtr);
 		}
+		closedir(colDir);
 		chdir("..");
 	}
 	chdir("..");
-	fclose(dir);
+	closedir(dir);
 	
 	debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk");
 
@@ -674,7 +677,7 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
     			rpc::client client(std::get<0>(server.second), std::get<1>(server.second));
 				try { // TODO - on timeout, query connection state and retry if connected
 			        // default timeout is 5000 milliseconds TODO: adjust timeout as needed
-			        const uint64_t short_timeout = 5000;
+			        const uint64_t short_timeout = TIMEOUT_MILLISEC;
 			        client.set_timeout(short_timeout);
 			        debugDetailed("---PUTREQ entered: %s: %s:%d\n", "trying remote put to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
 			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
@@ -1052,19 +1055,28 @@ int replayLog() {
 		}
 		headerBuf[strlen(headerBuf)] = '\0'; //set newline to null
 		debugDetailed("buf read from log file is: %s\n", headerBuf);
-		comm = strtok(headerBuf, ",");
+		comm = strtok(headerBuf, ","); // this should never be null if headerBuf is well formatted
 		for (i = 0; i < MAX_COMM_ARGS; i++) {
 			lens[i] = atoi(strtok(NULL, ","));
+			debugDetailed("---replayLog: lens[%d] = %d\n", i, lens[i]);
 		}
 		for (i = 0; i < MAX_COMM_ARGS; i++) {
-			args[i] = (char*) calloc(lens[i], sizeof(char));
+			if (lens[i] != 0) {
+				debugDetailed("---replayLog: calloc'd args[%d] for lens[%d] = %d\n", i, i, lens[i]);
+				args[i] = (char*) calloc(lens[i], sizeof(char));
+			} else {
+				debugDetailed("---replayLog: calloc'd args[%d] is NULL\n", i);
+				args[i] = NULL;
+			}
 			if (args[i] != NULL) {
+				debugDetailed("---replayLog: reading into args[%d], lens[%d] = %d\n", i, i, lens[i]);
 				fread(args[i], sizeof(char), lens[i], logfile);
 			}
 		}
 
-		debugDetailed("header args - comm: %s, len1: %d, len2: %d, len3: %d, len4: %d\n", comm, lens[0], lens[1], lens[2], lens[3]);
-		debugDetailed("parsed args - arg1: %s, arg2: %s, arg3: %s, arg4: %s\n", args[0], args[1], args[2], args[3]);
+		// NOTE: uncomment lines below for debug statements, but this will casue 3 memory erros from one context when run in valgrind
+		//debugDetailed("header args - comm: %s, len1: %d, len2: %d, len3: %d, len4: %d\n", comm, lens[0], lens[1], lens[2], lens[3]);
+		//debugDetailed("parsed args - arg1: %s, arg2: %s, arg3: %s, arg4: %s\n", args[0], args[1], args[2], args[3]);
 		callFunction(comm, args[0], args[1], args[2], args[3], lens[0], lens[1], lens[2], lens[3]);
 
 
@@ -1084,9 +1096,31 @@ int replayLog() {
 }
 
 
+
+void signalHandler(int sig) {
+	debugDetailed("%s\n", "signal caught by server");	
+	
+	if (sig == SIGINT) {
+		// quit server
+		rpc::this_server().stop();
+		exit(0);
+		
+	}
+	
+}
+
+/* sets up signal handler given @signum and @handler and prints error if necessary */
+void makeSignal(int signum, sighandler_t handler) {
+	if (signal(signum, handler) == SIG_ERR) {
+		perror("invalid: ");
+	}
+}
+
+
 int main(int argc, char *argv[]) {	
 	int opt;
 	debugFlag = 0;
+	makeSignal(SIGINT, signalHandler);
 
 	// parse arguments -a for full name printed, -v for debug output
 	while ((opt = getopt(argc, argv, "av")) != -1) {
@@ -1105,6 +1139,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	// set memory cache size
 	struct rlimit *rlim = (struct rlimit*) calloc(1, sizeof(struct rlimit));
 	getrlimit(RLIMIT_MEMLOCK, rlim);
 	maxCache = rlim->rlim_cur/3;
@@ -1113,6 +1148,7 @@ int main(int argc, char *argv[]) {
 	startCacheThresh = maxCache / 2;
 	free(rlim);
 
+	// open config file
     char *serverListFile = NULL;
     if(optind + 1 < argc) {
         serverListFile = argv[optind];
@@ -1137,14 +1173,8 @@ int main(int argc, char *argv[]) {
         exit(-1);
     }
 
-    setClusterMembership(serverIdx); // TODO need to fix this funciton
-    //initialize checkpoint semaphore
-    if (pthread_mutex_init(&checkpointSemaphore, NULL) != 0) {
-    	perror("invalid pthread_mutex_init for checkpointSemaphore:");
-		return -1;
-    }
 
-
+    // parse config file
     int serverNum = 0;
     char buffer[300];
     int port = 0;
@@ -1169,6 +1199,15 @@ int main(int argc, char *argv[]) {
         serverNum += 1;
     }
     fclose(f);
+
+    setClusterMembership(serverIdx); // TODO need to fix this funciton
+    
+
+    //initialize checkpoint semaphore
+    if (pthread_mutex_init(&checkpointSemaphore, NULL) != 0) {
+    	perror("invalid pthread_mutex_init for checkpointSemaphore:");
+		return -1;
+    }
 
 	// change dir to server's designated folder with checkpoint and logfile
 	char serverDir[MAX_LEN_SERVER_DIR];
