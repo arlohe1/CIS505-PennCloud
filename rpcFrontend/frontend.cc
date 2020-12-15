@@ -33,12 +33,14 @@ std::vector<pthread_t> pthread_ids;
 pthread_mutex_t fd_mutex;
 std::set<int*> fd;
 volatile bool verbose = false;
-int vflag = 0;
+int vflag = 0, internal_socket_fd;
 volatile bool shut_down = false;
 volatile bool load_balancer = false;
 volatile int l_balancer_index = 0, server_index = 1;
 volatile int session_id_counter = rand();
+sockaddr_in load_balancer_addr;
 std::vector<std::string> frontend_server_list;
+std::vector<sockaddr_in> frontend_internal_list;
 
 using resp_tuple = std::tuple<int, std::string>;
 
@@ -2086,8 +2088,13 @@ int create_thread(int socket_fd, bool http) {
 	return 0;
 }
 
-int initialize_socket(int port_no, bool address){
-	int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+int initialize_socket(int port_no, bool address, bool datagram){
+	int socket_fd;
+	if(datagram){
+		socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	} else {
+		socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	}
 	if (socket_fd < 0 ) {
 		std::cerr << "Socket failed to initialize for port no " << port_no << "\n";
 		return -1;
@@ -2104,9 +2111,8 @@ int initialize_socket(int port_no, bool address){
 	fd.insert(&socket_fd);
 	pthread_mutex_unlock(&fd_mutex);
 
-	struct sockaddr_in servaddr, smtp_servaddr;
+	struct sockaddr_in servaddr;
 	bzero(&servaddr, sizeof(servaddr));
-	bzero(&smtp_servaddr, sizeof(smtp_servaddr));
 
 	/* Assign port and ip address */
 	servaddr.sin_family = AF_INET;
@@ -2126,11 +2132,13 @@ int initialize_socket(int port_no, bool address){
 	}
 
 	/* Start listening */
-	if (listen(socket_fd, 20) != 0) {
-		std::cerr << "Listening failed!\n";
-		exit(-1);
-	} else if (verbose) {
-		std::cerr << "Successfully started listening!\n";
+	if(!datagram){
+		if (listen(socket_fd, 20) != 0) {
+			std::cerr << "Listening failed!\n";
+			exit(-1);
+		} else if (verbose) {
+			std::cerr << "Successfully started listening!\n";
+		}
 	}
 
 	/* Add a timeout to socket to handle ctrl c periodically */
@@ -2152,8 +2160,8 @@ int main(int argc, char *argv[]) {
 		log("Couldn't initialize mutex for fd set");
 
 	/* Parse command line args */
-	int c, port_no = 10000, smtp_port_no = 15000, internal_port_no = 20000;
-	std::string list_of_frontend;
+	int c, port_no = 10000, smtp_port_no = 35000, internal_port_no = 40000;
+	std::string list_of_frontend = "";
 	while ((c = getopt(argc, argv, ":vlp:q:r:k:m:s:c:i:a")) != -1) {
 		switch (c) {
 			case 'v':
@@ -2248,6 +2256,10 @@ int main(int argc, char *argv[]) {
 	/* Add the list of all frontend servers to queue for load balancing if this node is load balancer */
 	if (load_balancer) {
 		server_index = 0;
+		log("Successfully initialized load balancer!");
+	}
+
+	if (list_of_frontend.length() > 0){
 		FILE *f = fopen(list_of_frontend.c_str(), "r");
 		if (f == NULL) {
 			std::cerr
@@ -2257,18 +2269,30 @@ int main(int argc, char *argv[]) {
 			exit(-1);
 		}
 		char buffer[300];
+		fgets(buffer, 300, f);
+		auto load_balancer_address = split(trim(std::string(buffer)), ":");
+		load_balancer_addr.sin_family = AF_INET;
+		load_balancer_addr.sin_port = std::stoi(load_balancer_address[1]);
+		load_balancer_addr.sin_addr.s_addr = inet_addr(load_balancer_address[0].data());
 		while (fgets(buffer, 300, f)) {
-			frontend_server_list.push_back(trim(std::string(buffer)));
+			auto tokens = split(trim(std::string(buffer)), ",");
+			frontend_server_list.push_back(trim(tokens[0]));
+			auto internal_server_address = split(trim(tokens[2]), ":");
+			sockaddr_in internal_server;
+			internal_server.sin_family = AF_INET;
+			internal_server.sin_port = std::stoi(internal_server_address[1]);
+			internal_server.sin_addr.s_addr = inet_addr(internal_server_address[0].data());
+			frontend_internal_list.push_back(internal_server);
 		}
 		fclose(f);
 		log("Successfully initialized load balancer!");
 	}
 
-	/* Initialize socket */
-	int socket_fd, smtp_socket_fd, internal_socket_fd;
-	if((socket_fd = initialize_socket(port_no, true)) < 0) exit(-1);
-	if((smtp_socket_fd = initialize_socket(smtp_port_no, false)) < 0) exit(-1);
-	if((internal_socket_fd = initialize_socket(internal_port_no, false)) < 0) exit(-1);
+	/* Initialize socket: http and smtp are tcp, internal is UDP */
+	int socket_fd, smtp_socket_fd;
+	if((socket_fd = initialize_socket(port_no, true, false)) < 0) exit(-1);
+	if((smtp_socket_fd = initialize_socket(smtp_port_no, false, false)) < 0) exit(-1);
+	if((internal_socket_fd = initialize_socket(internal_port_no, false, true)) < 0) exit(-1);
 
 	sigset_t empty_set;
 	sigemptyset(&empty_set);
