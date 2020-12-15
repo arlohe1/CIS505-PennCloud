@@ -36,7 +36,7 @@ volatile bool verbose = false;
 int vflag = 0;
 volatile bool shut_down = false;
 volatile bool load_balancer = false;
-volatile int l_balancer_index = 0;
+volatile int l_balancer_index = 0, server_index = 1;
 volatile int session_id_counter = rand();
 std::vector<std::string> frontend_server_list;
 
@@ -2086,89 +2086,168 @@ int create_thread(int socket_fd, bool http) {
 	return 0;
 }
 
+int initialize_socket(int port_no, bool address){
+	int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (socket_fd < 0 ) {
+		std::cerr << "Socket failed to initialize for port no " << port_no << "\n";
+		return -1;
+	} else if (verbose) {
+		std::cerr << "Socket initialized successfully!\n";
+	}
+	int true_opt = 1;
+	if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt, sizeof(int))
+			< 0) {
+		if (verbose)
+			std::cerr << "Setsockopt failed\n";
+	}
+	pthread_mutex_lock(&fd_mutex);
+	fd.insert(&socket_fd);
+	pthread_mutex_unlock(&fd_mutex);
+
+	struct sockaddr_in servaddr, smtp_servaddr;
+	bzero(&servaddr, sizeof(servaddr));
+	bzero(&smtp_servaddr, sizeof(smtp_servaddr));
+
+	/* Assign port and ip address */
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_port = htons(port_no);
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	/* Store my address */
+	if(address) my_address = std::string(inet_ntoa(servaddr.sin_addr)) + ":"
+			+ std::to_string(ntohs(servaddr.sin_port));
+
+	/* Bind socket */
+	if (bind(socket_fd, (struct sockaddr*) &servaddr, sizeof(servaddr)) != 0) {
+		std::cerr << "Sockets couldn't bind for port "<< port_no << "\n";
+		exit(-1);
+	} else if (verbose) {
+		std::cerr << "Sockets Successfully binded\n";
+	}
+
+	/* Start listening */
+	if (listen(socket_fd, 20) != 0) {
+		std::cerr << "Listening failed!\n";
+		exit(-1);
+	} else if (verbose) {
+		std::cerr << "Successfully started listening!\n";
+	}
+
+	/* Add a timeout to socket to handle ctrl c periodically */
+	struct timeval timeout;
+	timeout.tv_sec = 3;
+	timeout.tv_usec = 0;
+	if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
+			sizeof(timeout)) < 0)
+		log("setsockopt failed\n");
+	return socket_fd;
+}
+
 int main(int argc, char *argv[]) {
 	/* Set signal handler */
-	signal(SIGINT, sigint_handler);
+	//signal(SIGINT, sigint_handler);
 
 	/* Initialize mutex to access fd set */
 	if (pthread_mutex_init(&fd_mutex, NULL) != 0)
 		log("Couldn't initialize mutex for fd set");
 
 	/* Parse command line args */
-	int port_no = 10000;
-	int smtp_port_no = 15000;
+	int c, port_no = 10000, smtp_port_no = 15000, internal_port_no = 20000;
 	std::string list_of_frontend;
-	for (int i = 0; i < argc; i++) {
-		if (strstr(argv[i], "-v") != NULL
-				&& strcmp(strstr(argv[i], "-v"), "-v") == 0) {
-			verbose = true;
-			vflag = 1;
-		} else if (strstr(argv[i], "-l") != NULL
-				&& strcmp(strstr(argv[i], "-l"), "-l") == 0) {
-			load_balancer = true;
-		} else if (strstr(argv[i], "-p") != NULL
-				&& strcmp(strstr(argv[i], "-p"), "-p") == 0) {
-			if (i + 1 < argc) {
-				port_no = atoi(argv[++i]);
+	while ((c = getopt(argc, argv, ":vlp:q:r:k:m:s:c:i:a")) != -1) {
+		switch (c) {
+			case 'v':
+				verbose = true;
+				vflag = 1;
+				break;
+			case 'l':
+				load_balancer = true;
+				break;
+			case 'p':
+				port_no = atoi(optarg);
 				if (port_no == 0) {
 					std::cerr
-							<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
+							<< "Port number is 0 or '-p' is followed by non integer! Using default\n";
 					port_no = 10000;
 				}
-			} else {
-				std::cerr
-						<< "'-p' should be followed by a number! Using port 10000\n";
-			}
-		} else if (strstr(argv[i], "-q") != NULL
-				&& strcmp(strstr(argv[i], "-q"), "-q") == 0) {
-			if (i + 1 < argc) {
-				smtp_port_no = atoi(argv[++i]);
+				break;
+			case 'k':
+				kvMaster_addr = trim(std::string(optarg));
+				break;
+			case 'q':
+				smtp_port_no = atoi(optarg);
 				if (smtp_port_no == 0) {
 					std::cerr
-							<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
+							<< "Port number is 0 or '-q' is followed by non integer! Using default\n";
 					smtp_port_no = 15000;
 				}
-			} else {
-				std::cerr
-						<< "'-q' should be followed by a number! Using port 15000 for smtp\n";
-			}
-		} else if (strstr(argv[i], "-k") != NULL
-				&& strcmp(strstr(argv[i], "-k"), "-k") == 0) {
-			if (i + 1 < argc) {
-				kvMaster_addr = trim(std::string(argv[++i]));
-			} else {
-				std::cerr << "'-k' should be followed by an address!\n";
-			}
-		} else if (strstr(argv[i], "-m") != NULL
-				&& strcmp(strstr(argv[i], "-m"), "-m") == 0) {
-			if (i + 1 < argc) {
-				mail_addr = trim(std::string(argv[++i]));
-			} else {
-				std::cerr << "'-m' should be followed by an address!\n";
-			}
-		} else if (strstr(argv[i], "-s") != NULL
-				&& strcmp(strstr(argv[i], "-s"), "-s") == 0) {
-			if (i + 1 < argc) {
-				storage_addr = trim(std::string(argv[++i]));
-			} else {
-				std::cerr << "'-s' should be followed by an address!\n";
-			}
-		} else if (strstr(argv[i], "-f") != NULL
-				&& strcmp(strstr(argv[i], "-f"), "-f") == 0) {
-			if (i + 1 < argc) {
-				list_of_frontend = trim(std::string(argv[++i]));
-			} else {
-				std::cerr << "'-f' should be followed by a file name!\n";
-			}
-		} else if (strstr(argv[i], "-a") != NULL
-				&& strcmp(strstr(argv[i], "-a"), "-a") == 0) {
-			std::cerr << "Full name: Prasanna Poudyal\nSEAS login: poudyal\n";
-			exit(0);
+				break;
+			case 'r':
+				internal_port_no = atoi(optarg);
+				if (internal_port_no == 0) {
+					std::cerr
+							<< "Port number is 0 or '-r' is followed by non integer! Using default\n";
+					internal_port_no = 20000;
+				}
+				break;
+			case 'm':
+				mail_addr = trim(std::string(optarg));
+				break;
+			case 's':
+				storage_addr = trim(std::string(optarg));
+				break;
+			case 'c':
+				list_of_frontend = trim(std::string(optarg));
+				break;
+			case 'a':
+				std::cerr << "TEAM 20\n";
+				exit(0);
+				break;
+			case 'i':
+				server_index = atoi(optarg);
+				if (server_index == 0) {
+					std::cerr
+							<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
+					server_index = 1;
+				}
+				break;
+			case ':':
+				switch(optopt){
+					case 'p':
+						std::cerr
+								<< "'-p' should be followed by a number! Using port 10000\n";
+						break;
+					case 'k':
+						std::cerr << "'-k' should be followed by an address!\n";
+						break;
+					case 'q':
+						std::cerr
+								<< "'-q' should be followed by a number! Using port 10000\n";
+						break;
+					case 'r':
+						std::cerr
+								<< "'-r' should be followed by a number! Using port 10000\n";
+						break;
+					case 'm':
+						std::cerr << "'-m' should be followed by an address!\n";
+						break;
+					case 's':
+						std::cerr << "'-s' should be followed by an address!\n";
+						break;
+					case 'c':
+						std::cerr << "'-c' should be followed by a file name!\n";
+						break;
+					case 'i':
+						std::cerr << "'-i' should be followed by a number! Using 1 as default";
+						break;
+				}
+				break;
 		}
 	}
 
 	/* Add the list of all frontend servers to queue for load balancing if this node is load balancer */
 	if (load_balancer) {
+		server_index = 0;
 		FILE *f = fopen(list_of_frontend.c_str(), "r");
 		if (f == NULL) {
 			std::cerr
@@ -2186,74 +2265,13 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* Initialize socket */
-	int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-	int smtp_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (socket_fd < 0 || smtp_socket_fd < 0) {
-		std::cerr << "Socket failed to initialize\n";
-		exit(-1);
-	} else if (verbose) {
-		std::cerr << "Socket initialized successfully!\n";
-	}
-	int true_opt = 1;
-	if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt, sizeof(int))
-			< 0
-			|| setsockopt(smtp_socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt,
-					sizeof(int)) < 0) {
-		if (verbose)
-			std::cerr << "Setsockopt failed\n";
-	}
-	pthread_mutex_lock(&fd_mutex);
-	fd.insert(&socket_fd);
-	fd.insert(&smtp_socket_fd);
-	pthread_mutex_unlock(&fd_mutex);
-
-	struct sockaddr_in servaddr, smtp_servaddr;
-	bzero(&servaddr, sizeof(servaddr));
-	bzero(&smtp_servaddr, sizeof(smtp_servaddr));
-
-	/* Assign port and ip address */
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_port = htons(port_no);
-	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-	/* Store my address */
-	my_address = std::string(inet_ntoa(servaddr.sin_addr)) + ":"
-			+ std::to_string(ntohs(servaddr.sin_port));
-
-	smtp_servaddr.sin_family = AF_INET;
-	smtp_servaddr.sin_port = htons(smtp_port_no);
-	smtp_servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-	/* Bind socket */
-	if (bind(socket_fd, (struct sockaddr*) &servaddr, sizeof(servaddr)) != 0
-			|| bind(smtp_socket_fd, (struct sockaddr*) &smtp_servaddr,
-					sizeof(smtp_servaddr)) != 0) {
-		std::cerr << "Sockets couldn't bind\n";
-		exit(-1);
-	} else if (verbose) {
-		std::cerr << "Sockets Successfully binded\n";
-	}
-
-	/* Start listening */
-	if (listen(socket_fd, 20) != 0 || listen(smtp_socket_fd, 20) != 0) {
-		std::cerr << "Listening failed!\n";
-		exit(-1);
-	} else if (verbose) {
-		std::cerr << "Successfully started listening!\n";
-	}
+	int socket_fd, smtp_socket_fd, internal_socket_fd;
+	if((socket_fd = initialize_socket(port_no, true)) < 0) exit(-1);
+	if((smtp_socket_fd = initialize_socket(smtp_port_no, false)) < 0) exit(-1);
+	if((internal_socket_fd = initialize_socket(internal_port_no, false)) < 0) exit(-1);
 
 	sigset_t empty_set;
 	sigemptyset(&empty_set);
-
-	/* Add a timeout to socket to handle ctrl c periodically */
-	struct timeval timeout;
-	timeout.tv_sec = 3;
-	timeout.tv_usec = 0;
-	if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
-			sizeof(timeout)) < 0
-			|| setsockopt(smtp_socket_fd, SOL_SOCKET, SO_RCVTIMEO,
-					(char*) &timeout, sizeof(timeout)) < 0)
-		log("setsockopt failed\n");
 
 	//set up admin account (preferably in only one place: load balancer) TODO
 	//putKVS("admin", "password", "505");
@@ -2264,7 +2282,8 @@ int main(int argc, char *argv[]) {
 		FD_ZERO(&read_set);
 		FD_SET(socket_fd, &read_set);
 		FD_SET(smtp_socket_fd, &read_set);
-		int nfds = std::max(smtp_socket_fd, socket_fd) + 1;
+		FD_SET(internal_socket_fd, &read_set);
+		int nfds = std::max(internal_socket_fd, std::max(smtp_socket_fd, socket_fd)) + 1;
 		int r = 0;
 		while (r <= 0 && !shut_down) {
 			r = pselect(nfds, &read_set, NULL, NULL, NULL, &empty_set);
@@ -2278,6 +2297,8 @@ int main(int argc, char *argv[]) {
 		} else if (FD_ISSET(smtp_socket_fd, &read_set)) {
 			if (create_thread(smtp_socket_fd, false) < 0)
 				break;
+		} else if (FD_ISSET(internal_socket_fd, &read_set)){
+			// TODO handle internal server message
 		}
 	}
 
