@@ -41,7 +41,11 @@ sockaddr_in load_balancer_addr;
 std::vector<std::string> frontend_server_list;
 std::vector<sockaddr_in> frontend_internal_list;
 // maps session IDs to a specific backend server as specified by whereKVS
-std::map<std::string, std::string> sessionToServerMap;
+using server_tuple = std::tuple<std::string, std::string>;
+std::map<std::string, server_tuple> sessionToServerMap;
+std::map<std::string, int> sessionToServerIdx;
+std::map<std::string, int> rowToClusterNum;
+std::map<int, std::deque<server_tuple>> clusterToServerListMap;
 
 using resp_tuple = std::tuple<int, std::string>;
 
@@ -220,19 +224,60 @@ std::string kvsResponseMsg(resp_tuple resp) {
 	return std::get < 1 > (resp);
 }
 
+void buildClusterToBackendServerMapping() {
+	int masterPortNo = getPortNoFromString(kvMaster_addr);
+	std::string masterServAddress = getAddrFromString(kvMaster_addr);
+	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
+	try {
+		log("Requesting all backend nodes");
+        using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
+        std::deque<server_addr_tuple> resp = masterNodeRPCClient.call("getAllNodes").as<std::deque<server_addr_tuple>>();
+        for(server_addr_tuple serverInfo : resp) {
+            int clusterNum = std::get<0>(serverInfo);
+            std::string serverAddr = std::get<2>(serverInfo);
+            std::string serverAdminAddr = std::get<3>(serverInfo);
+            log("Received Server ("+serverAddr+", "+serverAdminAddr+" for Cluster "+std::to_string(clusterNum));
+            clusterToServerListMap[clusterNum].push_back(std::make_tuple(serverAddr, serverAdminAddr));
+        }
+	} catch (rpc::rpc_error &e) {
+		log("UNHANDLED ERROR IN buildClusterToBAckendServerMapping TRY CATCH");
+	}
+}
+
 std::string whereKVS(std::string session_id, std::string row) {
 	int masterPortNo = getPortNoFromString(kvMaster_addr);
 	std::string masterServAddress = getAddrFromString(kvMaster_addr);
 	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
 	try {
-		log("MASTERNODE WHERE: (" + row+") for session ("+session_id+")");
-		resp_tuple resp = masterNodeRPCClient.call("where", row, session_id).as<resp_tuple>();
-		log("whereKVS Response Status: "
-						+ std::to_string(kvsResponseStatusCode(resp)));
-		std::string server = kvsResponseMsg(resp);
-        log("whereKVS Response Server: " + server);
-        sessionToServerMap[session_id] = server;
-		return server;
+        if(rowToClusterNum.count(row) <= 0) {
+            log("MASTERNODE WHERE: (" + row+") for session ("+session_id+")");
+            // Returns cluster # for the row
+            int resp = masterNodeRPCClient.call("where", row, session_id).as<int>();
+            if(resp == -1) {
+                // ERROR
+                return "ERROR";
+            }
+            rowToClusterNum[row] = resp;
+        }
+        int clusterNum = rowToClusterNum[row];
+
+        std::deque<server_tuple> serverList = clusterToServerListMap[clusterNum];
+
+        int serverIdx = 0;
+        if(sessionToServerIdx.count(session_id) <= 0) {
+            // Randomly generate index to pick server in cluster
+            serverIdx = rand() % serverList.size();
+        } else {
+            // Incrementing serverIdx to next server in list
+            serverIdx = sessionToServerIdx[session_id];
+            serverIdx++;
+        }
+        serverIdx = serverIdx % serverList.size();
+        sessionToServerIdx[session_id] = serverIdx;
+
+        server_tuple chosenServerAddrs = serverList[serverIdx];
+        sessionToServerMap[session_id] = chosenServerAddrs;
+		return std::get<0>(chosenServerAddrs);
 	} catch (rpc::rpc_error &e) {
 		std::cout << std::endl << e.what() << std::endl;
 		std::cout << "in function " << e.get_function_name() << ": ";
@@ -246,9 +291,11 @@ std::string whereKVS(std::string session_id, std::string row) {
 resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string row, std::string column, std::string value, std::string old_value) {
     if(sessionToServerMap.count(session_id) <= 0) {
         log(kvsFuncType +": No server for session "+ session_id+". Calling whereKVS.");
-        sessionToServerMap[session_id] = whereKVS(session_id, row);
+        std::string newlyChosenServerAddr = whereKVS(session_id, row);
+        log(kvsFuncType +": Server "+ newlyChosenServerAddr+" chosen session "+ session_id+".");
     }
-    std::string targetServer = sessionToServerMap[session_id];
+    server_tuple serverInfo = sessionToServerMap[session_id];
+    std::string targetServer = std::get<0>(serverInfo);
 	int serverPortNo = getPortNoFromString(targetServer);
 	std::string servAddress = getAddrFromString(targetServer);
 	rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -2188,6 +2235,9 @@ int main(int argc, char *argv[]) {
 				break;
 		}
 	}
+
+    // Requesting list of all backend servers to build mapping (clusterNum) -> (list of servers)
+    buildClusterToBackendServerMapping();
 
 	/* Add the list of all frontend servers to queue for load balancing if this node is load balancer */
 	if (load_balancer) {
