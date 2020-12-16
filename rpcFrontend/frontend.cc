@@ -292,7 +292,7 @@ void storeServerState(struct server_state &state){
 	pthread_mutex_lock(&access_state_map);
 	state.last_modified = time(NULL);
 	std::string http_addr = state.http_address;
-	frontend_server_list[http_addr] = state;
+	frontend_state_map[http_addr] = state;
 	pthread_mutex_unlock(&access_state_map);
 }
 
@@ -339,7 +339,7 @@ void * handleInternalConnection(void * arg){
 		if(message.type == INFO_REQ) sendStateTo(src);
 		if(message.type == INFO_RESP) storeServerState(message.state);
 	} catch (const std::invalid_argument& ia) {
-		log("Invalid argument: " + ia.what());
+		log("Invalid argument: " + std::string(ia.what()));
 	}
 
 	pthread_detach(pthread_self());
