@@ -20,15 +20,10 @@
 #include <rpc/rpc_error.h>
 #include <regex>
 
-std::string greeting =
-		"+OK Server ready (Author: Prasanna Poudyal / poudyal)\r\n";
-std::string goodbye = "+OK Goodbye!\r\n";
 std::string error_msg = "-ERR Server shutting down\r\n";
-std::string unknown_cmd = "-ERR Unknown command\r\n";
 std::string kvMaster_addr = "";
 std::string mail_addr = "";
 std::string storage_addr = "";
-std::string my_address;
 pthread_mutex_t fd_mutex;
 std::set<int*> fd;
 volatile bool verbose = false;
@@ -38,7 +33,24 @@ volatile bool load_balancer = false;
 volatile int l_balancer_index = 0, server_index = 1;
 volatile int session_id_counter = rand();
 sockaddr_in load_balancer_addr;
+
+/********************** Internal message stuff ******************/
+pthread_mutex_t modify_server_state, crashing, access_state_map;
+struct server_state {
+	time_t last_modified;
+	std::string http_address;
+	int num_connections, http_connections, smtp_connections, internal_connections, num_threads;
+} server_state;
+struct server_state this_server_state;
 std::vector<std::string> frontend_server_list;
+std::map<std::string, struct server_state> frontend_state_map;
+
+enum message_type {INFO_REQ = 0, INFO_RESP = 1, STOP = 2, RESUME = 3, ACK = 4};
+struct internal_message {
+	message_type type;
+	struct server_state state;
+} internal_message;
+
 std::vector<sockaddr_in> frontend_internal_list;
 
 using resp_tuple = std::tuple<int, std::string>;
@@ -206,6 +218,132 @@ int getPortNoFromString(std::string fullServAddr) {
 
 std::string getAddrFromString(std::string fullServAddr) {
 	return trim(split(fullServAddr, ":")[0]);
+}
+
+/*********************** Internal Messaging Util function ***********************************/
+std::string getAddressFromSockaddr(sockaddr_in &addr){
+	return std::string(inet_ntoa(addr.sin_addr)) + ":" + std::to_string(ntohs(addr.sin_port));
+}
+
+int send_message(std::string ret, sockaddr_in &dest){
+	int rlen = sendto(internal_socket_fd, ret.data(), ret.length(), 0, (struct sockaddr*)&dest, sizeof(dest));
+	log("Sent '" + ret + "' to " + getAddressFromSockaddr(dest) + " total bytes sent " + std::to_string(rlen));
+	return rlen;
+}
+
+std::string internalMessageToString(struct internal_message &message){
+	std::string ret = std::to_string(message.type) + ",";
+	if(message.type == INFO_RESP){
+		ret += message.state.http_address + ",";
+		ret += std::to_string(message.state.num_connections) + ",";
+		ret += std::to_string(message.state.http_connections) + ",";
+		ret += std::to_string(message.state.smtp_connections) + ",";
+		ret += std::to_string(message.state.internal_connections) + ",";
+		ret += std::to_string(message.state.num_threads) + ",";
+	}
+	ret.pop_back();
+	log("Internal message: " + ret);
+	return ret;
+}
+
+struct internal_message parseRawMessage(std::string &message){
+	struct internal_message ret;
+	ret.type = message_type(stoi(message.substr(0, message.find(","))));
+	message.erase(0, message.find(",") + 1);
+	if(ret.type == INFO_RESP){
+		ret.state.http_address = message.substr(0, message.find(","));
+		message.erase(0, message.find(",") + 1);
+		ret.state.num_connections = message_type(stoi(message.substr(0, message.find(","))));
+		message.erase(0, message.find(",") + 1);
+		ret.state.http_connections = message_type(stoi(message.substr(0, message.find(","))));
+		message.erase(0, message.find(",") + 1);
+		ret.state.smtp_connections = message_type(stoi(message.substr(0, message.find(","))));
+		message.erase(0, message.find(",") + 1);
+		ret.state.internal_connections = message_type(stoi(message.substr(0, message.find(","))));
+		message.erase(0, message.find(",") + 1);
+		ret.state.num_threads = message_type(stoi(message.substr(0, message.find(","))));
+		message.erase(0, message.find(",") + 1);
+	}
+	return ret;
+}
+
+std::string prepareInternalMessage(message_type type){
+	struct internal_message ret;
+	ret.type = type;
+	if(type == INFO_RESP){
+		ret.state = this_server_state;
+	}
+	return internalMessageToString(ret);
+}
+
+bool amICrashing(){
+	pthread_mutex_lock(&crashing);
+	pthread_mutex_unlock(&crashing);
+	return false;
+}
+
+int sendStateTo(sockaddr_in &dest){
+	std::string message = prepareInternalMessage(INFO_RESP);
+	int rlen = sendto(internal_socket_fd, message.data(), message.length(), 0, (struct sockaddr*)&dest, sizeof(dest));
+	return rlen;
+}
+
+void storeServerState(struct server_state &state){
+	pthread_mutex_lock(&access_state_map);
+	state.last_modified = time(NULL);
+	std::string http_addr = state.http_address;
+	frontend_server_list[http_addr] = state;
+	pthread_mutex_unlock(&access_state_map);
+}
+
+void requstStateFromAllServers(){
+	std::string message = prepareInternalMessage(INFO_REQ);
+	for(sockaddr_in dest: frontend_internal_list){
+		send_message(message, dest);
+	}
+}
+
+int stopServer(int index){
+	if(index == 0 || index == server_index ||index >= frontend_internal_list.size()) return -1;
+	std::string message = prepareInternalMessage(STOP);
+	return send_message(message, frontend_internal_list[index]) - message.size();
+}
+
+int resumeServer(int index){
+	if(index == 0 || index == server_index ||index >= frontend_internal_list.size()) return -1;
+	std::string message = prepareInternalMessage(RESUME);
+	return send_message(message, frontend_internal_list[index]) - message.size();
+}
+
+void * heartbeat(){
+	while(!shutdown && !amICrashing()){
+		sendStateTo(load_balancer_addr);
+		sleep(2);
+	}
+	pthread_detach(pthread_self()); pthread_exit(NULL);
+}
+
+void * handleInternalConnection(void * arg){
+	log("Here in internal");
+	char buf[1001];
+	struct sockaddr_in src;
+	socklen_t srcSize = sizeof(src);
+	int rlen = recvfrom(internal_socket_fd, buf, sizeof(buf), 0, (struct sockaddr*)&src, &srcSize);
+	buf[rlen] = 0;
+	std::string raw_message(buf);
+	log("Received " + raw_message + " from " + getAddressFromSockaddr(src));
+
+	struct internal_message message;
+	try {
+		message = parseRawMessage(raw_message);
+		if(message.type == INFO_REQ) sendStateTo(src);
+		if(message.type == INFO_RESP) storeServerState(message.state);
+	} catch (const std::invalid_argument& ia) {
+		log("Invalid argument: " + ia.what());
+	}
+
+	pthread_detach(pthread_self());
+	pthread_exit(NULL);
 }
 
 /*********************** KVS Util function ***********************************/
@@ -570,7 +708,7 @@ void createRootDirForNewUser(struct http_request req) {
 
 /*********************** Http Util function **********************************/
 std::string generateSessionID() {
-	return generateStringHash(my_address + std::to_string(++session_id_counter));
+	return generateStringHash(this_server_state.http_address + std::to_string(++session_id_counter));
 }
 
 std::string getBoundary(std::string &type) {
@@ -866,10 +1004,15 @@ struct http_response processRequest(struct http_request &req) {
 	/* Check to see if I'm the load balancer and if this request needs to be redirected */
 	if (load_balancer && frontend_server_list.size() > 1
 			&& req.cookies.find("redirected") == req.cookies.end()) {
-		std::string redirect_server = frontend_server_list[l_balancer_index];
-		l_balancer_index = (l_balancer_index + 1) % frontend_server_list.size();
+		std::string redirect_server = "";
+		pthread_mutex_lock(&access_state_map);
+		while (redirect_server.compare("") == 0 || time(NULL) - frontend_state_map[redirect_server].last_modified > 3) {
+			redirect_server = frontend_server_list[l_balancer_index];
+			l_balancer_index = (l_balancer_index + 1) % frontend_server_list.size();
+		}
+		pthread_mutex_unlock(&access_state_map);
 
-		if (redirect_server.compare(my_address) == 0) {
+		if (redirect_server.compare(this_server_state.http_address) == 0) {
 			resp.cookies["redirected"] = "true";
 		} else {
 			resp.status_code = 307;
@@ -2119,7 +2262,7 @@ int initialize_socket(int port_no, bool address, bool datagram){
 	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
 	/* Store my address */
-	if(address) my_address = std::string(inet_ntoa(servaddr.sin_addr)) + ":"
+	if(address) this_server_state.http_address = std::string(inet_ntoa(servaddr.sin_addr)) + ":"
 			+ std::to_string(ntohs(servaddr.sin_port));
 
 	/* Bind socket */
@@ -2147,6 +2290,8 @@ int initialize_socket(int port_no, bool address, bool datagram){
 	if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
 			sizeof(timeout)) < 0)
 		log("setsockopt failed\n");
+
+	log("Socket_fd: " + std::to_string(socket_fd));
 	return socket_fd;
 }
 
@@ -2273,9 +2418,12 @@ int main(int argc, char *argv[]) {
 		load_balancer_addr.sin_family = AF_INET;
 		load_balancer_addr.sin_port = std::stoi(load_balancer_address[1]);
 		load_balancer_addr.sin_addr.s_addr = inet_addr(load_balancer_address[0].data());
+		frontend_internal_list.push_back(load_balancer_addr);
 		while (fgets(buffer, 300, f)) {
 			auto tokens = split(trim(std::string(buffer)), ",");
+			struct server_state dummy_state;
 			frontend_server_list.push_back(trim(tokens[0]));
+			frontend_state_map.emplace(trim(tokens[0]), dummy_state);
 			auto internal_server_address = split(trim(tokens[2]), ":");
 			sockaddr_in internal_server;
 			internal_server.sin_family = AF_INET;
@@ -2322,6 +2470,8 @@ int main(int argc, char *argv[]) {
 				break;
 		} else if (FD_ISSET(internal_socket_fd, &read_set)){
 			// TODO handle internal server message
+			pthread_t pthread_id;
+			pthread_create(&pthread_id, NULL, handleInternalConnection, NULL);
 		}
 	}
 
