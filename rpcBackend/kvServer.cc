@@ -53,7 +53,6 @@ int replay = 0;
 int serverIdx;
 int maxCache;
 int startCacheThresh;
-FILE* logfile = NULL;
 std::string currServerAddr;
 
 
@@ -68,12 +67,16 @@ volatile int numCommandsSinceLastCheckpoint = 0;
 volatile int cacheSize = 0;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
 std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-1 for val deleted, 0 for val on disk, 1 for val in kvMap)
+FILE* logfile = NULL;
 
 // semphores
 pthread_mutex_t checkpointSemaphore;
+pthread_mutex_t cacheSizeSemaphore;
+pthread_mutex_t numCommandsSinceLastCheckpointSemaphore;
+pthread_mutex_t logfileSemaphore;
 std::map<std::string, pthread_mutex_t> rwSemaphores; // row -> rw semaphore
 //std::map<std::string, pthread_mutex_t> countSemaphores; // row -> count semaphore
-volatile int readcount = 0;
+//volatile int readcount = 0;
 
 
 
@@ -232,6 +235,44 @@ int chdirToRow(const char* dirName) {
  	}
 
 }
+
+
+int lockNumComm() {
+	if (pthread_mutex_lock(&numCommandsSinceLastCheckpointSemaphore) != 0) {
+		debugDetailed("%s\n", "error obtaining numComm. mutex lock");
+		return -1;
+	}
+	debugDetailed("-----LOCK numCommandsSinceLastCheckpointSemaphore------: %s\n", "lock obtained, returning");
+	return 0;
+}
+
+int unlockLogFile() {
+	if (pthread_mutex_unlock(&logfileSemaphore) != 0) {
+		debug("%s\n", "error unlocking numComm mutex");
+		return -1;
+	}
+	debugDetailed("-----UNLOCK LOGFILE------: %s\n", "completed unlock, returning");
+	return 0;
+}
+
+int lockLogFile() {
+	if (pthread_mutex_lock(&logfileSemaphore) != 0) {
+		debugDetailed("%s\n", "error obtaining logfile mutex lock");
+		return -1;
+	}
+	debugDetailed("-----LOCK LOGFILE------: %s\n", "lock obtained, returning");
+	return 0;
+}
+
+int unlockLogFile() {
+	if (pthread_mutex_unlock(&logfileSemaphore) != 0) {
+		debug("%s\n", "error unlocking logfile mutex");
+		return -1;
+	}
+	debugDetailed("-----UNLOCK LOGFILE------: %s\n", "completed unlock, returning");
+	return 0;
+}
+
 
 int lockCheckpoint() {
 	if (pthread_mutex_lock(&checkpointSemaphore) != 0) {
@@ -481,24 +522,55 @@ int loadKvStoreFromDisk() {
 
 
 // increments command count since last checkpoint and deals with checkpointing
-void checkIfCheckPoint() {
+void checkIfCheckPoint(std::string row) {
+	// claim semaphore on numCommandsSinceLastCheckpoint
+	if (lockNumComm() < 0) {
+		perror("lock failure: ");
+		return;
+	}
 	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
 	debugDetailed("NUM completed commands: %d\n", numCommandsSinceLastCheckpoint);
 	if (numCommandsSinceLastCheckpoint >= COM_PER_CHECKPOINT) {
+		// lock all rows (assume @row specified by param is already locked by calling function)
+		if (lockLAllRows() < 0) {
+			perror("lock failure: ");
+			return;
+		}
 		debugDetailed("%s\n", "triggering checkpoint");
-		runCheckpoint();
+		runCheckpoint(); // Note this function accesses and writes to numCommandsSinceLastCheckpoint
+		// release semaphore on numCommandsSinceLastCheckpoint
+		if (unlockNumComm() < 0) {
+			perror("lock failure: ");
+			return;
+		}
+		if (unlockAllRows() < 0) {
+			perror("lock failure: ");
+			return;
+		}
+		// release all rows (assume @row specified by param is already locked by calling function and should be released by calling function)
+	} else {
+		// release semaphore on numCommandsSinceLast Checkpoint
+		if (unlockNumComm() < 0) {
+			perror("lock failure: ");
+			return;
+		}
 	}
+
 
 }
 
-// write to log.txt if new command came in and handle checkpointing
+// write to log.txt if new command came in and handle checkpointing, arg1 is row, arg2 is col
 int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg2, std::string arg3, std::string arg4) {
 	// check what command is 
 	if (replay == 0) {
 		debugDetailed("%s\n", "logging command, replay flag off");
+		if (lockLogFile() < 0) {
+			return -1;
+		}
 		if ((logfile = fopen("log.txt", "a")) == NULL) {
 			debugDetailed("could not open log.txt for server %d\n", serverIdx);
 			perror("invalid fopen of log file: ");
+			unlockLogFile();
 			return -1;
 		}
 		// write header line command arg {GET, PUT, CPUT, DELETE}
@@ -541,8 +613,11 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 
 		fclose(logfile);
 		logfile = NULL;
+		if (unlockLogFile() < 0) {
+			return -1;
+		}
 
-		checkIfCheckPoint();
+		//checkIfCheckPoint();
 	} else {
 		debugDetailed("%s\n", "did not re-log, replay flag is 1");
 	}
@@ -576,6 +651,74 @@ resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, s
 	return (resp_tuple) resp;
 	//return respSet[myIp];
 }
+
+
+int lockAllRowsExcept(std::string row) {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (x.first != row) {
+			if (pthread_mutex_lock(&rwSemaphores[x.first]) != 0) {
+				debugDetailed("%s\n", "error obtaining mutex lock in lockAllRowsExcept()");
+				return -1;
+			}
+		}
+    	
+	}
+	debugDetailed("-----lockAllRowsExcept------: %s %s\n", "completed locks except on row: ", row.c_str());
+	return 0;
+	// unlock map
+}
+
+int unlockAllRowsExcept(std::string row) {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (x.first != row) {
+			if (pthread_mutex_unlock(&rwSemaphores[x.first]) != 0) {
+				debugDetailed("%s\n", "error unlocking mutex in lockAllRowsExcept()");
+				return -1;
+			}
+		}
+    	
+	}
+	debugDetailed("-----unlockAllRowsExcept------: %s %s\n", "completed all unlocks except on row: ", row.c_str());
+	return 0;
+	// unlock map
+}
+
+int lockAllRows() {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (pthread_mutex_lock(&rwSemaphores[x.first]) != 0) {
+			debugDetailed("%s\n", "error obtaining mutex lock in lockAllRowsExcept()");
+			return -1;
+		}	
+	}
+	debugDetailed("-----lockAllRowsExcept------: %s %s\n", "completed locks except on row: ", row.c_str());
+	return 0;
+	// unlock map
+}
+
+int unlockAllRows() {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (pthread_mutex_unlock(&rwSemaphores[x.first]) != 0) {
+			debugDetailed("%s\n", "error unlocking mutex in lockAllRowsExcept()");
+			return -1;
+		}
+	}
+	debugDetailed("-----unlockAllRowsExcept------: %s %s\n", "completed all unlocks except on row: ", row.c_str());
+	return 0;
+	// unlock map
+}
+
 
 int lockRow(std::string row) {
 	if (rwSemaphores.count(row) == 0) {
@@ -624,9 +767,12 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
     }
     if (val.length() + cacheSize - oldLen <= maxCache) {
     	// put into kvMap, upate cache size and set kvLoc = 1
-    	
+    	if (lockRow(row) < 0) {
+			return std::make_tuple(1, "ERR");
+		}
     	kvMap[row][col] = val;
     	kvLoc[row][col] = 1;
+    	
     	cacheSize = cacheSize + val.length();
     	if (ranCheckPoint == 0) {
     		cacheSize = cacheSize - oldLen;
@@ -634,6 +780,10 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
     	debugDetailed("------PUT row: %s, column: %s, val: %s, cahceSize: %d\n", row.c_str(), col.c_str(), val.c_str(), cacheSize);
     	printKvMap();
     	logCommand(PUT, 3, row, col, val, row);
+    	if (unlockRow(row) < 0) {
+			return std::make_tuple(1, "ERR");
+		}
+		checkIfCheckPoint();
     	return std::make_tuple(0, "OK");
     } else {
     	// evict everything then rerun the function (but dont log the second time)
@@ -1210,9 +1360,21 @@ int main(int argc, char *argv[]) {
     setClusterMembership(serverIdx); // TODO need to fix this funciton
     
 
-    //initialize checkpoint semaphore
+    //initialize semaphores
     if (pthread_mutex_init(&checkpointSemaphore, NULL) != 0) {
     	perror("invalid pthread_mutex_init for checkpointSemaphore:");
+		return -1;
+    }
+    if (pthread_mutex_init(&cacheSizeSemaphore, NULL) != 0) {
+    	perror("invalid pthread_mutex_init for cacheSizeSemaphore:");
+		return -1;
+    }
+    if (pthread_mutex_init(&numCommandsSinceLastCheckpointSemaphore, NULL) != 0) {
+    	perror("invalid pthread_mutex_init for numCommandsSinceLastCheckpointSemaphore:");
+		return -1;
+    }
+    if (pthread_mutex_init(&logfileSemaphore, NULL) != 0) {
+    	perror("invalid pthread_mutex_init for logfile:");
 		return -1;
     }
 
