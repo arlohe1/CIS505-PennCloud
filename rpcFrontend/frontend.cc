@@ -917,8 +917,8 @@ struct http_response processRequest(struct http_request &req) {
 	}
 
 	if (req.cookies.find("username") == req.cookies.end()
-			&& req.cookies.find("sessionid") == req.cookies.end())
-	else if (req.cookies.find("username") == req.cookies.end()
+			&& req.cookies.find("sessionid") == req.cookies.end()) {
+	} else if (req.cookies.find("username") == req.cookies.end()
 			|| req.cookies.find("sessionid") == req.cookies.end()) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.cookies.erase("username");
