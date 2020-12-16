@@ -67,11 +67,12 @@ volatile int numCommandsSinceLastCheckpoint = 0;
 volatile int cacheSize = 0;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
 std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-1 for val deleted, 0 for val on disk, 1 for val in kvMap)
-FILE* logfile = NULL;
+//volatile FILE* logfile = NULL;
 
 // semphores
 pthread_mutex_t checkpointSemaphore;
 pthread_mutex_t cacheSizeSemaphore;
+pthread_mutex_t primarySemaphore;
 pthread_mutex_t numCommandsSinceLastCheckpointSemaphore;
 pthread_mutex_t logfileSemaphore;
 std::map<std::string, pthread_mutex_t> rwSemaphores; // row -> rw semaphore
@@ -151,6 +152,105 @@ void volatileMemset(volatile int* start, char c, int len) {
 	}
 	
 }
+
+int lockAllRowsExcept(std::string row) {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (x.first != row) {
+			if (pthread_mutex_lock(&rwSemaphores[x.first]) != 0) {
+				debugDetailed("%s\n", "error obtaining mutex lock in lockAllRowsExcept()");
+				return -1;
+			}
+		}
+    	
+	}
+	debugDetailed("-----lockAllRowsExcept------: %s %s\n", "completed locks except on row: ", row.c_str());
+	return 0;
+	// unlock map
+}
+
+int unlockAllRowsExcept(std::string row) {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (x.first != row) {
+			if (pthread_mutex_unlock(&rwSemaphores[x.first]) != 0) {
+				debugDetailed("%s\n", "error unlocking mutex in lockAllRowsExcept()");
+				return -1;
+			}
+		}
+    	
+	}
+	debugDetailed("-----unlockAllRowsExcept------: %s %s\n", "completed all unlocks except on row: ", row.c_str());
+	return 0;
+	// unlock map
+}
+
+int lockAllRows() {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (pthread_mutex_lock(&rwSemaphores[x.first]) != 0) {
+			debugDetailed("%s\n", "error obtaining mutex lock in lockAllRowsExcept()");
+			return -1;
+		}	
+	}
+	debugDetailed("-----lockAllRowsExcept------: %s\n", "completed locks except on row: ");
+	return 0;
+	// unlock map
+}
+
+int unlockAllRows() {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (pthread_mutex_unlock(&rwSemaphores[x.first]) != 0) {
+			debugDetailed("%s\n", "error unlocking mutex in lockAllRowsExcept()");
+			return -1;
+		}
+	}
+	debugDetailed("-----unlockAllRowsExcept------: %s\n", "completed all unlocks except on row: ");
+	return 0;
+	// unlock map
+}
+
+
+int lockRow(std::string row) {
+	if (rwSemaphores.count(row) == 0) {
+		// initalize semaphore for this row
+		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
+			perror("invalid pthread_mutex_init:");
+			return -1;
+		}
+		debugDetailed("-----LOCK ROW------: %s, row: %s\n", "new lock created", row.c_str());
+	}
+	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+		debugDetailed("%s\n", "error obtaining mutex lock");
+		return -1;
+	}
+	debugDetailed("-----LOCK ROW------: %s, row:%s\n", "lock obtained, returning", row.c_str());
+	return 0;
+}
+
+int unlockRow(std::string row) {
+	if (rwSemaphores.count(row) == 0) {
+		// initalize semaphore for this row
+		debugDetailed("ERROR IN UNLOCK ROW: %s", "unlock called on nonexistent mutex");
+		exit(-1);
+	}
+	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+		debug("%s\n", "error unlocking mutex");
+		return -1;
+	}
+	debugDetailed("-----UNLOCK ROW------: %s, row:%s\n", "completed unlock, returning", row.c_str());
+	return 0;
+}
+
 
 
 void printKvMap() {
@@ -237,6 +337,24 @@ int chdirToRow(const char* dirName) {
 }
 
 
+int lockPrimary() {
+	if (pthread_mutex_lock(&primarySemaphore) != 0) {
+		debugDetailed("%s\n", "error obtaining numComm. mutex lock");
+		return -1;
+	}
+	debugDetailed("-----LOCK primarySemaphore------: %s\n", "lock obtained, returning");
+	return 0;
+}
+
+int unlockPrimary() {
+	if (pthread_mutex_unlock(&primarySemaphore) != 0) {
+		debug("%s\n", "error unlocking numComm mutex");
+		return -1;
+	}
+	debugDetailed("-----UNLOCK primarySemaphore------: %s\n", "completed unlock, returning");
+	return 0;
+}
+
 int lockNumComm() {
 	if (pthread_mutex_lock(&numCommandsSinceLastCheckpointSemaphore) != 0) {
 		debugDetailed("%s\n", "error obtaining numComm. mutex lock");
@@ -246,12 +364,12 @@ int lockNumComm() {
 	return 0;
 }
 
-int unlockLogFile() {
-	if (pthread_mutex_unlock(&logfileSemaphore) != 0) {
+int unlockNumComm() {
+	if (pthread_mutex_unlock(&numCommandsSinceLastCheckpointSemaphore) != 0) {
 		debug("%s\n", "error unlocking numComm mutex");
 		return -1;
 	}
-	debugDetailed("-----UNLOCK LOGFILE------: %s\n", "completed unlock, returning");
+	debugDetailed("-----UNLOCK numComm------: %s\n", "completed unlock, returning");
 	return 0;
 }
 
@@ -296,9 +414,10 @@ int unlockCheckpoint() {
 void runCheckpoint() {
 	int valLen;
 	debugDetailed("%s,\n", "--------RUNNING CHECKPOINT--------");
-	if (lockCheckpoint() < 0) {
-		return;
-	}
+	// if (lockCheckpoint() < 0) {
+	// 	return;
+	// }
+	lockAllRows();
 	printKvMap();
 	printKvLoc();
 	
@@ -381,9 +500,7 @@ void runCheckpoint() {
 	printKvMap();
 	printKvLoc();
 	debugDetailed("%s,\n", "--------checkpoint finished and return--------");
-	if (unlockCheckpoint() < 0) {
-		return;
-	}
+	unlockAllRows();
 	return;
 	
 
@@ -432,6 +549,7 @@ int getValSize(FILE* colFilePtr) {
 // returns 0 if there was space, and -1 if not
 int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, char* col) {
 	// check if space
+	lockRow(row);
 	if (cacheSize + valLen <= cacheThresh) {
 		// read in val 
 		char* val = (char*) calloc(valLen, sizeof(char));
@@ -439,6 +557,7 @@ int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, ch
 			fread(val, sizeof(char), valLen, fptr);
 		} else {
 			perror("cannot calloc value in readAndLoadValIfSpace()");
+			unlockRow(row);
 			return -1;
 		}
 		//update kvMap and kvLoc
@@ -449,12 +568,14 @@ int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, ch
 		cacheSize = cacheSize + valLen;
 		kvLoc[rowString][colString] = 1;
 		free(val);
+		unlockRow(row);
 		return 0;
 	} else {
 		// update kvLoc
 		std::string rowString(row);
 		std::string colString(col);
 		kvLoc[rowString][colString] = 0;
+		unlockRow(row);
 		return -1;
 	}
 }
@@ -522,7 +643,7 @@ int loadKvStoreFromDisk() {
 
 
 // increments command count since last checkpoint and deals with checkpointing
-void checkIfCheckPoint(std::string row) {
+void checkIfCheckPoint() {
 	// claim semaphore on numCommandsSinceLastCheckpoint
 	if (lockNumComm() < 0) {
 		perror("lock failure: ");
@@ -531,37 +652,21 @@ void checkIfCheckPoint(std::string row) {
 	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
 	debugDetailed("NUM completed commands: %d\n", numCommandsSinceLastCheckpoint);
 	if (numCommandsSinceLastCheckpoint >= COM_PER_CHECKPOINT) {
-		// lock all rows (assume @row specified by param is already locked by calling function)
-		if (lockLAllRows() < 0) {
-			perror("lock failure: ");
-			return;
-		}
 		debugDetailed("%s\n", "triggering checkpoint");
 		runCheckpoint(); // Note this function accesses and writes to numCommandsSinceLastCheckpoint
-		// release semaphore on numCommandsSinceLastCheckpoint
-		if (unlockNumComm() < 0) {
-			perror("lock failure: ");
-			return;
-		}
-		if (unlockAllRows() < 0) {
-			perror("lock failure: ");
-			return;
-		}
-		// release all rows (assume @row specified by param is already locked by calling function and should be released by calling function)
-	} else {
-		// release semaphore on numCommandsSinceLast Checkpoint
-		if (unlockNumComm() < 0) {
-			perror("lock failure: ");
-			return;
-		}
+	} 
+	// release semaphore on numCommandsSinceLast Checkpoint
+	if (unlockNumComm() < 0) {
+		perror("lock failure: ");
+		return;
 	}
-
-
+	
 }
 
 // write to log.txt if new command came in and handle checkpointing, arg1 is row, arg2 is col
 int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg2, std::string arg3, std::string arg4) {
 	// check what command is 
+	FILE* logfile;
 	if (replay == 0) {
 		debugDetailed("%s\n", "logging command, replay flag off");
 		if (lockLogFile() < 0) {
@@ -612,7 +717,7 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 		fwrite("\n", sizeof(char), strlen("\n"), logfile);
 
 		fclose(logfile);
-		logfile = NULL;
+		//logfile = NULL;
 		if (unlockLogFile() < 0) {
 			return -1;
 		}
@@ -652,104 +757,6 @@ resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, s
 	//return respSet[myIp];
 }
 
-
-int lockAllRowsExcept(std::string row) {
-	// lock map
-	// loop over semaphore map and lock row
-	for (const auto& x : rwSemaphores) {
-		//x.first is row, x.second is semaphore
-		if (x.first != row) {
-			if (pthread_mutex_lock(&rwSemaphores[x.first]) != 0) {
-				debugDetailed("%s\n", "error obtaining mutex lock in lockAllRowsExcept()");
-				return -1;
-			}
-		}
-    	
-	}
-	debugDetailed("-----lockAllRowsExcept------: %s %s\n", "completed locks except on row: ", row.c_str());
-	return 0;
-	// unlock map
-}
-
-int unlockAllRowsExcept(std::string row) {
-	// lock map
-	// loop over semaphore map and lock row
-	for (const auto& x : rwSemaphores) {
-		//x.first is row, x.second is semaphore
-		if (x.first != row) {
-			if (pthread_mutex_unlock(&rwSemaphores[x.first]) != 0) {
-				debugDetailed("%s\n", "error unlocking mutex in lockAllRowsExcept()");
-				return -1;
-			}
-		}
-    	
-	}
-	debugDetailed("-----unlockAllRowsExcept------: %s %s\n", "completed all unlocks except on row: ", row.c_str());
-	return 0;
-	// unlock map
-}
-
-int lockAllRows() {
-	// lock map
-	// loop over semaphore map and lock row
-	for (const auto& x : rwSemaphores) {
-		//x.first is row, x.second is semaphore
-		if (pthread_mutex_lock(&rwSemaphores[x.first]) != 0) {
-			debugDetailed("%s\n", "error obtaining mutex lock in lockAllRowsExcept()");
-			return -1;
-		}	
-	}
-	debugDetailed("-----lockAllRowsExcept------: %s %s\n", "completed locks except on row: ", row.c_str());
-	return 0;
-	// unlock map
-}
-
-int unlockAllRows() {
-	// lock map
-	// loop over semaphore map and lock row
-	for (const auto& x : rwSemaphores) {
-		//x.first is row, x.second is semaphore
-		if (pthread_mutex_unlock(&rwSemaphores[x.first]) != 0) {
-			debugDetailed("%s\n", "error unlocking mutex in lockAllRowsExcept()");
-			return -1;
-		}
-	}
-	debugDetailed("-----unlockAllRowsExcept------: %s %s\n", "completed all unlocks except on row: ", row.c_str());
-	return 0;
-	// unlock map
-}
-
-
-int lockRow(std::string row) {
-	if (rwSemaphores.count(row) == 0) {
-		// initalize semaphore for this row
-		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
-			perror("invalid pthread_mutex_init:");
-			return -1;
-		}
-		debugDetailed("-----LOCK ROW------: %s, row: %s\n", "new lock created", row.c_str());
-	}
-	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
-		debugDetailed("%s\n", "error obtaining mutex lock");
-		return -1;
-	}
-	debugDetailed("-----LOCK ROW------: %s, row:%s\n", "lock obtained, returning", row.c_str());
-	return 0;
-}
-
-int unlockRow(std::string row) {
-	if (rwSemaphores.count(row) == 0) {
-		// initalize semaphore for this row
-		debugDetailed("ERROR IN UNLOCK ROW: %s", "unlock called on nonexistent mutex");
-		exit(-1);
-	}
-	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
-		debug("%s\n", "error unlocking mutex");
-		return -1;
-	}
-	debugDetailed("-----UNLOCK ROW------: %s, row:%s\n", "completed unlock, returning", row.c_str());
-	return 0;
-}
 
 
 
@@ -821,9 +828,7 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
 	// handle whether of not receiving node is a primary
     if (isPrimary() == 1) {
     	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
-    	if (lockRow(row) < 0) {
-    		return std::make_tuple(1, "ERR");
-    	}	
+    	lockPrimary();	
     	respSet[myIp] = put(row, col, val);
     	debugDetailed("---PUTREQ entered - I am primary: %s\n", "local put completed");
     	for (const auto& server : clusterMembers) {
@@ -843,6 +848,7 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
 			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
 			        // TODO - send heartbeat to server that timedout - if alive (ie reponse received before timeout), retry rpc call (with timeout), else continue on to next member and update master
 			        std::cout << t.what() << std::endl;
+			        exit(0);
 			    } catch (rpc::rpc_error &e) {
 				    std::cout << std::endl << e.what() << std::endl;
 				    std::cout << "in function " << e.get_function_name() << ": ";
@@ -851,14 +857,13 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
 				    auto err = e.get_error().as<err_t>();
 				    std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
 				              << std::endl;
+				    unlockPrimary();
 				    return std::make_tuple(1, "ERR");
 			    }
     		}
 		}
-		// release semaphor on row
-		if (unlockRow(row) < 0) {
-    		return std::make_tuple(1, "ERR");
-    	}
+		// release semaphor on primary
+		unlockPrimary();
 		debugDetailed("---PUTREQ entered - primary: %s\n", "calling combineResps");
 		// return resp tuple
 		resp = combineResps(respSet);
@@ -880,17 +885,20 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
 // get val if known to exist
 std::string getValDiskorLocal(std::string row, std::string col) {
 	std::string val;
+	lockRow(row);
 	if (kvLoc[row][col] == 0) { // TODO would need to claim semaphore here in this case on checkpoint where eviction happens
 		debugDetailed("%s\n", "row, col, val on disk, retrieiving..");
 		// try to load from disk, and run checkpoint if needed
 		FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
 		int valLen = getValSize(colFilePtr);
+		unlockRow(row);
 		int loadRes = readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
 		if (loadRes == -1) {
 			runCheckpoint();
 			readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
 		}	
 	}
+	unlockRow(row);
 	val = kvMap[row][col];
 	return val;
 }
@@ -905,38 +913,48 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 	if (kvLoc.count(row) > 0) {
 		if (kvLoc[row].count(col) > 0) {
 			if (kvLoc[row][col] != -1) {
-				std::string val = getValDiskorLocal(row, col);			
-				debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
-				printKvMap();
 				if (unlockRow(row) < 0) {
 					return std::make_tuple(1, "ERR");
 				}
+				std::string val = getValDiskorLocal(row, col);			
+				debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+				printKvMap();
 				//logCommand(GET, 2, row, col, row, row);
 				return std::make_tuple(0, val);
+			} else {
+				unlockRow(row);
 			}
 			
+		} else {
+			unlockRow(row);
 		}
-	} 
+	} else {
+		unlockRow(row);
+	}
 	
 	debugDetailed("---GET val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
 	// release semaphor on row
-	if (unlockRow(row) < 0) {
-		return std::make_tuple(1, "ERR");
-	}
+	
 	//logCommand(GET, 2, row, col, row, row);
+	debugDetailed("---GET :%s\n", "returning");
 	return std::make_tuple(1, "No such row, column pair");	
 }
 
 std::tuple<int, std::string> exists(std::string row, std::string col) {
+    lockRow(row);
     if (kvLoc.count(row) > 0) {
 		if (kvLoc[row].count(col) > 0) {
 			debugDetailed("---EXISTS succeeded - row: %s, column: %s\n", row.c_str(), col.c_str());
 			printKvMap();
+			unlockRow(row);
 			return std::make_tuple(0, "OK");
+		} else {
+			unlockRow(row);
 		}
-	} 
-
+	} else {
+		unlockRow(row);
+	}
 	debugDetailed("---EXISTS val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
 	return std::make_tuple(1, "No such row, column pair");
@@ -945,12 +963,16 @@ std::tuple<int, std::string> exists(std::string row, std::string col) {
 std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
 	debugDetailed("---CPUT entered - row: %s, column: %s, expVal: %s, newVal: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 
+	lockRow(row);
 	if (kvLoc.count(row) > 0) {
 		if (kvLoc[row].count(col) > 0) {
 			if (kvLoc[row][col] != -1) {
+				unlockRow(row);
 				std::string val = getValDiskorLocal(row, col);	
 				debugDetailed("------CPUT correct val: %s\n", val.c_str());	
+				lockRow(row);
 				if (expVal.compare(kvMap[row][col]) == 0) {
+					unlockRow(row);
 					put(row, col, newVal);
 					debugDetailed("------CPUT called put and updated val - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 					//debugDetailed("------CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
@@ -958,36 +980,43 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 					//logCommand(CPUT, 4, row, col, expVal, newVal);
 					return std::make_tuple(0, "OK");
 				} else {
+					printf("unlocking row\n");
+					unlockRow(row);
 					debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 					printKvMap();
 					//logCommand(CPUT, 4, row, col, expVal, newVal);
 					return std::make_tuple(2, "Incorrect expVal");
 				}
+			} else {
+				unlockRow(row);
 			}
-			
+		} else {
+			unlockRow(row);
 		}
-	} 
-
+	} else {
+		unlockRow(row);
+	}
+	
 	debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 	printKvMap();
 	//logCommand(CPUT, 4, row, col, expVal, newVal);
 	return std::make_tuple(1, "No such row, column pair");
 }
 
-std::tuple<int, std::string> cputApproved(std::string row, std::string col, std::string val, std::string newVal) {
-	// claim semaphore on row
-	if (lockRow(row) < 0) {
-		return std::make_tuple(1, "ERR");
-	}	
+// std::tuple<int, std::string> cputApproved(std::string row, std::string col, std::string val, std::string newVal) {
+// 	// claim semaphore on row
+// 	if (lockRow(row) < 0) {
+// 		return std::make_tuple(1, "ERR");
+// 	}	
 
-	resp_tuple resp =  cput(row, col, val, newVal);
+// 	resp_tuple resp =  cput(row, col, val, newVal);
 
-	// release semaphor on row
-	if (unlockRow(row) < 0) {
-		return std::make_tuple(1, "ERR");
-	}
-	return resp;
-}
+// 	// release semaphor on row
+// 	if (unlockRow(row) < 0) {
+// 		return std::make_tuple(1, "ERR");
+// 	}
+// 	return resp;
+// }
 
 
 std::tuple<int, std::string> cputReq(std::string row, std::string col, std::string val, std::string newVal) {
@@ -997,9 +1026,7 @@ std::tuple<int, std::string> cputReq(std::string row, std::string col, std::stri
 	// handle whether of not receiving node is a primary
     if (isPrimary() == 1) {
     	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
-    	if (lockRow(row) < 0) {
-    		return std::make_tuple(1, "ERR");
-    	}
+    	lockPrimary();
     	respSet[myIp] = cput(row, col, val, newVal);
     	debugDetailed("---CPUTREQ entered - I am primary: %s\n", "local cput completed");
     	for (const auto& server : clusterMembers) {
@@ -1018,6 +1045,7 @@ std::tuple<int, std::string> cputReq(std::string row, std::string col, std::stri
 			        // will display a message like
 			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
 			        std::cout << t.what() << std::endl;
+			        exit(0);
 			    } catch (rpc::rpc_error &e) {
 				    std::cout << std::endl << e.what() << std::endl;
 				    std::cout << "in function " << e.get_function_name() << ": ";
@@ -1031,9 +1059,7 @@ std::tuple<int, std::string> cputReq(std::string row, std::string col, std::stri
     		}
 		}
 		// release semaphor on row
-		if (unlockRow(row) < 0) {
-    		return std::make_tuple(1, "ERR");
-    	}
+		unlockPrimary();
 		debugDetailed("---CPUTREQ entered - primary: %s\n", "calling combineResps");
 		// return resp tuple
 		resp = combineResps(respSet);
@@ -1056,6 +1082,7 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 	debugDetailed("%s\n", "del entered");
 	printKvMap();
 	printKvLoc();
+	lockRow(row);
 	if (kvLoc.count(row) > 0) {
 		if (kvLoc[row].count(col) > 0) {
 			if (kvLoc[row][col] != -1) {
@@ -1067,12 +1094,20 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 				kvLoc[row][col] = -1;	
 				debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());	
 				printKvMap();	
+				unlockRow(row);
 				logCommand(DELETE, 2, row, col, row, row);
 				return std::make_tuple(0, "OK");
+			} else {
+				unlockRow(row);
 			}
 			
+		} else {
+			unlockRow(row);
 		}
+	} else {
+		unlockRow(row);
 	}
+	
 	debugDetailed("---DELETE val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
 	//logCommand(DELETE, 2, row, col, row, row);
@@ -1103,9 +1138,7 @@ std::tuple<int, std::string> delReq(std::string row, std::string col) {
 	// handle whether of not receiving node is a primary
     if (isPrimary() == 1) {
     	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
-    	if (lockRow(row) < 0) {
-    		return std::make_tuple(1, "ERR");
-    	}	
+    	lockPrimary();	
     	respSet[myIp] = del(row, col);
     	debugDetailed("---delREQ entered - I am primary: %s\n", "local del completed");
     	for (const auto& server : clusterMembers) {
@@ -1124,6 +1157,7 @@ std::tuple<int, std::string> delReq(std::string row, std::string col) {
 			        // will display a message like
 			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
 			        std::cout << t.what() << std::endl;
+			        exit(0);
 			    } catch (rpc::rpc_error &e) {
 				    std::cout << std::endl << e.what() << std::endl;
 				    std::cout << "in function " << e.get_function_name() << ": ";
@@ -1137,9 +1171,7 @@ std::tuple<int, std::string> delReq(std::string row, std::string col) {
     		}
 		}
 		// release semaphor on row
-		if (unlockRow(row) < 0) {
-			return std::make_tuple(1, "ERR");
-		}
+		unlockPrimary();
 		debugDetailed("---delREQ entered - primary: %s\n", "calling combineResps");
 		// return resp tuple
 		resp = combineResps(respSet);
@@ -1191,6 +1223,7 @@ void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, in
 // NOTE: will segfault if bad formatted file eg) if len numbers are wrong - TODO make atoi wrapper/check strtok ret's
 int replayLog() {
 	replay = 1;
+	FILE* logfile;
 	if ((logfile = fopen("log.txt", "r")) == NULL) {
 		debugDetailed("could not open log.txt for server %d\n", serverIdx);
 		perror("invalid fopen of log file: ");
@@ -1405,17 +1438,21 @@ int main(int argc, char *argv[]) {
 
     debug("Connecting to port: %d\n", port);
 	rpc::server srv(port);
-	srv.bind("putApproved", &putApproved); 
+	srv.bind("putApproved", &put); 
+	//srv.bind("putReq", &putReq);
 	srv.bind("put", &putReq);
-	srv.bind("cputApproved", &cputApproved); 
+
+	srv.bind("cputApproved", &cput); 
 	srv.bind("cput", &cputReq);
-	srv.bind("delApproved", &delApproved); 
+	//srv.bind("cputReq", &cputReq);
+	//srv.bind("delApproved", &delApproved); 
 	srv.bind("del", &delReq);
+	srv.bind("delApproved", &del);
 	srv.bind("get", &get);
 	//srv.bind("cput", &cput);
 	//srv.bind("del", &del);
 
-	srv.async_run(10);
+	srv.async_run(30);
 
 	while(1) {
 		sleep(10);
