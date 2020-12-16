@@ -659,6 +659,11 @@ std::tuple<int, std::string> putApproved(std::string row, std::string col, std::
 }
 
 
+// TODO (AMIT): 1) add timeout in primary and nonprimary case for calling put or put approved
+			// if timeout - call heartbeat method (which is on admit thread) with shorter timeout
+							// if timeout occurs, you know node is dead and can skip it
+							// else need to call put / put approved again with timeout
+
 std::tuple<int, std::string> putReq(std::string row, std::string col, std::string val) {
 	debugDetailed("---PUTREQ entered, primary is: %s:%d\n", std::get<0>(primaryIp).c_str(), std::get<1>(primaryIp));
 	std::map<std::tuple<std::string, int>, resp_tuple> respSet; // map from ip:port -> resp tuple 
@@ -686,6 +691,7 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
 			    } catch (rpc::timeout &t) {
 			        // will display a message like
 			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
+			        // TODO - send heartbeat to server that timedout - if alive (ie reponse received before timeout), retry rpc call (with timeout), else continue on to next member and update master
 			        std::cout << t.what() << std::endl;
 			    } catch (rpc::rpc_error &e) {
 				    std::cout << std::endl << e.what() << std::endl;
@@ -1100,6 +1106,7 @@ int replayLog() {
 void signalHandler(int sig) {
 	debugDetailed("%s\n", "signal caught by server");	
 	
+	// TODO - notify master that I'm dead
 	if (sig == SIGINT) {
 		// quit server
 		rpc::this_server().stop();
