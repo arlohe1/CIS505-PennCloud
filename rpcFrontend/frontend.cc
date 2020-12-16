@@ -35,11 +35,12 @@ volatile int session_id_counter = rand();
 sockaddr_in load_balancer_addr;
 
 /********************** Internal message stuff ******************/
+std::string INTERNAL_THREAD = "i", SMTP_THREAD = "s", HTTP_THREAD = "h";
 pthread_mutex_t modify_server_state, crashing, access_state_map;
 struct server_state {
-	time_t last_modified;
-	std::string http_address;
-	int num_connections, http_connections, smtp_connections, internal_connections, num_threads;
+	time_t last_modified = time(NULL);
+	std::string http_address = "";
+	int http_connections = 0, smtp_connections = 0, internal_connections = 0, num_threads = 1;
 } server_state;
 struct server_state this_server_state;
 std::vector<std::string> frontend_server_list;
@@ -221,8 +222,46 @@ std::string getAddrFromString(std::string fullServAddr) {
 }
 
 /*********************** Internal Messaging Util function ***********************************/
+
+void incrementThreadCounter(std::string type){
+	pthread_mutex_lock(&modify_server_state);
+	if(type.compare(INTERNAL_THREAD) == 0){
+		this_server_state.internal_connections += 1;
+	} else if(type.compare(SMTP_THREAD) == 0){
+		this_server_state.smtp_connections += 1;
+	} else if(type.compare(HTTP_THREAD) == 0){
+		this_server_state.http_connections += 1;
+	}
+	this_server_state.num_threads += 1;
+	pthread_mutex_unlock(&modify_server_state);
+}
+
+void decrementThreadCounter(std::string type){
+	pthread_mutex_lock(&modify_server_state);
+	if(type.compare(INTERNAL_THREAD) == 0){
+		this_server_state.internal_connections -= 1;
+	} else if(type.compare(SMTP_THREAD) == 0){
+		this_server_state.smtp_connections -= 1;
+	} else if(type.compare(HTTP_THREAD) == 0){
+		this_server_state.http_connections -= 1;
+	}
+	this_server_state.num_threads -= 1;
+	pthread_mutex_unlock(&modify_server_state);
+}
+
 std::string getAddressFromSockaddr(sockaddr_in &addr){
 	return std::string(inet_ntoa(addr.sin_addr)) + ":" + std::to_string(ntohs(addr.sin_port));
+}
+
+std::string getMessageFromInternalSocket(struct sockaddr_in &src){
+	char buf[1001];
+	socklen_t srcSize = sizeof(src);
+	int rlen = recvfrom(internal_socket_fd, buf, sizeof(buf), 0, (struct sockaddr*)&src, &srcSize);
+	buf[rlen] = 0;
+	std::string raw_message(buf);
+	log("Received " + raw_message + " from " + getAddressFromSockaddr(src));
+
+	return raw_message;
 }
 
 int send_message(std::string ret, sockaddr_in &dest){
@@ -235,7 +274,6 @@ std::string internalMessageToString(struct internal_message &message){
 	std::string ret = std::to_string(message.type) + ",";
 	if(message.type == INFO_RESP){
 		ret += message.state.http_address + ",";
-		ret += std::to_string(message.state.num_connections) + ",";
 		ret += std::to_string(message.state.http_connections) + ",";
 		ret += std::to_string(message.state.smtp_connections) + ",";
 		ret += std::to_string(message.state.internal_connections) + ",";
@@ -246,14 +284,22 @@ std::string internalMessageToString(struct internal_message &message){
 	return ret;
 }
 
+void log_server_state(struct server_state &state){
+	std::string ret;
+	ret += "Http address: " +state.http_address + ",";
+	ret += "Http conn num: " + std::to_string(state.http_connections) + ",";
+	ret += "Smtp conn num: " + std::to_string(state.smtp_connections) + ",";
+	ret += "Internal conn num: " + std::to_string(state.internal_connections) + ",";
+	ret += "Num threads: " + std::to_string(state.num_threads);
+	log(ret);
+}
+
 struct internal_message parseRawMessage(std::string &message){
 	struct internal_message ret;
 	ret.type = message_type(stoi(message.substr(0, message.find(","))));
 	message.erase(0, message.find(",") + 1);
 	if(ret.type == INFO_RESP){
 		ret.state.http_address = message.substr(0, message.find(","));
-		message.erase(0, message.find(",") + 1);
-		ret.state.num_connections = message_type(stoi(message.substr(0, message.find(","))));
 		message.erase(0, message.find(",") + 1);
 		ret.state.http_connections = message_type(stoi(message.substr(0, message.find(","))));
 		message.erase(0, message.find(",") + 1);
@@ -289,6 +335,7 @@ int sendStateTo(sockaddr_in &dest){
 }
 
 void storeServerState(struct server_state &state){
+	log("Storing state from " + state.http_address);
 	pthread_mutex_lock(&access_state_map);
 	state.last_modified = time(NULL);
 	std::string http_addr = state.http_address;
@@ -303,45 +350,85 @@ void requstStateFromAllServers(){
 	}
 }
 
-int stopServer(int index){
+int sendStopMessage(int index){
 	if(index == 0 || index == server_index ||index >= frontend_internal_list.size()) return -1;
 	std::string message = prepareInternalMessage(STOP);
 	return send_message(message, frontend_internal_list[index]) - message.size();
 }
 
-int resumeServer(int index){
+int sendResumeMessage(int index){
 	if(index == 0 || index == server_index ||index >= frontend_internal_list.size()) return -1;
 	std::string message = prepareInternalMessage(RESUME);
 	return send_message(message, frontend_internal_list[index]) - message.size();
 }
 
-void * heartbeat(){
-	while(!shutdown && !amICrashing()){
+void resumeThisServer(){
+	log("Resuming");
+	pthread_mutex_unlock(&crashing);
+}
+
+void crashThisServer(){
+	log("Crashing");
+	pthread_mutex_lock(&crashing);
+	// wait for resumption
+	while(!shut_down){
+		log("need to wait for RESUME");
+		sockaddr_in src;
+		std::string raw_message = getMessageFromInternalSocket(src);
+		struct internal_message message;
+		try {
+			message = parseRawMessage(raw_message);
+			if(message.type == RESUME) {
+				break;
+			} else {
+				log("Still waiting for RESUME message");
+				continue;
+			}
+		} catch (const std::invalid_argument& ia) {
+			log("Invalid argument: " + std::string(ia.what()));
+		}
+	}
+	if(shut_down) exit(-1);
+	resumeThisServer();
+}
+
+void * heartbeat(void *arg){
+	incrementThreadCounter(INTERNAL_THREAD);
+	while(!shut_down && !amICrashing()){
 		sendStateTo(load_balancer_addr);
 		sleep(2);
 	}
+	decrementThreadCounter(INTERNAL_THREAD);
 	pthread_detach(pthread_self()); pthread_exit(NULL);
 }
 
 void * handleInternalConnection(void * arg){
-	log("Here in internal");
-	char buf[1001];
-	struct sockaddr_in src;
-	socklen_t srcSize = sizeof(src);
-	int rlen = recvfrom(internal_socket_fd, buf, sizeof(buf), 0, (struct sockaddr*)&src, &srcSize);
-	buf[rlen] = 0;
-	std::string raw_message(buf);
-	log("Received " + raw_message + " from " + getAddressFromSockaddr(src));
+	incrementThreadCounter(INTERNAL_THREAD);
+	sockaddr_in src;
+	std::string raw_message = getMessageFromInternalSocket(src);
 
 	struct internal_message message;
 	try {
 		message = parseRawMessage(raw_message);
-		if(message.type == INFO_REQ) sendStateTo(src);
-		if(message.type == INFO_RESP) storeServerState(message.state);
+		switch(message.type){
+			case INFO_REQ:
+				sendStateTo(src);
+				break;
+			case INFO_RESP:
+				storeServerState(message.state);
+				break;
+			case STOP:
+				crashThisServer();
+				break;
+			case RESUME:
+				resumeThisServer();
+				break;
+		}
 	} catch (const std::invalid_argument& ia) {
 		log("Invalid argument: " + std::string(ia.what()));
 	}
 
+	decrementThreadCounter(INTERNAL_THREAD);
 	pthread_detach(pthread_self());
 	pthread_exit(NULL);
 }
@@ -1710,6 +1797,13 @@ struct http_response processRequest(struct http_request &req) {
 		}
 	} else if (req.filepath.compare("/admin") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
+			time_t now = time(NULL);
+			requstStateFromAllServers();
+			sleep(1);
+			for(std::map<std::string, struct server_state>::iterator it = frontend_state_map.begin();
+					it != frontend_state_map.end(); it++){
+				log_server_state( it->second);
+			}
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
@@ -1772,6 +1866,8 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 /***************************** End http util functions ************************/
 
 void* handleClient(void *arg) {
+	incrementThreadCounter(HTTP_THREAD);
+
 	/* Initialize buffer and client fd */
 	int *client_fd = (int*) arg;
 	log("Handling client " + std::to_string(*client_fd));
@@ -1794,6 +1890,7 @@ void* handleClient(void *arg) {
 	pthread_mutex_unlock(&fd_mutex);
 	close(*client_fd);
 	free(client_fd);
+	decrementThreadCounter(HTTP_THREAD);
 	pthread_detach(pthread_self());
 	pthread_exit(NULL);
 }
@@ -1810,6 +1907,7 @@ bool do_write(int fd, char *buf, int len) {
 }
 
 void* handle_smtp_connections(void *arg) {
+	incrementThreadCounter(SMTP_THREAD);
 	sigset_t newmask;
 	sigemptyset(&newmask);
 	sigaddset(&newmask, SIGINT);
@@ -2190,6 +2288,7 @@ void* handle_smtp_connections(void *arg) {
 	close(comm_fd);
 	if (vflag)
 		fprintf(stderr, "[%d] Connection closed\n", comm_fd);
+	decrementThreadCounter(SMTP_THREAD);
 	pthread_detach (pthread_self());pthread_exit
 	(NULL);
 }
@@ -2299,9 +2398,15 @@ int main(int argc, char *argv[]) {
 	/* Set signal handler */
 	//signal(SIGINT, sigint_handler);
 
-	/* Initialize mutex to access fd set */
+	/* Initialize mutexes */
 	if (pthread_mutex_init(&fd_mutex, NULL) != 0)
 		log("Couldn't initialize mutex for fd set");
+	if (pthread_mutex_init(&modify_server_state, NULL) != 0)
+		log("Couldn't initialize mutex for modify_server_state");
+	if (pthread_mutex_init(&crashing, NULL) != 0)
+		log("Couldn't initialize mutex for crashing");
+	if (pthread_mutex_init(&access_state_map, NULL) != 0)
+		log("Couldn't initialize mutex for access_state_map");
 
 	/* Parse command line args */
 	int c, port_no = 10000, smtp_port_no = 35000, internal_port_no = 40000;
@@ -2414,9 +2519,9 @@ int main(int argc, char *argv[]) {
 		}
 		char buffer[300];
 		fgets(buffer, 300, f);
-		auto load_balancer_address = split(split(trim(std::string(buffer)), ",")[1], ":");
+		auto load_balancer_address = split((split(trim(std::string(buffer)), ",")).at(1), ":");
 		load_balancer_addr.sin_family = AF_INET;
-		load_balancer_addr.sin_port = std::stoi(load_balancer_address[1]);
+		load_balancer_addr.sin_port = htons(std::stoi(load_balancer_address[1]));
 		load_balancer_addr.sin_addr.s_addr = inet_addr(load_balancer_address[0].data());
 		frontend_internal_list.push_back(load_balancer_addr);
 		while (fgets(buffer, 300, f)) {
@@ -2427,12 +2532,18 @@ int main(int argc, char *argv[]) {
 			auto internal_server_address = split(trim(tokens[2]), ":");
 			sockaddr_in internal_server;
 			internal_server.sin_family = AF_INET;
-			internal_server.sin_port = std::stoi(internal_server_address[1]);
+			internal_server.sin_port = htons(std::stoi(internal_server_address[1]));
 			internal_server.sin_addr.s_addr = inet_addr(internal_server_address[0].data());
 			frontend_internal_list.push_back(internal_server);
 		}
 		fclose(f);
-		log("Successfully initialized load balancer!");
+
+		// Start heartbeat thread if not load balancer
+		if(!load_balancer){
+			log("Starting hearbeat");
+			pthread_t pthread_id;
+			pthread_create(&pthread_id, NULL, heartbeat, NULL);
+		}
 	}
 
 	/* Initialize socket: http and smtp are tcp, internal is UDP */
@@ -2447,7 +2558,7 @@ int main(int argc, char *argv[]) {
 	//set up admin account (preferably in only one place: load balancer) TODO
 	//putKVS("admin", "password", "505");
 
-	while (!shut_down) {
+	while (!shut_down && !amICrashing()) {
 		/* Initialize read set for select and call select */
 		fd_set read_set;
 		FD_ZERO(&read_set);
