@@ -259,14 +259,14 @@ std::string getMessageFromInternalSocket(struct sockaddr_in &src){
 	int rlen = recvfrom(internal_socket_fd, buf, sizeof(buf), 0, (struct sockaddr*)&src, &srcSize);
 	buf[rlen] = 0;
 	std::string raw_message(buf);
-	log("Received " + raw_message + " from " + getAddressFromSockaddr(src));
+	if(!load_balancer) log("Received " + raw_message + " from " + getAddressFromSockaddr(src));
 
 	return raw_message;
 }
 
-int send_message(std::string ret, sockaddr_in &dest){
+int send_message(std::string ret, sockaddr_in &dest, bool silent){
 	int rlen = sendto(internal_socket_fd, ret.data(), ret.length(), 0, (struct sockaddr*)&dest, sizeof(dest));
-	log("Sent '" + ret + "' to " + getAddressFromSockaddr(dest) + " total bytes sent " + std::to_string(rlen));
+	if(!silent) log("Sent '" + ret + "' to " + getAddressFromSockaddr(dest) + " total bytes sent " + std::to_string(rlen));
 	return rlen;
 }
 
@@ -280,13 +280,13 @@ std::string internalMessageToString(struct internal_message &message){
 		ret += std::to_string(message.state.num_threads) + ",";
 	}
 	ret.pop_back();
-	log("Internal message: " + ret);
 	return ret;
 }
 
 void log_server_state(struct server_state &state){
 	std::string ret;
-	ret += "Http address: " +state.http_address + ",";
+	ret += "Http address: " + state.http_address + ",";
+	ret += "Last modified: " + std::to_string(state.last_modified) + ",";
 	ret += "Http conn num: " + std::to_string(state.http_connections) + ",";
 	ret += "Smtp conn num: " + std::to_string(state.smtp_connections) + ",";
 	ret += "Internal conn num: " + std::to_string(state.internal_connections) + ",";
@@ -335,10 +335,9 @@ int sendStateTo(sockaddr_in &dest){
 }
 
 void storeServerState(struct server_state &state){
-	log("Storing state from " + state.http_address);
 	pthread_mutex_lock(&access_state_map);
 	state.last_modified = time(NULL);
-	std::string http_addr = state.http_address;
+	std::string http_addr = trim(state.http_address);
 	frontend_state_map[http_addr] = state;
 	pthread_mutex_unlock(&access_state_map);
 }
@@ -346,20 +345,25 @@ void storeServerState(struct server_state &state){
 void requstStateFromAllServers(){
 	std::string message = prepareInternalMessage(INFO_REQ);
 	for(sockaddr_in dest: frontend_internal_list){
-		send_message(message, dest);
+		send_message(message, dest, false);
 	}
 }
 
 int sendStopMessage(int index){
 	if(index == 0 || index == server_index ||index >= frontend_internal_list.size()) return -1;
 	std::string message = prepareInternalMessage(STOP);
-	return send_message(message, frontend_internal_list[index]) - message.size();
+	return send_message(message, frontend_internal_list[index], false) - message.size();
 }
 
 int sendResumeMessage(int index){
 	if(index == 0 || index == server_index ||index >= frontend_internal_list.size()) return -1;
 	std::string message = prepareInternalMessage(RESUME);
-	return send_message(message, frontend_internal_list[index]) - message.size();
+	return send_message(message, frontend_internal_list[index], false) - message.size();
+}
+
+int getServerIndexFromAddr(std::string &addr){
+	auto it = std::find(frontend_server_list.begin(), frontend_server_list.end(), addr);
+	return (it == frontend_server_list.end()) ? -1 : it - frontend_server_list.begin() + 1;
 }
 
 void resumeThisServer(){
@@ -412,7 +416,7 @@ void * handleInternalConnection(void * arg){
 		message = parseRawMessage(raw_message);
 		switch(message.type){
 			case INFO_REQ:
-				sendStateTo(src);
+				if(!load_balancer) sendStateTo(src);
 				break;
 			case INFO_RESP:
 				storeServerState(message.state);
@@ -1093,8 +1097,14 @@ struct http_response processRequest(struct http_request &req) {
 			&& req.cookies.find("redirected") == req.cookies.end()) {
 		std::string redirect_server = "";
 		pthread_mutex_lock(&access_state_map);
+		int first_time = 0;
 		while (redirect_server.compare("") == 0 || time(NULL) - frontend_state_map[redirect_server].last_modified > 3) {
 			redirect_server = frontend_server_list[l_balancer_index];
+			if(first_time < 2){
+				log("Redirect server: " + redirect_server);
+				log_server_state(frontend_state_map[redirect_server]);
+				first_time += 1;
+			}
 			l_balancer_index = (l_balancer_index + 1) % frontend_server_list.size();
 		}
 		pthread_mutex_unlock(&access_state_map);
@@ -1796,23 +1806,59 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/admin") == 0) {
-		if (req.cookies.find("username") != req.cookies.end()) {
+		if (req.cookies.find("username") != req.cookies.end() && req.cookies["username"].compare("admin") == 0) {
 			time_t now = time(NULL);
+			log("now" + std::to_string(now));
 			requstStateFromAllServers();
 			sleep(1);
+			std::string message =
+								"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+										"<input type = \"submit\" value=\"Logout\" /></form><br><ul><hr>";
 			for(std::map<std::string, struct server_state>::iterator it = frontend_state_map.begin();
 					it != frontend_state_map.end(); it++){
 				log_server_state( it->second);
+				log("Last modified: " + std::to_string(it->second.last_modified));
+				std::string status = (it->second.last_modified >= now) ? "Active" : "Not Responding";
+				message += "<l1>" + it->first;
+				message += " Status: " + status;
+				message += "<form action=\"/serverinfo/"+ it->first + "\" method=\"POST\">"
+						"<input type = \"submit\" value=\"More Info\" /></form>";
+				if(this_server_state.http_address.compare(it->first) != 0){
+					message += "<form action=\"/stopserver/"+ it->first + "\" method=\"POST\">"
+						"<input type = \"submit\" value=\"Stop\" /></form>";
+					message += "<form action=\"/resumeserver/"+ it->first + "\" method=\"POST\">"
+											"<input type = \"submit\" value=\"Resume\" /></form>";
+				}
+				message += "</l1><hr>";
 			}
+			message += "</ul></body></html>";
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
-
-			std::string message =
-					"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
-							"<input type = \"submit\" value=\"Logout\" /></form></body></html>";
-			resp.headers["Content-length"] = message.size();
+			resp.headers["Content-length"] = std::to_string(message.length());
 			resp.content = message;
+		}
+	} else if (req.filepath.compare(0, 12,"/stopserver/") == 0) {
+		if (req.cookies.find("username") != req.cookies.end() && req.cookies["username"].compare("admin") == 0) {
+			std::string target = trim(split(req.filepath, "/").back());
+			int target_index = getServerIndexFromAddr(target);
+			log("Stopping: " + target);
+			log("Target index: " + std::to_string(target_index));
+			sendStopMessage(target_index);
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/admin";
+		}
+	} else if (req.filepath.compare(0, 14,"/resumeserver/") == 0) {
+		if (req.cookies.find("username") != req.cookies.end() && req.cookies["username"].compare("admin") == 0) {
+			std::string target = trim(split(req.filepath, "/").back());
+			int target_index = getServerIndexFromAddr(target);
+			log("Resuming: " + target);
+			log("Target index: " + std::to_string(target_index));
+			sendResumeMessage(target_index);
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/admin";
 		}
 	} else {
 		if (req.cookies.find("username") != req.cookies.end()) {
@@ -2329,7 +2375,7 @@ int create_thread(int socket_fd, bool http) {
 	return 0;
 }
 
-int initialize_socket(int port_no, bool address, bool datagram){
+int initialize_socket(int port_no, bool datagram){
 	int socket_fd;
 	if(datagram){
 		socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -2359,10 +2405,6 @@ int initialize_socket(int port_no, bool address, bool datagram){
 	servaddr.sin_family = AF_INET;
 	servaddr.sin_port = htons(port_no);
 	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-	/* Store my address */
-	if(address) this_server_state.http_address = std::string(inet_ntoa(servaddr.sin_addr)) + ":"
-			+ std::to_string(ntohs(servaddr.sin_port));
 
 	/* Bind socket */
 	if (bind(socket_fd, (struct sockaddr*) &servaddr, sizeof(servaddr)) != 0) {
@@ -2524,17 +2566,20 @@ int main(int argc, char *argv[]) {
 		load_balancer_addr.sin_port = htons(std::stoi(load_balancer_address[1]));
 		load_balancer_addr.sin_addr.s_addr = inet_addr(load_balancer_address[0].data());
 		frontend_internal_list.push_back(load_balancer_addr);
+		int i = 1;
 		while (fgets(buffer, 300, f)) {
 			auto tokens = split(trim(std::string(buffer)), ",");
 			struct server_state dummy_state;
 			frontend_server_list.push_back(trim(tokens[0]));
-			frontend_state_map.emplace(trim(tokens[0]), dummy_state);
+			frontend_state_map[trim(tokens[0])] = dummy_state;
 			auto internal_server_address = split(trim(tokens[2]), ":");
 			sockaddr_in internal_server;
 			internal_server.sin_family = AF_INET;
 			internal_server.sin_port = htons(std::stoi(internal_server_address[1]));
 			internal_server.sin_addr.s_addr = inet_addr(internal_server_address[0].data());
 			frontend_internal_list.push_back(internal_server);
+			if(i == server_index) this_server_state.http_address = trim(tokens[0]);
+			i++;
 		}
 		fclose(f);
 
@@ -2548,9 +2593,9 @@ int main(int argc, char *argv[]) {
 
 	/* Initialize socket: http and smtp are tcp, internal is UDP */
 	int socket_fd, smtp_socket_fd;
-	if((socket_fd = initialize_socket(port_no, true, false)) < 0) exit(-1);
-	if((smtp_socket_fd = initialize_socket(smtp_port_no, false, false)) < 0) exit(-1);
-	if((internal_socket_fd = initialize_socket(internal_port_no, false, true)) < 0) exit(-1);
+	if((socket_fd = initialize_socket(port_no, false)) < 0) exit(-1);
+	if((smtp_socket_fd = initialize_socket(smtp_port_no, false)) < 0) exit(-1);
+	if((internal_socket_fd = initialize_socket(internal_port_no, true)) < 0) exit(-1);
 
 	sigset_t empty_set;
 	sigemptyset(&empty_set);
