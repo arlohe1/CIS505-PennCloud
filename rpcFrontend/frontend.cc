@@ -243,121 +243,61 @@ std::string whereKVS(std::string session_id, std::string row) {
 	return "Error in whereKVS";
 }
 
+resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string row, std::string column, std::string value, std::string old_value) {
+    if(sessionToServerMap.count(session_id) <= 0) {
+        log(kvsFuncType +": No server for session "+ session_id+". Calling whereKVS.");
+        sessionToServerMap[session_id] = whereKVS(session_id, row);
+    }
+    std::string targetServer = sessionToServerMap[session_id];
+	int serverPortNo = getPortNoFromString(targetServer);
+	std::string servAddress = getAddrFromString(targetServer);
+	rpc::client kvsRPCClient(servAddress, serverPortNo);
+	resp_tuple resp;
+	try {
+        if(kvsFuncType.compare("putKVS") == 0) {
+            log("KVS PUT with kvServer "+targetServer+": " + row + ", " + column + ", " + value);
+            resp = kvsRPCClient.call("put", row, column, value).as<resp_tuple>();
+        } else if(kvsFuncType.compare("cputKVS") == 0) {
+            log("KVS CPUT with kvServer "+targetServer+": " + row + ", " + column + ", " + old_value + ", " + value);
+            resp = kvsRPCClient.call("cput", row, column, old_value, value).as<resp_tuple>();
+        } else if(kvsFuncType.compare("deleteKVS") == 0) {
+            log("KVS DELETE with kvServer "+targetServer+": " + row + ", " + column);
+            resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
+        } else if(kvsFuncType.compare("getKVS") == 0) {
+            log("KVS GET with kvServer "+targetServer+": " + row + ", " + column);
+            resp = kvsRPCClient.call("get", row, column).as<resp_tuple>();
+        }
+        log(kvsFuncType +" Response Status: " + std::to_string(kvsResponseStatusCode(resp)));
+        log(kvsFuncType +" Response Value: " + kvsResponseMsg(resp));
+	} catch (rpc::rpc_error &e) {
+		/*
+		 std::cout << std::endl << e.what() << std::endl;
+		 std::cout << "in function " << e.get_function_name() << ": ";
+		 using err_t = std::tuple<std::string, std::string>;
+		 auto err = e.get_error().as<err_t>();
+		 */
+		log("UNHANDLED ERROR IN "+kvsFuncType+" TRY CATCH"); // TODO
+	}
+	return resp;
+
+}
+
 resp_tuple putKVS(std::string session_id, std::string row, std::string column, std::string value) {
-    if(sessionToServerMap.count(session_id) <= 0) {
-        log("putKVS: No server for session "+ session_id+". Calling whereKVS.");
-        sessionToServerMap[session_id] = whereKVS(session_id, row);
-    }
-    std::string targetServer = sessionToServerMap[session_id];
-	int serverPortNo = getPortNoFromString(targetServer);
-	std::string servAddress = getAddrFromString(targetServer);
-	rpc::client kvsRPCClient(servAddress, serverPortNo);
-	resp_tuple resp;
-	try {
-		log("KVS PUT with kvServer "+targetServer+": " + row + ", " + column + ", " + value);
-		resp = kvsRPCClient.call("put", row, column, value).as<resp_tuple>();
-		log("putKVS Response Status: " + std::to_string(std::get < 0 > (resp)));
-		log("putKVS Response Value: " + std::get < 1 > (resp));
-	} catch (rpc::rpc_error &e) {
-		/*
-		 std::cout << std::endl << e.what() << std::endl;
-		 std::cout << "in function " << e.get_function_name() << ": ";
-		 using err_t = std::tuple<std::string, std::string>;
-		 auto err = e.get_error().as<err_t>();
-		 */
-		log("UNHANDLED ERROR IN putKVS TRY CATCH"); // TODO
-	}
-	return resp;
+	return kvsFunc("putKVS", session_id, row, column, value, "");
 }
 
-resp_tuple cputKVS(std::string session_id, std::string row, std::string column, std::string old,
-		std::string value) {
-    if(sessionToServerMap.count(session_id) <= 0) {
-        log("cputKVS: No server for session "+ session_id+". Calling whereKVS.");
-        sessionToServerMap[session_id] = whereKVS(session_id, row);
-    }
-    std::string targetServer = sessionToServerMap[session_id];
-	int serverPortNo = getPortNoFromString(targetServer);
-	std::string servAddress = getAddrFromString(targetServer);
-	rpc::client kvsRPCClient(servAddress, serverPortNo);
-	resp_tuple resp;
-	try {
-		log("KVS CPUT with kvServer "+targetServer+": " + row + ", " + column + ", " + old + ", " + value);
-		resp =
-				kvsRPCClient.call("cput", row, column, old, value).as<resp_tuple>();
-		log(
-				"cputKVS Response Status: "
-						+ std::to_string(std::get < 0 > (resp)));
-		log("cputKVS Response Value: " + std::get < 1 > (resp));
-	} catch (rpc::rpc_error &e) {
-		/*
-		 std::cout << std::endl << e.what() << std::endl;
-		 std::cout << "in function " << e.get_function_name() << ": ";
-		 using err_t = std::tuple<std::string, std::string>;
-		 auto err = e.get_error().as<err_t>();
-		 */
-		log("UNHANDLED ERROR IN cputKVS TRY CATCH"); // TODO
-	}
-	return resp;
-}
-
-resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
-    if(sessionToServerMap.count(session_id) <= 0) {
-        log("getKVS: No server for session "+ session_id+". Calling whereKVS.");
-        sessionToServerMap[session_id] = whereKVS(session_id, row);
-    }
-    std::string targetServer = sessionToServerMap[session_id];
-	int serverPortNo = getPortNoFromString(targetServer);
-	std::string servAddress = getAddrFromString(targetServer);
-	rpc::client kvsRPCClient(servAddress, serverPortNo);
-	using resp_tuple = std::tuple<int, std::string>;
-	resp_tuple resp;
-	try {
-		log("KVS GET with kvServer "+targetServer+": " + row + ", " + column);
-		resp = kvsRPCClient.call("get", row, column).as<resp_tuple>();
-		log("getKVS Response Status: " + std::to_string(std::get < 0 > (resp)));
-		log("getKVS Response Value: " + std::get < 1 > (resp));
-	} catch (rpc::rpc_error &e) {
-		/*
-		 std::cout << std::endl << e.what() << std::endl;
-		 std::cout << "in function " << e.get_function_name() << ": ";
-		 using err_t = std::tuple<std::string, std::string>;
-		 auto err = e.get_error().as<err_t>();
-		 */
-		log("UNHANDLED ERROR IN getKVS TRY CATCH"); // TODO
-	}
-	return resp;
+resp_tuple cputKVS(std::string session_id, std::string row, std::string column, std::string old_value, std::string value) {
+	return kvsFunc("cputKVS", session_id, row, column, value, old_value);
 }
 
 resp_tuple deleteKVS(std::string session_id, std::string row, std::string column) {
-    if(sessionToServerMap.count(session_id) <= 0) {
-        log("deleteKVS: No server for session "+ session_id+". Calling whereKVS.");
-        sessionToServerMap[session_id] = whereKVS(session_id, row);
-    }
-    std::string targetServer = sessionToServerMap[session_id];
-	int serverPortNo = getPortNoFromString(targetServer);
-	std::string servAddress = getAddrFromString(targetServer);
-	rpc::client kvsRPCClient(servAddress, serverPortNo);
-	using resp_tuple = std::tuple<int, std::string>;
-	resp_tuple resp;
-	try {
-		log("KVS DELETE with kvServer "+targetServer+": " + row + ", " + column);
-		resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
-		log(
-				"deleteKVS Response Status: "
-						+ std::to_string(std::get < 0 > (resp)));
-		log("deleteKVS Response Value: " + std::get < 1 > (resp));
-	} catch (rpc::rpc_error &e) {
-		/*
-		 std::cout << std::endl << e.what() << std::endl;
-		 std::cout << "in function " << e.get_function_name() << ": ";
-		 using err_t = std::tuple<std::string, std::string>;
-		 auto err = e.get_error().as<err_t>();
-		 */
-		log("UNHANDLED ERROR IN deleteKVS TRY CATCH"); // TODO
-	}
-	return resp;
+	return kvsFunc("deleteKVS", session_id, row, column, "", "");
 }
+
+resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
+	return kvsFunc("getKVS", session_id, row, column, "", "");
+}
+
 
 
 /***************************** Start storage service functions ************************/
