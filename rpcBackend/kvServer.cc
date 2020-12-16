@@ -852,6 +852,11 @@ void adminReviveServer() {
     }
 }
 
+// Returns true. Used to check if server is alive.
+bool heartbeat() {
+    debug("%s\n", "Heartbeat requested! Returning true.");
+    return true;
+}
 
 int main(int argc, char *argv[]) {	
 	int opt;
@@ -968,6 +973,7 @@ int main(int argc, char *argv[]) {
 	rpc::server srv(kvsPortForAdmin);
 	srv.bind("killServer", &adminKillServer);
 	srv.bind("reviveServer", &adminReviveServer);
+	srv.bind("heartbeat", &heartbeat);
 
 	srv.run();
 
