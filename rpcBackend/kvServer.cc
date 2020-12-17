@@ -36,8 +36,9 @@
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
-#define COM_PER_CHECKPOINT 10
+#define COM_PER_CHECKPOINT 2
 #define TIMEOUT_MILLISEC 5000
+#define CHECKPOINT_CNT_FILE "checkpointNum.txt"
 
 
 using resp_tuple = std::tuple<int, std::string>;
@@ -417,6 +418,39 @@ int unlockCheckpoint() {
 	return 0;
 }
 
+// gets header from a newly opened row file in checkpoint folder
+int getValSize(FILE* colFilePtr) {
+	char headerBuf[MAX_LEN_LOG_HEADER];
+	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
+	// read from column file the formatted length
+	if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
+		perror("invalid fgets when trying to read col file reader: ");	
+		return -1;
+	}
+	headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
+	int valLen = (atoi(headerBuf));
+	debugDetailed("getValSize returns len:%d\n", valLen);
+	return valLen;
+	
+}
+
+void updateCheckpointCount() {
+	// try to open file - if failed (numCheckpoint is 1), else read and update
+	FILE* cntFile;
+	int lastCnt;
+	if ((cntFile = fopen(CHECKPOINT_CNT_FILE, "r")) == NULL) {
+		lastCnt = 0;
+	} else {
+		lastCnt = getValSize(cntFile);
+		fclose(cntFile);
+	}	
+	if ((cntFile = fopen(CHECKPOINT_CNT_FILE, "w")) == NULL) {
+		perror("error crating checkpoint cnt file: ");
+	}
+	fprintf(cntFile, "%d\n", lastCnt+1);
+	fclose(cntFile);
+}
+
 // TODO - make sure deleted rows are handled correclty
 void runCheckpoint() {
 	int valLen;
@@ -497,6 +531,7 @@ void runCheckpoint() {
 	// clear logfile if not currently replaying log
 	if (replay == 0) {
 		//printf("reached 6\n");
+		updateCheckpointCount();
 		FILE* logFilePtr;
 		logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
@@ -536,21 +571,7 @@ FILE * openValFile(char* row, char* col, const char* mode) {
 
 }
 
-// gets header from a newly opened row file in checkpoint folder
-int getValSize(FILE* colFilePtr) {
-	char headerBuf[MAX_LEN_LOG_HEADER];
-	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
-	// read from column file the formatted length
-	if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
-		perror("invalid fgets when trying to read col file reader: ");	
-		return -1;
-	}
-	headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
-	int valLen = (atoi(headerBuf));
-	debugDetailed("getValSize returns len:%d\n", valLen);
-	return valLen;
-	
-}
+
 
 
 // returns 0 if there was space, and -1 if not
