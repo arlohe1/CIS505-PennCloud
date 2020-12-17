@@ -93,8 +93,8 @@ pthread_t kvServerWithFrontendThreadId;
 void setClusterMembership(int serverIndx) {
 	masterIP = "127.0.0.1:8000";
 	clusterMembers[1] = std::make_tuple("127.0.0.1", 10000);
-	clusterMembers[2] = std::make_tuple("127.0.0.1", 10001);
-	clusterMembers[3] = std::make_tuple("127.0.0.1", 10002);
+	clusterMembers[2] = std::make_tuple("127.0.0.1", 10002);
+	clusterMembers[3] = std::make_tuple("127.0.0.1", 10004);
 	// clusterMembers[2] = "127.0.0.1:10001";
 	// clusterMembers[3] = "127.0.0.1:10002"; 
 	myIp = clusterMembers[serverIndx]; // set after setting serverIdx
@@ -768,7 +768,7 @@ resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, s
 
 
 
-std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
+resp_tuple put(std::string row, std::string col, std::string val) {
     debugDetailed("---PUT entered - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
     int oldLen = kvMap[row][col].length();
     int ranCheckPoint = 0; // need this flag to properly update chacheSize
@@ -807,22 +807,6 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
     }
 }
 
-std::tuple<int, std::string> putApproved(std::string row, std::string col, std::string val) {
-	// claim semaphore on row
-	if (lockRow(row) < 0) {
-		return std::make_tuple(1, "ERR");
-	}	
-
-	resp_tuple resp =  put(row, col, val);
-
-	// release semaphor on row
-	if (unlockRow(row) < 0) {
-		return std::make_tuple(1, "ERR");
-	}
-	return resp;
-}
-
-
 // TODO (AMIT): 1) add timeout in primary and nonprimary case for calling put or put approved
 			// if timeout - call heartbeat method (which is on admit thread) with shorter timeout
 							// if timeout occurs, you know node is dead and can skip it
@@ -849,13 +833,14 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
 			        debugDetailed("---PUTREQ entered: %s: %s:%d\n", "trying remote put to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
 			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
 			        resp = client.call("putApproved", row, col, val).as<resp_tuple>();
+                    debug("putApproved returned: %s\n", std::get<1>(resp).c_str());
 			        respSet[server.second] = resp;
 			    } catch (rpc::timeout &t) {
 			        // will display a message like
 			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
 			        // TODO - send heartbeat to server that timedout - if alive (ie reponse received before timeout), retry rpc call (with timeout), else continue on to next member and update master
 			        std::cout << t.what() << std::endl;
-			        exit(0);
+			        // exit(0);
 			    } catch (rpc::rpc_error &e) {
 			    	printf("SOMETHING BAD HAPPEND\n");
 				    std::cout << std::endl << e.what() << std::endl;
@@ -1011,22 +996,6 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 	return std::make_tuple(1, "No such row, column pair");
 }
 
-// std::tuple<int, std::string> cputApproved(std::string row, std::string col, std::string val, std::string newVal) {
-// 	// claim semaphore on row
-// 	if (lockRow(row) < 0) {
-// 		return std::make_tuple(1, "ERR");
-// 	}	
-
-// 	resp_tuple resp =  cput(row, col, val, newVal);
-
-// 	// release semaphor on row
-// 	if (unlockRow(row) < 0) {
-// 		return std::make_tuple(1, "ERR");
-// 	}
-// 	return resp;
-// }
-
-
 std::tuple<int, std::string> cputReq(std::string row, std::string col, std::string val, std::string newVal) {
 	debugDetailed("---CPUTREQ entered, primary is: %s:%d\n", std::get<0>(primaryIp).c_str(), std::get<1>(primaryIp));
 	std::map<std::tuple<std::string, int>, resp_tuple> respSet; // map from ip:port -> resp tuple 
@@ -1053,7 +1022,7 @@ std::tuple<int, std::string> cputReq(std::string row, std::string col, std::stri
 			        // will display a message like
 			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
 			        std::cout << t.what() << std::endl;
-			        exit(0);
+			        // exit(0);
 			    } catch (rpc::rpc_error &e) {
 			    	printf("SOMETHING BAD HAPPEND\n");
 				    std::cout << std::endl << e.what() << std::endl;
@@ -1124,22 +1093,6 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 }
 
 
-std::tuple<int, std::string> delApproved(std::string row, std::string col) {
-	// claim semaphore on row
-	if (lockRow(row) < 0) {
-		return std::make_tuple(1, "ERR");
-	}	
-
-	resp_tuple resp =  del(row, col);
-
-	// release semaphor on row
-	if (unlockRow(row) < 0) {
-		return std::make_tuple(1, "ERR");
-	}
-	return resp;
-}
-
-
 std::tuple<int, std::string> delReq(std::string row, std::string col) {
 	debugDetailed("---delREQ entered, primary is: %s:%d\n", std::get<0>(primaryIp).c_str(), std::get<1>(primaryIp));
 	std::map<std::tuple<std::string, int>, resp_tuple> respSet; // map from ip:port -> resp tuple 
@@ -1166,7 +1119,7 @@ std::tuple<int, std::string> delReq(std::string row, std::string col) {
 			        // will display a message like
 			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
 			        std::cout << t.what() << std::endl;
-			        exit(0);
+			        // exit(0);
 			    } catch (rpc::rpc_error &e) {
 			    	printf("SOMETHING BAD HAPPEND\n");
 				    std::cout << std::endl << e.what() << std::endl;
@@ -1532,6 +1485,8 @@ int main(int argc, char *argv[]) {
 	srv.bind("killServer", &adminKillServer);
 	srv.bind("reviveServer", &adminReviveServer);
 	srv.bind("heartbeat", &heartbeat);
+
+    srv.run();
 
     return 0;
 }

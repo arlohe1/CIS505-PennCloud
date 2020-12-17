@@ -297,7 +297,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string 
         std::string newlyChosenServerAddr = whereKVS(session_id, row);
         log(kvsFuncType +": Server "+ newlyChosenServerAddr+" chosen for session "+ session_id+".");
     }
-    uint64_t timeout = 25; // 2500 milliseconds
+    uint64_t timeout = 2500; // 2500 milliseconds
     bool nodeIsAlive = true;
     int origServerIdx = sessionToServerIdx[session_id];
     int currServerIdx = -2; 
@@ -334,7 +334,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string 
             int heartbeatPortNo = getPortNoFromString(targetServerHeartbeatThread);
             std::string heartbeatAddress = getAddrFromString(targetServerHeartbeatThread);
             rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
-            kvsHeartbeatRPCClient.set_timeout(20); // 2000 milliseconds
+            kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
             try {
                 bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
                 if(isAlive) {
@@ -344,7 +344,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string 
                 } 
             } catch(rpc::timeout &t) {
                 // Resetting timeout for new server
-                timeout = 25; // 2500 milliseconds
+                timeout = 2500; // 2500 milliseconds
                 std::string newlyChosenServerAddr = whereKVS(session_id, row);
                 currServerIdx = sessionToServerIdx[session_id];
                 log("Node "+targetServer+" is dead! Trying new node "+ newlyChosenServerAddr);
