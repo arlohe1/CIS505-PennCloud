@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <pthread.h>
 
 
 #include <rpc/server.h>
@@ -67,7 +68,6 @@ volatile int numCommandsSinceLastCheckpoint = 0;
 volatile int cacheSize = 0;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
 std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-1 for val deleted, 0 for val on disk, 1 for val in kvMap)
-//volatile FILE* logfile = NULL;
 
 // semphores
 pthread_mutex_t checkpointSemaphore;
@@ -79,6 +79,13 @@ std::map<std::string, pthread_mutex_t> rwSemaphores; // row -> rw semaphore
 //std::map<std::string, pthread_mutex_t> countSemaphores; // row -> count semaphore
 //volatile int readcount = 0;
 
+std::string myAddrPortForFrontend;
+std::string myAddrPortForAdmin;
+int kvsPortForFrontend = 0;
+int kvsPortForAdmin = 0;
+std::string masterNodeAddrPort;
+std::string myClusterLeader;
+pthread_t kvServerWithFrontendThreadId;
 
 
 
@@ -1287,6 +1294,78 @@ int replayLog() {
 	return 0;
 }
 
+int notifyOfNewLeader(std::string newLeader) {
+    debug("Notified of new leader. Cluster leader set to %s\n", newLeader.c_str());
+    myClusterLeader = newLeader;
+    return 0;
+}
+
+void registerWithMasterNode() {
+    debug("Registering with masterNode at %s\n", masterNodeAddrPort.c_str());
+    int masterNodePort = stoi(masterNodeAddrPort.substr(masterNodeAddrPort.find(":")+1));
+	std::string masterNodeAddr = masterNodeAddrPort.substr(0, masterNodeAddrPort.find(":"));
+	rpc::client masterNodeRPCClient(masterNodeAddr, masterNodePort);
+    std::tuple<int, std::string> resp = masterNodeRPCClient.call("registerWithMaster", myAddrPortForFrontend).as<std::tuple<int, std::string>>();
+    myClusterLeader = std::get<1>(resp);
+    debug("%s\n", "Finished registering with masterNode");
+    debug("Cluster leader set to %s\n", myClusterLeader.c_str());
+}
+
+void sigTermHandler(int signum) {
+    if (signum == SIGTERM) {
+        pthread_exit(NULL);
+    }
+}
+
+void *kvServerThreadFunc(void *arg) {
+    signal(SIGTERM, sigTermHandler);
+    pthread_detach(pthread_self());
+    debug("Server thread %lu started to communicate with frontend servers on port: %d\n", kvServerWithFrontendThreadId, kvsPortForFrontend);
+	rpc::server srv(kvsPortForFrontend);
+
+	srv.bind("putApproved", &put); 
+	srv.bind("put", &putReq);
+	srv.bind("cputApproved", &cput); 
+	srv.bind("cput", &cputReq);
+	srv.bind("delApproved", &del);
+	srv.bind("del", &delReq);
+	srv.bind("get", &get);
+	srv.bind("notifyOfNewLeader", &notifyOfNewLeader);
+
+	srv.async_run(30);
+
+	while(1) {
+		sleep(10);
+	}
+
+    pthread_exit(0);
+}
+
+void adminKillServer() {
+    if(kvServerWithFrontendThreadId > 0) {
+        debug("killServer command received from Admin console. Killing server thread %lu communicating with frontend servers.\n", kvServerWithFrontendThreadId);
+        pthread_kill(kvServerWithFrontendThreadId, SIGTERM);
+        kvServerWithFrontendThreadId = 0;
+        debug("%s\n", "kvsServerWithFrontendThreadId reset to 0");
+    } else {
+        debug("%s\n", "Server thread for frontend does not exist! Ignoring kill command received from Admin console.");
+    }
+}
+
+void adminReviveServer() {
+    if(kvServerWithFrontendThreadId == 0) {
+        debug("%s\n", "reviveServer command received from Admin console. Reviving server thread to communicate with frontend servers.");
+        pthread_create(&kvServerWithFrontendThreadId, NULL, &kvServerThreadFunc, NULL);
+    } else {
+        debug("Server thread %lu for frontend already exists! Ignoring revive command received from Admin console.\n", kvServerWithFrontendThreadId);
+    }
+}
+
+// Returns true. Used to check if server is alive.
+bool heartbeat() {
+    debug("%s\n", "Heartbeat requested! Returning true.");
+    return true;
+}
 
 
 void signalHandler(int sig) {
@@ -1370,17 +1449,19 @@ int main(int argc, char *argv[]) {
     // parse config file
     int serverNum = 0;
     char buffer[300];
-    int port = 0;
     while(fgets(buffer, 300, f)){
-        std::string server = std::string(buffer);
+        std::string line = std::string(buffer);
+        if(line.at(line.length()-1) == '\n') {
+            line = line.substr(0, line.length()-1);
+        }
+        debug("Reading from config file: %s\n ", line.c_str());
         if(serverNum == serverIdx) {
-            if(server.at(server.length()-1) == '\n') {
-                server = server.substr(0, server.length()-1);
-            }
-            currServerAddr = server;
+            myAddrPortForFrontend = line.substr(0, line.find(","));
+            myAddrPortForAdmin = line.substr(line.find(",")+1);
             try {
-                port = stoi(currServerAddr.substr(currServerAddr.find(":")+1));
-                if(port <= 0) {
+                kvsPortForFrontend = stoi(myAddrPortForFrontend.substr(myAddrPortForFrontend.find(":")+1));
+                kvsPortForAdmin = stoi(myAddrPortForAdmin.substr(myAddrPortForAdmin.find(":")+1));
+                if(kvsPortForFrontend <= 0 || kvsPortForAdmin <= 0) {
                     fprintf(stderr, "Invalid port provided! Exiting\n");
                     exit(-1);
                 }
@@ -1388,6 +1469,8 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Server port not found! Exiting\n");
                 exit(-1);
             }
+        } else if(serverNum == 0) {
+            masterNodeAddrPort = line;
         }
         serverNum += 1;
     }
@@ -1439,29 +1522,16 @@ int main(int argc, char *argv[]) {
  	printKvLoc();
  	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
 
-    debug("Connecting to port: %d\n", port);
-	rpc::server srv(port);
-	srv.bind("putApproved", &put); 
-	//srv.bind("putReq", &putReq);
-	srv.bind("put", &putReq);
+    registerWithMasterNode();
 
-	srv.bind("cputApproved", &cput); 
-	srv.bind("cput", &cputReq);
-	//srv.bind("cputReq", &cputReq);
-	//srv.bind("delApproved", &delApproved); 
-	srv.bind("del", &delReq);
-	srv.bind("delApproved", &del);
-	srv.bind("get", &get);
-	//srv.bind("cput", &cput);
-	//srv.bind("del", &del);
+    pthread_create(&kvServerWithFrontendThreadId, NULL, &kvServerThreadFunc, NULL);
 
-	srv.async_run(30);
+    debug("Main thread starting RPC Server to communicate with admin console on port: %d\n", kvsPortForAdmin);
 
-	while(1) {
-		sleep(10);
-	}
+	rpc::server srv(kvsPortForAdmin);
+	srv.bind("killServer", &adminKillServer);
+	srv.bind("reviveServer", &adminReviveServer);
+	srv.bind("heartbeat", &heartbeat);
 
     return 0;
 }
-
-// run as ./kvServer -v -p 10000

@@ -10,3 +10,5 @@ DELETE,5,4,0,0
 amitlfile
 DELETE,5,4,0,0
 amitlname
+PUT,5,8,8,0
+adminpasswordpassword

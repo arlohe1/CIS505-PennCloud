@@ -29,16 +29,23 @@ std::string kvMaster_addr = "";
 std::string mail_addr = "";
 std::string storage_addr = "";
 std::string my_address;
-std::vector<pthread_t> pthread_ids;
 pthread_mutex_t fd_mutex;
 std::set<int*> fd;
 volatile bool verbose = false;
-int vflag = 0;
+int vflag = 0, internal_socket_fd;
 volatile bool shut_down = false;
 volatile bool load_balancer = false;
-volatile int l_balancer_index = 0;
+volatile int l_balancer_index = 0, server_index = 1;
 volatile int session_id_counter = rand();
+sockaddr_in load_balancer_addr;
 std::vector<std::string> frontend_server_list;
+std::vector<sockaddr_in> frontend_internal_list;
+// maps session IDs to a specific backend server as specified by whereKVS
+using server_tuple = std::tuple<std::string, std::string>;
+std::map<std::string, server_tuple> sessionToServerMap;
+std::map<std::string, int> sessionToServerIdx;
+std::map<std::string, int> rowToClusterNum;
+std::map<int, std::deque<server_tuple>> clusterToServerListMap;
 
 using resp_tuple = std::tuple<int, std::string>;
 
@@ -209,155 +216,6 @@ std::string getAddrFromString(std::string fullServAddr) {
 
 /*********************** KVS Util function ***********************************/
 
-std::list<std::string> whereKVS(std::string row) {
-	log("row");
-	log(row);
-	log("row");
-	int masterPortNo = getPortNoFromString(kvMaster_addr);
-	std::string masterServAddress = getAddrFromString(kvMaster_addr);
-	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
-	try {
-		log("MASTERNODE WHERE: " + row);
-		using where_resp_tuple = std::tuple<int,std::list<std::string>>;
-		where_resp_tuple resp = masterNodeRPCClient.call("where", row).as<
-				where_resp_tuple>();
-		log(
-				"whereKVS Response Status: "
-						+ std::to_string(std::get < 0 > (resp)));
-		std::list < std::string > serverList = std::get < 1 > (resp);
-		for (std::string server : serverList) {
-			log("whereKVS Response Server: " + server);
-		}
-		return serverList;
-	} catch (rpc::rpc_error &e) {
-		std::cout << std::endl << e.what() << std::endl;
-		std::cout << "in function " << e.get_function_name() << ": ";
-		using err_t = std::tuple<std::string, std::string>;
-		auto err = e.get_error().as<err_t>();
-		log("UNHANDLED ERROR IN whereKVS TRY CATCH"); // TODO
-	}
-	std::list < std::string > emptyList { };
-	return emptyList;
-}
-
-resp_tuple putKVS(std::string row, std::string column, std::string value) {
-	std::list < std::string > serverList = whereKVS(row);
-	if (serverList.size() <= 0) {
-		// TODO error
-	}
-	std::string targetServer = serverList.front();
-	int serverPortNo = getPortNoFromString(targetServer);
-	std::string servAddress = getAddrFromString(targetServer);
-	rpc::client kvsRPCClient(servAddress, serverPortNo);
-	resp_tuple resp;
-	try {
-		log("KVS PUT: " + row + ", " + column + ", " + value);
-		resp = kvsRPCClient.call("put", row, column, value).as<resp_tuple>();
-		log("putKVS Response Status: " + std::to_string(std::get < 0 > (resp)));
-		log("putKVS Response Value: " + std::get < 1 > (resp));
-	} catch (rpc::rpc_error &e) {
-		/*
-		 std::cout << std::endl << e.what() << std::endl;
-		 std::cout << "in function " << e.get_function_name() << ": ";
-		 using err_t = std::tuple<std::string, std::string>;
-		 auto err = e.get_error().as<err_t>();
-		 */
-		log("UNHANDLED ERROR IN putKVS TRY CATCH"); // TODO
-	}
-	return resp;
-}
-
-resp_tuple cputKVS(std::string row, std::string column, std::string old,
-		std::string value) {
-	std::list < std::string > serverList = whereKVS(row);
-	if (serverList.size() <= 0) {
-		// TODO error
-	}
-	std::string targetServer = serverList.front();
-	int serverPortNo = getPortNoFromString(targetServer);
-	std::string servAddress = getAddrFromString(targetServer);
-	rpc::client kvsRPCClient(servAddress, serverPortNo);
-	resp_tuple resp;
-	try {
-		log("KVS CPUT: " + row + ", " + column + ", " + old + ", " + value);
-		resp =
-				kvsRPCClient.call("cput", row, column, old, value).as<resp_tuple>();
-		log(
-				"cputKVS Response Status: "
-						+ std::to_string(std::get < 0 > (resp)));
-		log("cputKVS Response Value: " + std::get < 1 > (resp));
-	} catch (rpc::rpc_error &e) {
-		/*
-		 std::cout << std::endl << e.what() << std::endl;
-		 std::cout << "in function " << e.get_function_name() << ": ";
-		 using err_t = std::tuple<std::string, std::string>;
-		 auto err = e.get_error().as<err_t>();
-		 */
-		log("UNHANDLED ERROR IN cputKVS TRY CATCH"); // TODO
-	}
-	return resp;
-}
-
-resp_tuple getKVS(std::string row, std::string column) {
-	std::list < std::string > serverList = whereKVS(row);
-	if (serverList.size() <= 0) {
-		// TODO error
-	} else if (serverList.size() > 1) {
-		serverList.pop_front(); // don't send to leader in cluster if > 1 server available
-	}
-	std::string targetServer = serverList.front();
-	int serverPortNo = getPortNoFromString(targetServer);
-	std::string servAddress = getAddrFromString(targetServer);
-	rpc::client kvsRPCClient(servAddress, serverPortNo);
-	using resp_tuple = std::tuple<int, std::string>;
-	resp_tuple resp;
-	try {
-		log("KVS GET: " + row + ", " + column);
-		resp = kvsRPCClient.call("get", row, column).as<resp_tuple>();
-		log("getKVS Response Status: " + std::to_string(std::get < 0 > (resp)));
-		log("getKVS Response Value: " + std::get < 1 > (resp));
-	} catch (rpc::rpc_error &e) {
-		/*
-		 std::cout << std::endl << e.what() << std::endl;
-		 std::cout << "in function " << e.get_function_name() << ": ";
-		 using err_t = std::tuple<std::string, std::string>;
-		 auto err = e.get_error().as<err_t>();
-		 */
-		log("UNHANDLED ERROR IN getKVS TRY CATCH"); // TODO
-	}
-	return resp;
-}
-
-resp_tuple deleteKVS(std::string row, std::string column) {
-	std::list < std::string > serverList = whereKVS(row);
-	if (serverList.size() <= 0) {
-		// TODO error
-	}
-	std::string targetServer = serverList.front();
-	int serverPortNo = getPortNoFromString(targetServer);
-	std::string servAddress = getAddrFromString(targetServer);
-	rpc::client kvsRPCClient(servAddress, serverPortNo);
-	using resp_tuple = std::tuple<int, std::string>;
-	resp_tuple resp;
-	try {
-		log("KVS DELETE: " + row + ", " + column);
-		resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
-		log(
-				"deleteKVS Response Status: "
-						+ std::to_string(std::get < 0 > (resp)));
-		log("deleteKVS Response Value: " + std::get < 1 > (resp));
-	} catch (rpc::rpc_error &e) {
-		/*
-		 std::cout << std::endl << e.what() << std::endl;
-		 std::cout << "in function " << e.get_function_name() << ": ";
-		 using err_t = std::tuple<std::string, std::string>;
-		 auto err = e.get_error().as<err_t>();
-		 */
-		log("UNHANDLED ERROR IN deleteKVS TRY CATCH"); // TODO
-	}
-	return resp;
-}
-
 int kvsResponseStatusCode(resp_tuple resp) {
 	return std::get < 0 > (resp);
 }
@@ -366,10 +224,166 @@ std::string kvsResponseMsg(resp_tuple resp) {
 	return std::get < 1 > (resp);
 }
 
+void buildClusterToBackendServerMapping() {
+	int masterPortNo = getPortNoFromString(kvMaster_addr);
+	std::string masterServAddress = getAddrFromString(kvMaster_addr);
+	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
+	try {
+		log("Requesting all backend nodes");
+        using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
+        std::deque<server_addr_tuple> resp = masterNodeRPCClient.call("getAllNodes").as<std::deque<server_addr_tuple>>();
+        for(server_addr_tuple serverInfo : resp) {
+            int clusterNum = std::get<0>(serverInfo);
+            std::string serverAddr = std::get<2>(serverInfo);
+            std::string serverAdminAddr = std::get<3>(serverInfo);
+            log("Received Server ("+serverAddr+", "+serverAdminAddr+" for Cluster "+std::to_string(clusterNum));
+            clusterToServerListMap[clusterNum].push_back(std::make_tuple(serverAddr, serverAdminAddr));
+        }
+	} catch (rpc::rpc_error &e) {
+		log("UNHANDLED ERROR IN buildClusterToBAckendServerMapping TRY CATCH");
+	}
+}
+
+std::string whereKVS(std::string session_id, std::string row) {
+	int masterPortNo = getPortNoFromString(kvMaster_addr);
+	std::string masterServAddress = getAddrFromString(kvMaster_addr);
+	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
+	try {
+        if(rowToClusterNum.count(row) <= 0) {
+            log("MASTERNODE WHERE: (" + row+") for session ("+session_id+")");
+            // Returns cluster # for the row
+            int resp = masterNodeRPCClient.call("where", row, session_id).as<int>();
+            if(resp == -1) {
+                // ERROR
+                return "ERROR";
+            }
+            rowToClusterNum[row] = resp;
+        }
+        int clusterNum = rowToClusterNum[row];
+
+        std::deque<server_tuple> serverList = clusterToServerListMap[clusterNum];
+
+        int serverIdx = 0;
+        if(sessionToServerIdx.count(session_id) <= 0) {
+            // Randomly generate index to pick server in cluster
+            serverIdx = rand() % serverList.size();
+            log("whereKVS: New session "+session_id+" for row "+ row +"! Randomly picking server "+std::to_string(serverIdx));
+        } else {
+            // Incrementing serverIdx to next server in list
+            serverIdx = sessionToServerIdx[session_id];
+            serverIdx++;
+            log("whereKVS: Existing session "+session_id+"for row "+ row +"! Incrementing server to "+std::to_string(serverIdx));
+        }
+        serverIdx = serverIdx % serverList.size();
+        sessionToServerIdx[session_id] = serverIdx;
+
+        server_tuple chosenServerAddrs = serverList[serverIdx];
+        sessionToServerMap[session_id] = chosenServerAddrs;
+        log("whereKVS: session_id "+session_id+" given server "+ std::get<0>(chosenServerAddrs) +" for cluster "+ std::to_string(clusterNum));
+		return std::get<0>(chosenServerAddrs);
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN whereKVS TRY CATCH"); // TODO
+	}
+	return "Error in whereKVS";
+}
+
+resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string row, std::string column, std::string value, std::string old_value) {
+    if(sessionToServerMap.count(session_id) <= 0) {
+        log(kvsFuncType +": No server for session "+ session_id+". Calling whereKVS.");
+        std::string newlyChosenServerAddr = whereKVS(session_id, row);
+        log(kvsFuncType +": Server "+ newlyChosenServerAddr+" chosen for session "+ session_id+".");
+    }
+    uint64_t timeout = 25; // 2500 milliseconds
+    bool nodeIsAlive = true;
+    int origServerIdx = sessionToServerIdx[session_id];
+    int currServerIdx = -2; 
+    // Continue trying RPC call until you've tried all backend servers
+    while(origServerIdx != currServerIdx) {
+        server_tuple serverInfo = sessionToServerMap[session_id];
+        std::string targetServer = std::get<0>(serverInfo);
+        int serverPortNo = getPortNoFromString(targetServer);
+        std::string servAddress = getAddrFromString(targetServer);
+        rpc::client kvsRPCClient(servAddress, serverPortNo);
+        resp_tuple resp;
+        kvsRPCClient.set_timeout(timeout);
+        try {
+            if(kvsFuncType.compare("putKVS") == 0) {
+                log("KVS PUT with kvServer "+targetServer+": " + row + ", " + column + ", " + value);
+                resp = kvsRPCClient.call("put", row, column, value).as<resp_tuple>();
+            } else if(kvsFuncType.compare("cputKVS") == 0) {
+                log("KVS CPUT with kvServer "+targetServer+": " + row + ", " + column + ", " + old_value + ", " + value);
+                resp = kvsRPCClient.call("cput", row, column, old_value, value).as<resp_tuple>();
+            } else if(kvsFuncType.compare("deleteKVS") == 0) {
+                log("KVS DELETE with kvServer "+targetServer+": " + row + ", " + column);
+                resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
+            } else if(kvsFuncType.compare("getKVS") == 0) {
+                log("KVS GET with kvServer "+targetServer+": " + row + ", " + column);
+                resp = kvsRPCClient.call("get", row, column).as<resp_tuple>();
+            }
+            log(kvsFuncType +" Response Status: " + std::to_string(kvsResponseStatusCode(resp)));
+            log(kvsFuncType +" Response Value: " + kvsResponseMsg(resp));
+            return resp;
+        } catch (rpc::timeout &t) {
+            log(kvsFuncType+" for ("+session_id+", "+row+") timed out!");
+            // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+            std::string targetServerHeartbeatThread = std::get<1>(serverInfo);
+            int heartbeatPortNo = getPortNoFromString(targetServerHeartbeatThread);
+            std::string heartbeatAddress = getAddrFromString(targetServerHeartbeatThread);
+            rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
+            kvsHeartbeatRPCClient.set_timeout(20); // 2000 milliseconds
+            try {
+                bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
+                if(isAlive) {
+                    // Double timeout and try again if node is still alive
+                    timeout *= 2;
+                    log("Node "+targetServer+" is still alive! Doubling timeout and trying again.");
+                } 
+            } catch(rpc::timeout &t) {
+                // Resetting timeout for new server
+                timeout = 25; // 2500 milliseconds
+                std::string newlyChosenServerAddr = whereKVS(session_id, row);
+                currServerIdx = sessionToServerIdx[session_id];
+                log("Node "+targetServer+" is dead! Trying new node "+ newlyChosenServerAddr);
+            }
+        } catch (rpc::rpc_error &e) {
+            /*
+             std::cout << std::endl << e.what() << std::endl;
+             std::cout << "in function " << e.get_function_name() << ": ";
+             using err_t = std::tuple<std::string, std::string>;
+             auto err = e.get_error().as<err_t>();
+             */
+            log("UNHANDLED ERROR IN "+kvsFuncType+" TRY CATCH"); // TODO
+        }
+    }
+    log(kvsFuncType+" for ("+session_id+", "+row+"): All nodes in cluster down! ERROR.");
+    return std::make_tuple(-2, "All nodes in cluster down!");
+}
+
+resp_tuple putKVS(std::string session_id, std::string row, std::string column, std::string value) {
+	return kvsFunc("putKVS", session_id, row, column, value, "");
+}
+
+resp_tuple cputKVS(std::string session_id, std::string row, std::string column, std::string old_value, std::string value) {
+	return kvsFunc("cputKVS", session_id, row, column, value, old_value);
+}
+
+resp_tuple deleteKVS(std::string session_id, std::string row, std::string column) {
+	return kvsFunc("deleteKVS", session_id, row, column, "", "");
+}
+
+resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
+	return kvsFunc("getKVS", session_id, row, column, "", "");
+}
+
 /***************************** Start storage service functions ************************/
 
 void uploadFile(struct http_request req, std::string filepath) {
 	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
 	std::string filename = req.formData["filename"];
 	std::string fileData = req.formData["file"];
 
@@ -378,7 +392,7 @@ void uploadFile(struct http_request req, std::string filepath) {
 			username + filepath + filename);
 	std::string kvsCol = "ss1_" + filenameHash;
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(username, filepath);
+	resp_tuple getCmdResponse = getKVS(sessionid, username, filepath);
 	resp_tuple putCmdResponse;
 	if (kvsResponseStatusCode(getCmdResponse) == 0) {
 		std::string fileList = kvsResponseMsg(getCmdResponse);
@@ -387,19 +401,20 @@ void uploadFile(struct http_request req, std::string filepath) {
 		if (fileList.find(newEntry) == std::string::npos) {
 			fileList += newEntry;
 			// PUT length,row,col,value for MODIFIED FILE LIST
-			putCmdResponse = putKVS(username, filepath, fileList);
+			putCmdResponse = putKVS(sessionid, username, filepath, fileList);
 		}
 		// PUT username,kvsCol,filedata
-		putCmdResponse = putKVS(username, kvsCol, fileData);
+		putCmdResponse = putKVS(sessionid, username, kvsCol, fileData);
 	}
 }
 
 void deleteFile(struct http_request req, std::string containingDir,
 		std::string itemToDeleteHash) {
 	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
 
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(username, containingDir);
+	resp_tuple getCmdResponse = getKVS(sessionid, username, containingDir);
 	resp_tuple putCmdResponse;
 	if (kvsResponseStatusCode(getCmdResponse) == 0) {
 		std::string fileList = kvsResponseMsg(getCmdResponse);
@@ -411,18 +426,19 @@ void deleteFile(struct http_request req, std::string containingDir,
 			fileList = fileList.replace(startLine + 1, endLine - startLine, "");
 		}
 		// PUT length,row,col,value for MODIFIED FILE LIST
-		putCmdResponse = putKVS(username, containingDir, fileList);
+		putCmdResponse = putKVS(sessionid, username, containingDir, fileList);
 	}
 	// DELETE username,itemToDeleteHash
-	putCmdResponse = deleteKVS(username, itemToDeleteHash);
+	putCmdResponse = deleteKVS(sessionid, username, itemToDeleteHash);
 }
 
 void deleteDirectory(struct http_request req, std::string containingDir,
 		std::string itemToDeleteHash) {
 	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
 
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(username, containingDir);
+	resp_tuple getCmdResponse = getKVS(sessionid, username, containingDir);
 	resp_tuple putCmdResponse;
 	if (kvsResponseStatusCode(getCmdResponse) == 0) {
 		std::string fileList = kvsResponseMsg(getCmdResponse);
@@ -434,14 +450,15 @@ void deleteDirectory(struct http_request req, std::string containingDir,
 			fileList = fileList.replace(startLine + 1, endLine - startLine, "");
 		}
 		// PUT length,row,col,value for MODIFIED FILE LIST
-		putCmdResponse = putKVS(username, containingDir, fileList);
+		putCmdResponse = putKVS(sessionid, username, containingDir, fileList);
 	}
-	resp_tuple recursiveDeleteResp = getKVS(username, itemToDeleteHash);
+	resp_tuple recursiveDeleteResp = getKVS(sessionid, username,
+			itemToDeleteHash);
 	int respStatus = kvsResponseStatusCode(recursiveDeleteResp);
 	std::string respValue = kvsResponseMsg(recursiveDeleteResp);
 	if (respStatus == 0) {
 		// DELETE username,itemToDeleteHash
-		putCmdResponse = deleteKVS(username, itemToDeleteHash);
+		putCmdResponse = deleteKVS(sessionid, username, itemToDeleteHash);
 		std::deque < std::string > splt = split(respValue, "\n");
 		int lineNum = 0;
 		for (std::string line : splt) {
@@ -490,7 +507,8 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 
 std::string getFileList(struct http_request req, std::string filepath) {
 	std::string username = req.cookies["username"];
-	resp_tuple filesResp = getKVS(username, filepath);
+	std::string sessionid = req.cookies["sessionid"];
+	resp_tuple filesResp = getKVS(sessionid, username, filepath);
 	int respStatus = kvsResponseStatusCode(filesResp);
 	std::string respValue = kvsResponseMsg(filesResp);
 	int lineNum = 0;
@@ -534,12 +552,13 @@ bool isFileRouteDirectory(std::string filepath) {
 void createDirectory(struct http_request req, std::string filepath,
 		std::string dirName) {
 	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
 
 	// Construct filepath of new directory
 	std::string dirNameHash = generateStringHash(username + filepath + dirName);
 	std::string kvsCol = "ss0_" + dirNameHash;
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(username, filepath);
+	resp_tuple getCmdResponse = getKVS(sessionid, username, filepath);
 	resp_tuple putCmdResponse;
 	if (kvsResponseStatusCode(getCmdResponse) == 0) {
 		std::string fileList = kvsResponseMsg(getCmdResponse);
@@ -550,19 +569,19 @@ void createDirectory(struct http_request req, std::string filepath,
 		if (fileList.find(newEntry) == std::string::npos) {
 			fileList += newEntry;
 			// PUT length,row,col,value for MODIFIED FILE LIST
-			putCmdResponse = putKVS(username, filepath, fileList);
+			putCmdResponse = putKVS(sessionid, username, filepath, fileList);
 			// PUT new column for new directory
-			putCmdResponse = putKVS(username, kvsCol,
+			putCmdResponse = putKVS(sessionid, username, kvsCol,
 					"PARENT_DIR," + filepath + "\n");
 		}
 	}
 }
 
-void createRootDirForNewUser(struct http_request req) {
+void createRootDirForNewUser(struct http_request req, std::string sessionid) {
 	std::string username = req.formData["username"];
 	std::string dirNameHash = generateStringHash(username + "/");
 	// PUT new column for root directory
-	putKVS(username, "ss0_" + dirNameHash, "ROOT,ROOT\n");
+	putKVS(sessionid, username, "ss0_" + dirNameHash, "ROOT,ROOT\n");
 }
 
 /***************************** End storage service functions ************************/
@@ -897,6 +916,35 @@ struct http_response processRequest(struct http_request &req) {
 		}
 	}
 
+	if (req.cookies.find("username") == req.cookies.end()
+			&& req.cookies.find("sessionid") == req.cookies.end()) {
+	} else if (req.cookies.find("username") == req.cookies.end()
+			|| req.cookies.find("sessionid") == req.cookies.end()) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.cookies.erase("username");
+		}
+		if (req.cookies.find("sessionid") != req.cookies.end()) {
+			resp.cookies.erase("sessionid");
+		}
+		resp.status_code = 307;
+		resp.status = "Temporary Redirect";
+		resp.headers["Location"] = "/";
+		return resp;
+	} else {
+		resp_tuple getResp = getKVS("session", "session",
+				req.cookies["sessionid"]);
+		std::string getRespMsg = kvsResponseMsg(getResp);
+		int getRespStatusCode = kvsResponseStatusCode(getResp);
+		if (getRespStatusCode != 0 || getRespMsg != req.cookies["username"]) {
+			resp.cookies.erase("username");
+			resp.cookies.erase("sessionid");
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+			return resp;
+		}
+	}
+
 	if (req.filepath.compare("/") == 0) {
 		if (req.cookies.find("username") == req.cookies.end()) {
 			resp.status_code = 200;
@@ -972,7 +1020,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] = "Invalid username.";
 			} else {
-				resp_tuple getResp = getKVS(req.formData["username"],
+				resp_tuple getResp = getKVS("session", req.formData["username"],
 						"password");
 				std::string getRespMsg = kvsResponseMsg(getResp);
 				int getRespStatusCode = kvsResponseStatusCode(getResp);
@@ -996,7 +1044,8 @@ struct http_response processRequest(struct http_request &req) {
 					}
 					resp.cookies["username"] = req.formData["username"];
 					resp.cookies["sessionid"] = generateSessionID();
-					putKVS("session", resp.cookies["sessionid"],
+					putKVS(resp.cookies["username"], "session",
+							resp.cookies["sessionid"],
 							resp.cookies["username"]);
 				}
 			}
@@ -1036,7 +1085,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.cookies["error"] = "Passwords do not match.";
 				resp.cookies["signuperr"] = "1";
 			} else {
-				resp_tuple getResp = getKVS(req.formData["username"],
+				resp_tuple getResp = getKVS("session", req.formData["username"],
 						"mailbox");
 				std::string getRespMsg = kvsResponseMsg(getResp);
 				int getRespStatusCode = kvsResponseStatusCode(getResp);
@@ -1047,17 +1096,19 @@ struct http_response processRequest(struct http_request &req) {
 					resp.cookies["error"] = "User already exists.";
 					resp.cookies["signuperr"] = "1";
 				} else {
-					putKVS(req.formData["username"], "password",
-							req.formData["password"]);
-					putKVS(req.formData["username"], "mailbox", "");
 					resp.status_code = 307;
 					resp.status = "Temporary Redirect";
 					resp.headers["Location"] = "/dashboard";
 					resp.cookies["username"] = req.formData["username"];
 					resp.cookies["sessionid"] = generateSessionID();
-					putKVS("session", resp.cookies["sessionid"],
+					putKVS(resp.cookies["username"], "session",
+							resp.cookies["sessionid"],
 							resp.cookies["username"]);
-					createRootDirForNewUser(req);
+					putKVS(resp.cookies["sessionid"], req.formData["username"],
+							"password", req.formData["password"]);
+					putKVS(resp.cookies["sessionid"], req.formData["username"],
+							"mailbox", "");
+					createRootDirForNewUser(req, resp.cookies["sessionid"]);
 				}
 			}
 		} else {
@@ -1094,8 +1145,8 @@ struct http_response processRequest(struct http_request &req) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.filepath.length() > 7) {
 				std::string filepath = req.filepath.substr(7);
-				resp_tuple getFileResp = getKVS(req.cookies["username"],
-						filepath);
+				resp_tuple getFileResp = getKVS(req.cookies["sessionid"],
+						req.cookies["username"], filepath);
 				if (kvsResponseStatusCode(getFileResp) == 0) {
 					// display list of files if route = directory. else, display file contents
 					if (isFileRouteDirectory(filepath)) {
@@ -1176,6 +1227,8 @@ struct http_response processRequest(struct http_request &req) {
 			resp.cookies.erase("username");
 		}
 		if (req.cookies.find("sessionid") != req.cookies.end()) {
+			deleteKVS(req.cookies["sessionid"], "session",
+					req.cookies["sessionid"]);
 			resp.cookies.erase("sessionid");
 		}
 		resp.status_code = 307;
@@ -1186,7 +1239,8 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
-			resp_tuple getResp = getKVS(req.cookies["username"], "mailbox");
+			resp_tuple getResp = getKVS(req.cookies["sessionid"],
+					req.cookies["username"], "mailbox");
 			std::string getRespMsg = kvsResponseMsg(getResp);
 			std::stringstream ss(getRespMsg);
 			std::string to;
@@ -1266,7 +1320,8 @@ struct http_response processRequest(struct http_request &req) {
 			if (req.formData.find("type") != req.formData.end()) {
 				type = req.formData["type"];
 			}
-			resp_tuple getResp = getKVS(req.cookies["username"], "mailbox");
+			resp_tuple getResp = getKVS(req.cookies["sessionid"],
+					req.cookies["username"], "mailbox");
 			std::string getRespMsg = kvsResponseMsg(getResp);
 			int getRespStatusCode = kvsResponseStatusCode(getResp);
 			std::string existing = "";
@@ -1340,7 +1395,8 @@ struct http_response processRequest(struct http_request &req) {
 				resp.status_code = 200;
 				resp.status = "OK";
 				resp.headers["Content-type"] = "text/html";
-				resp_tuple getResp = getKVS(req.cookies["username"], "mailbox");
+				resp_tuple getResp = getKVS(req.cookies["sessionid"],
+						req.cookies["username"], "mailbox");
 				std::string getRespMsg = kvsResponseMsg(getResp);
 				std::stringstream ss(getRespMsg);
 				std::string to;
@@ -1430,8 +1486,8 @@ struct http_response processRequest(struct http_request &req) {
 				}
 				int respStatus2 = 1;
 				while (respStatus2 != 0) {
-					resp_tuple getResp = getKVS(req.cookies["username"],
-							"mailbox");
+					resp_tuple getResp = getKVS(req.cookies["sessionid"],
+							req.cookies["username"], "mailbox");
 					std::string getRespMsg = kvsResponseMsg(getResp);
 					std::stringstream ss(getRespMsg);
 					std::string to;
@@ -1453,8 +1509,9 @@ struct http_response processRequest(struct http_request &req) {
 							}
 						}
 					}
-					resp_tuple resp2 = cputKVS(req.cookies["username"],
-							"mailbox", getRespMsg, final);
+					resp_tuple resp2 = cputKVS(req.cookies["sessionid"],
+							req.cookies["username"], "mailbox", getRespMsg,
+							final);
 					respStatus2 = kvsResponseStatusCode(resp2);
 				}
 				resp.status_code = 307;
@@ -1524,7 +1581,7 @@ struct http_response processRequest(struct http_request &req) {
 							toSend.push_back(token);
 						} else {
 							std::string addr = token.substr(0, token.find("@"));
-							resp_tuple getResp = getKVS(addr, "mailbox");
+							resp_tuple getResp = getKVS(addr, addr, "mailbox");
 							std::string current = kvsResponseMsg(getResp);
 							int getRespStatusCode = kvsResponseStatusCode(
 									getResp);
@@ -1533,18 +1590,18 @@ struct http_response processRequest(struct http_request &req) {
 								temp += "\r\n";
 								std::string final = temp;
 								final += current;
-								resp_tuple resp2 = cputKVS(addr, "mailbox",
-										current, final);
+								resp_tuple resp2 = cputKVS(addr, addr,
+										"mailbox", current, final);
 								int respStatus2 = kvsResponseStatusCode(resp2);
 								while (respStatus2 != 0) {
-									getResp = getKVS(addr, "mailbox");
+									getResp = getKVS(addr, addr, "mailbox");
 									getRespStatusCode = kvsResponseStatusCode(
 											getResp);
 									current = kvsResponseMsg(getResp);
 									final = temp;
 									final += current;
-									resp2 = cputKVS(addr, "mailbox", current,
-											final);
+									resp2 = cputKVS(addr, addr, "mailbox",
+											current, final);
 									respStatus2 = kvsResponseStatusCode(resp2);
 								}
 							}
@@ -1650,7 +1707,8 @@ void* handleClient(void *arg) {
 	pthread_mutex_unlock(&fd_mutex);
 	close(*client_fd);
 	free(client_fd);
-	return NULL;
+	pthread_detach (pthread_self());pthread_exit
+	(NULL);
 }
 
 bool do_write(int fd, char *buf, int len) {
@@ -1821,7 +1879,8 @@ void* handle_smtp_connections(void *arg) {
 								for (int j = 9; j < i - 11; j++) {
 									recipient = recipient + buf[j];
 								}
-								resp_tuple resp = getKVS(recipient, "mailbox");
+								resp_tuple resp = getKVS(recipient, recipient,
+										"mailbox");
 								int respStatus = kvsResponseStatusCode(resp);
 								if (respStatus == 0) {
 									recipients.push_back(recipient);
@@ -1954,22 +2013,24 @@ void* handle_smtp_connections(void *arg) {
 							for (std::size_t b = 0; b < data.size(); b++) {
 								temp += data[b];
 							}
-							resp_tuple resp = getKVS(recipients[a], "mailbox");
+							resp_tuple resp = getKVS(recipients[a],
+									recipients[a], "mailbox");
 							int respStatus = kvsResponseStatusCode(resp);
 							std::string current = kvsResponseMsg(resp);
 							std::string final = temp;
 							final += current;
-							resp_tuple resp2 = cputKVS(recipients[a], "mailbox",
-									current, final);
+							resp_tuple resp2 = cputKVS(recipients[a],
+									recipients[a], "mailbox", current, final);
 							int respStatus2 = kvsResponseStatusCode(resp2);
 							while (respStatus2 != 0) {
-								resp = getKVS(recipients[a], "mailbox");
+								resp = getKVS(recipients[a], recipients[a],
+										"mailbox");
 								respStatus = kvsResponseStatusCode(resp);
 								current = kvsResponseMsg(resp);
 								final = temp;
 								final += current;
-								resp2 = cputKVS(recipients[a], "mailbox",
-										current, final);
+								resp2 = cputKVS(recipients[a], recipients[a],
+										"mailbox", current, final);
 								respStatus2 = kvsResponseStatusCode(resp2);
 							}
 						}
@@ -2077,7 +2138,6 @@ int create_thread(int socket_fd, bool http) {
 		} else {
 			if (verbose)
 				std::cerr << "[" << *client_fd << "] New connection\n";
-			pthread_ids.push_back(pthread_id);
 			pthread_mutex_lock(&fd_mutex);
 			fd.insert(client_fd);
 			pthread_mutex_unlock(&fd_mutex);
@@ -2086,89 +2146,183 @@ int create_thread(int socket_fd, bool http) {
 	return 0;
 }
 
+int initialize_socket(int port_no, bool address, bool datagram) {
+	int socket_fd;
+	if (datagram) {
+		socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	} else {
+		socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	}
+	if (socket_fd < 0) {
+		std::cerr << "Socket failed to initialize for port no " << port_no
+				<< "\n";
+		return -1;
+	} else if (verbose) {
+		std::cerr << "Socket initialized successfully!\n";
+	}
+	int true_opt = 1;
+	if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt, sizeof(int))
+			< 0) {
+		if (verbose)
+			std::cerr << "Setsockopt failed\n";
+	}
+	pthread_mutex_lock(&fd_mutex);
+	fd.insert(&socket_fd);
+	pthread_mutex_unlock(&fd_mutex);
+
+	struct sockaddr_in servaddr;
+	bzero(&servaddr, sizeof(servaddr));
+
+	/* Assign port and ip address */
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_port = htons(port_no);
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	/* Store my address */
+	if (address)
+		my_address = std::string(inet_ntoa(servaddr.sin_addr)) + ":"
+				+ std::to_string(ntohs(servaddr.sin_port));
+
+	/* Bind socket */
+	if (bind(socket_fd, (struct sockaddr*) &servaddr, sizeof(servaddr)) != 0) {
+		std::cerr << "Sockets couldn't bind for port " << port_no << "\n";
+		exit(-1);
+	} else if (verbose) {
+		std::cerr << "Sockets Successfully binded\n";
+	}
+
+	/* Start listening */
+	if (!datagram) {
+		if (listen(socket_fd, 20) != 0) {
+			std::cerr << "Listening failed!\n";
+			exit(-1);
+		} else if (verbose) {
+			std::cerr << "Successfully started listening!\n";
+		}
+	}
+
+	/* Add a timeout to socket to handle ctrl c periodically */
+	struct timeval timeout;
+	timeout.tv_sec = 3;
+	timeout.tv_usec = 0;
+	if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
+			sizeof(timeout)) < 0)
+		log("setsockopt failed\n");
+	return socket_fd;
+}
+
 int main(int argc, char *argv[]) {
 	/* Set signal handler */
-	signal(SIGINT, sigint_handler);
-
+	//signal(SIGINT, sigint_handler);
 	/* Initialize mutex to access fd set */
 	if (pthread_mutex_init(&fd_mutex, NULL) != 0)
 		log("Couldn't initialize mutex for fd set");
 
 	/* Parse command line args */
-	int port_no = 10000;
-	int smtp_port_no = 15000;
-	std::string list_of_frontend;
-	for (int i = 0; i < argc; i++) {
-		if (strstr(argv[i], "-v") != NULL
-				&& strcmp(strstr(argv[i], "-v"), "-v") == 0) {
+	int c, port_no = 10000, smtp_port_no = 35000, internal_port_no = 40000;
+	std::string list_of_frontend = "";
+	while ((c = getopt(argc, argv, ":vlp:q:r:k:m:s:c:i:a")) != -1) {
+		switch (c) {
+		case 'v':
 			verbose = true;
 			vflag = 1;
-		} else if (strstr(argv[i], "-l") != NULL
-				&& strcmp(strstr(argv[i], "-l"), "-l") == 0) {
+			break;
+		case 'l':
 			load_balancer = true;
-		} else if (strstr(argv[i], "-p") != NULL
-				&& strcmp(strstr(argv[i], "-p"), "-p") == 0) {
-			if (i + 1 < argc) {
-				port_no = atoi(argv[++i]);
-				if (port_no == 0) {
-					std::cerr
-							<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
-					port_no = 10000;
-				}
-			} else {
+			break;
+		case 'p':
+			port_no = atoi(optarg);
+			if (port_no == 0) {
+				std::cerr
+						<< "Port number is 0 or '-p' is followed by non integer! Using default\n";
+				port_no = 10000;
+			}
+			break;
+		case 'k':
+			kvMaster_addr = trim(std::string(optarg));
+			break;
+		case 'q':
+			smtp_port_no = atoi(optarg);
+			if (smtp_port_no == 0) {
+				std::cerr
+						<< "Port number is 0 or '-q' is followed by non integer! Using default\n";
+				smtp_port_no = 15000;
+			}
+			break;
+		case 'r':
+			internal_port_no = atoi(optarg);
+			if (internal_port_no == 0) {
+				std::cerr
+						<< "Port number is 0 or '-r' is followed by non integer! Using default\n";
+				internal_port_no = 20000;
+			}
+			break;
+		case 'm':
+			mail_addr = trim(std::string(optarg));
+			break;
+		case 's':
+			storage_addr = trim(std::string(optarg));
+			break;
+		case 'c':
+			list_of_frontend = trim(std::string(optarg));
+			break;
+		case 'a':
+			std::cerr << "TEAM 20\n";
+			exit(0);
+			break;
+		case 'i':
+			server_index = atoi(optarg);
+			if (server_index == 0) {
+				std::cerr
+						<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
+				server_index = 1;
+			}
+			break;
+		case ':':
+			switch (optopt) {
+			case 'p':
 				std::cerr
 						<< "'-p' should be followed by a number! Using port 10000\n";
-			}
-		} else if (strstr(argv[i], "-q") != NULL
-				&& strcmp(strstr(argv[i], "-q"), "-q") == 0) {
-			if (i + 1 < argc) {
-				smtp_port_no = atoi(argv[++i]);
-				if (smtp_port_no == 0) {
-					std::cerr
-							<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
-					smtp_port_no = 15000;
-				}
-			} else {
-				std::cerr
-						<< "'-q' should be followed by a number! Using port 15000 for smtp\n";
-			}
-		} else if (strstr(argv[i], "-k") != NULL
-				&& strcmp(strstr(argv[i], "-k"), "-k") == 0) {
-			if (i + 1 < argc) {
-				kvMaster_addr = trim(std::string(argv[++i]));
-			} else {
+				break;
+			case 'k':
 				std::cerr << "'-k' should be followed by an address!\n";
-			}
-		} else if (strstr(argv[i], "-m") != NULL
-				&& strcmp(strstr(argv[i], "-m"), "-m") == 0) {
-			if (i + 1 < argc) {
-				mail_addr = trim(std::string(argv[++i]));
-			} else {
+				break;
+			case 'q':
+				std::cerr
+						<< "'-q' should be followed by a number! Using port 10000\n";
+				break;
+			case 'r':
+				std::cerr
+						<< "'-r' should be followed by a number! Using port 10000\n";
+				break;
+			case 'm':
 				std::cerr << "'-m' should be followed by an address!\n";
-			}
-		} else if (strstr(argv[i], "-s") != NULL
-				&& strcmp(strstr(argv[i], "-s"), "-s") == 0) {
-			if (i + 1 < argc) {
-				storage_addr = trim(std::string(argv[++i]));
-			} else {
+				break;
+			case 's':
 				std::cerr << "'-s' should be followed by an address!\n";
+				break;
+			case 'c':
+				std::cerr << "'-c' should be followed by a file name!\n";
+				break;
+			case 'i':
+				std::cerr
+						<< "'-i' should be followed by a number! Using 1 as default";
+				break;
 			}
-		} else if (strstr(argv[i], "-f") != NULL
-				&& strcmp(strstr(argv[i], "-f"), "-f") == 0) {
-			if (i + 1 < argc) {
-				list_of_frontend = trim(std::string(argv[++i]));
-			} else {
-				std::cerr << "'-f' should be followed by a file name!\n";
-			}
-		} else if (strstr(argv[i], "-a") != NULL
-				&& strcmp(strstr(argv[i], "-a"), "-a") == 0) {
-			std::cerr << "Full name: Prasanna Poudyal\nSEAS login: poudyal\n";
-			exit(0);
+			break;
 		}
 	}
 
+    // Requesting list of all backend servers to build mapping (clusterNum) -> (list of servers)
+    buildClusterToBackendServerMapping();
+
 	/* Add the list of all frontend servers to queue for load balancing if this node is load balancer */
 	if (load_balancer) {
+		server_index = 0;
+		log("Successfully initialized load balancer!");
+	}
+
+	if (list_of_frontend.length() > 0) {
 		FILE *f = fopen(list_of_frontend.c_str(), "r");
 		if (f == NULL) {
 			std::cerr
@@ -2178,82 +2332,40 @@ int main(int argc, char *argv[]) {
 			exit(-1);
 		}
 		char buffer[300];
+		fgets(buffer, 300, f);
+		auto load_balancer_address = split(
+				split(trim(std::string(buffer)), ",")[1], ":");
+		load_balancer_addr.sin_family = AF_INET;
+		load_balancer_addr.sin_port = std::stoi(load_balancer_address[1]);
+		load_balancer_addr.sin_addr.s_addr = inet_addr(
+				load_balancer_address[0].data());
 		while (fgets(buffer, 300, f)) {
-			frontend_server_list.push_back(trim(std::string(buffer)));
+			auto tokens = split(trim(std::string(buffer)), ",");
+			frontend_server_list.push_back(trim(tokens[0]));
+			auto internal_server_address = split(trim(tokens[2]), ":");
+			sockaddr_in internal_server;
+			internal_server.sin_family = AF_INET;
+			internal_server.sin_port = std::stoi(internal_server_address[1]);
+			internal_server.sin_addr.s_addr = inet_addr(
+					internal_server_address[0].data());
+			frontend_internal_list.push_back(internal_server);
 		}
 		fclose(f);
 		log("Successfully initialized load balancer!");
 	}
 
-	/* Initialize socket */
-	int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-	int smtp_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (socket_fd < 0 || smtp_socket_fd < 0) {
-		std::cerr << "Socket failed to initialize\n";
+	/* Initialize socket: http and smtp are tcp, internal is UDP */
+	int socket_fd, smtp_socket_fd;
+	if ((socket_fd = initialize_socket(port_no, true, false)) < 0)
 		exit(-1);
-	} else if (verbose) {
-		std::cerr << "Socket initialized successfully!\n";
-	}
-	int true_opt = 1;
-	if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt, sizeof(int))
-			< 0
-			|| setsockopt(smtp_socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt,
-					sizeof(int)) < 0) {
-		if (verbose)
-			std::cerr << "Setsockopt failed\n";
-	}
-	pthread_mutex_lock(&fd_mutex);
-	fd.insert(&socket_fd);
-	fd.insert(&smtp_socket_fd);
-	pthread_mutex_unlock(&fd_mutex);
-
-	struct sockaddr_in servaddr, smtp_servaddr;
-	bzero(&servaddr, sizeof(servaddr));
-	bzero(&smtp_servaddr, sizeof(smtp_servaddr));
-
-	/* Assign port and ip address */
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_port = htons(port_no);
-	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-	/* Store my address */
-	my_address = std::string(inet_ntoa(servaddr.sin_addr)) + ":"
-			+ std::to_string(ntohs(servaddr.sin_port));
-
-	smtp_servaddr.sin_family = AF_INET;
-	smtp_servaddr.sin_port = htons(smtp_port_no);
-	smtp_servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-	/* Bind socket */
-	if (bind(socket_fd, (struct sockaddr*) &servaddr, sizeof(servaddr)) != 0
-			|| bind(smtp_socket_fd, (struct sockaddr*) &smtp_servaddr,
-					sizeof(smtp_servaddr)) != 0) {
-		std::cerr << "Sockets couldn't bind\n";
+	if ((smtp_socket_fd = initialize_socket(smtp_port_no, false, false)) < 0)
 		exit(-1);
-	} else if (verbose) {
-		std::cerr << "Sockets Successfully binded\n";
-	}
-
-	/* Start listening */
-	if (listen(socket_fd, 20) != 0 || listen(smtp_socket_fd, 20) != 0) {
-		std::cerr << "Listening failed!\n";
+	if ((internal_socket_fd = initialize_socket(internal_port_no, false, true))
+			< 0)
 		exit(-1);
-	} else if (verbose) {
-		std::cerr << "Successfully started listening!\n";
-	}
 
 	sigset_t empty_set;
 	sigemptyset(&empty_set);
-
-	/* Add a timeout to socket to handle ctrl c periodically */
-	struct timeval timeout;
-	timeout.tv_sec = 3;
-	timeout.tv_usec = 0;
-	if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
-			sizeof(timeout)) < 0
-			|| setsockopt(smtp_socket_fd, SOL_SOCKET, SO_RCVTIMEO,
-					(char*) &timeout, sizeof(timeout)) < 0)
-		log("setsockopt failed\n");
 
 	//set up admin account (preferably in only one place: load balancer) TODO
 	//putKVS("admin", "password", "505");
@@ -2264,7 +2376,9 @@ int main(int argc, char *argv[]) {
 		FD_ZERO(&read_set);
 		FD_SET(socket_fd, &read_set);
 		FD_SET(smtp_socket_fd, &read_set);
-		int nfds = std::max(smtp_socket_fd, socket_fd) + 1;
+		FD_SET(internal_socket_fd, &read_set);
+		int nfds = std::max(internal_socket_fd,
+				std::max(smtp_socket_fd, socket_fd)) + 1;
 		int r = 0;
 		while (r <= 0 && !shut_down) {
 			r = pselect(nfds, &read_set, NULL, NULL, NULL, &empty_set);
@@ -2278,6 +2392,8 @@ int main(int argc, char *argv[]) {
 		} else if (FD_ISSET(smtp_socket_fd, &read_set)) {
 			if (create_thread(smtp_socket_fd, false) < 0)
 				break;
+		} else if (FD_ISSET(internal_socket_fd, &read_set)) {
+			// TODO handle internal server message
 		}
 	}
 
