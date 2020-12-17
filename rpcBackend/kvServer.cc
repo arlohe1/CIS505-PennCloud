@@ -36,7 +36,7 @@
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
-#define COM_PER_CHECKPOINT 10
+#define COM_PER_CHECKPOINT 1
 #define TIMEOUT_MILLISEC 5000
 
 
@@ -1413,6 +1413,7 @@ int main(int argc, char *argv[]) {
             myAddrPortForAdmin = line.substr(line.find(",")+1);
             try {
                 kvsPortForFrontend = stoi(myAddrPortForFrontend.substr(myAddrPortForFrontend.find(":")+1));
+                debugDetailed("kvsPortForFrontend: %d\n", kvsPortForFrontend);
                 kvsPortForAdmin = stoi(myAddrPortForAdmin.substr(myAddrPortForAdmin.find(":")+1));
                 if(kvsPortForFrontend <= 0 || kvsPortForAdmin <= 0) {
                     fprintf(stderr, "Invalid port provided! Exiting\n");
