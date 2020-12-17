@@ -32,6 +32,8 @@
 #include <ctime>
 #include <tuple>
 #include <string>
+#include <fstream>
+#include <streambuf>
 
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
@@ -434,21 +436,52 @@ int getValSize(FILE* colFilePtr) {
 	
 }
 
-void updateCheckpointCount() {
-	// try to open file - if failed (numCheckpoint is 1), else read and update
-	FILE* cntFile;
+int getCurrCheckpointCnt() {
 	int lastCnt;
+	FILE* cntFile;
 	if ((cntFile = fopen(CHECKPOINT_CNT_FILE, "r")) == NULL) {
 		lastCnt = 0;
 	} else {
 		lastCnt = getValSize(cntFile);
 		fclose(cntFile);
-	}	
+	}
+	return lastCnt;
+}
+
+void updateCheckpointCount() {
+	// try to open file - if failed (numCheckpoint is 1), else read and update
+	FILE* cntFile;
+	int lastCnt = getCurrCheckpointCnt();	
 	if ((cntFile = fopen(CHECKPOINT_CNT_FILE, "w")) == NULL) {
 		perror("error crating checkpoint cnt file: ");
 	}
 	fprintf(cntFile, "%d\n", lastCnt+1);
 	fclose(cntFile);
+}
+
+std::string readFileToString(char* filePath) {
+	std::ifstream logFile(filePath);
+	std::string str((std::istreambuf_iterator<char>(logFile)), std::istreambuf_iterator<char>());
+	return str;
+}
+
+resp_tuple sendUpdates(int lastLogNum) {
+	// lock primary semaphore - if this node is a primary, prevent it from performing new requests
+	lockPrimary();
+	int myLastLogNum = getCurrCheckpointCnt();
+	std::string logText;
+	if (lastLogNum == myLastLogNum) {
+		// send as string log.txt content
+		logText = readFileToString("log.txt");
+	} else {
+		std::string nextLog("logArchive/log");
+		nextLog = nextLog + std::to_string((lastLogNum + 1));
+		logText = readFileToString((char*) nextLog.c_str());
+		// send log{lastLogNum + 1} from archive folder
+	}
+	debugDetailed("----sendUpdates: sndr's lastLogNum: %d, myLastLogNum: %d, text response: %s", lastLogNum, myLastLogNum, logText.c_str());
+	unlockPrimary();
+	resp_tuple resp = std::make_tuple(myLastLogNum, logText);
 }
 
 // TODO - make sure deleted rows are handled correclty
@@ -528,14 +561,25 @@ void runCheckpoint() {
 	chdir("..");
 	//printf("reached 5\n");
 
+	updateCheckpointCount();
 	// clear logfile if not currently replaying log
-	if (replay == 0) {
-		//printf("reached 6\n");
-		updateCheckpointCount();
-		FILE* logFilePtr;
-		logFilePtr = fopen("log.txt", "w");
+	if (replay == 0) { // TODO - i think we can delete this casing
+		// if not a replay, archive current log - else (a checkpoint might happen due to eviction when replaying log - do not want to clear log file in this case)
+		int lastCnt = getCurrCheckpointCnt();
+		std::string archiveLog("logArchive/log");
+		archiveLog = archiveLog + std::to_string(lastCnt);
+		debugDetailed("----------checkpoint archive log: %s", archiveLog.c_str());
+		rename("log.txt", archiveLog.c_str());
+		FILE* logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
-		debugDetailed("%s,\n", "--------cleared log file and return--------");
+		debugDetailed("%s,\n", "--------moved old logfile to archive and created new--------");
+
+
+		// // if not a replay, clear file on checkpoint
+		// FILE* logFilePtr;
+		// logFilePtr = fopen("log.txt", "w");
+		// fclose(logFilePtr);
+		// debugDetailed("%s,\n", "--------cleared log file and return--------");
 	}
 	numCommandsSinceLastCheckpoint = 0;
 	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
@@ -1299,6 +1343,7 @@ void *kvServerThreadFunc(void *arg) {
 
 	srv.bind("putApproved", &put); 
 	srv.bind("put", &putReq);
+	srv.bind("sendUpdates", &sendUpdates);
 	srv.bind("cputApproved", &cput); 
 	srv.bind("cput", &cputReq);
 	srv.bind("delApproved", &del);
@@ -1339,6 +1384,14 @@ void adminReviveServer() {
 bool heartbeat() {
     debug("%s\n", "Heartbeat requested! Returning true.");
     return true;
+}
+
+
+void getLoggingUpdates() {
+	int myLastLogNum = getCurrCheckpointCnt();
+	// TODO need to add primary choosing here
+	rpc::client client(std::get<0>(primaryIp), std::get<1>(primaryIp));
+    resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
 }
 
 
@@ -1388,7 +1441,7 @@ int main(int argc, char *argv[]) {
 	// set memory cache size
 	struct rlimit *rlim = (struct rlimit*) calloc(1, sizeof(struct rlimit));
 	getrlimit(RLIMIT_MEMLOCK, rlim);
-	maxCache = rlim->rlim_cur/3;
+	maxCache = rlim->rlim_cur/2;
 	fprintf(stderr, "total mem limit: %ld\n", rlim->rlim_cur);
 	fprintf(stderr, "cache mem limit: %d\n", maxCache);
 	startCacheThresh = maxCache / 2;
@@ -1453,6 +1506,8 @@ int main(int argc, char *argv[]) {
     setClusterMembership(serverIdx); // TODO need to fix this funciton
     
 
+    
+
     //initialize semaphores
     if (pthread_mutex_init(&checkpointSemaphore, NULL) != 0) {
     	perror("invalid pthread_mutex_init for checkpointSemaphore:");
@@ -1490,6 +1545,7 @@ int main(int argc, char *argv[]) {
  	loadKvStoreFromDisk();
  	debug("%s\n", "kvMap before log replay: ");
  	printKvMap();
+ 	// get updates and most recent logfile from leader -- TODO: need to add function to get leader
  	replayLog();
  	debug("%s\n", "kvMap after log replay: ");
  	printKvMap();

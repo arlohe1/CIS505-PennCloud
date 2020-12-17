@@ -26,8 +26,8 @@ int main() {
     //rpc::client c("localhost", rpc::constants::DEFAULT_PORT);
     rpc::client c("localhost", 10000);
     rpc::client c1("localhost", 10000);
-    rpc::client c2("localhost", 10001);
-    rpc::client c3("localhost", 10002);
+    rpc::client c2("localhost", 10002);
+    rpc::client c3("localhost", 10004);
 
     try {
         std::string rowString("lianap");
@@ -66,10 +66,10 @@ int main() {
         std::cout << std::get<1>(resp) << std::endl;
         isCorrect("OK", std::get<1>(resp));
 
-        // std::cout << "put(lianap, email, Hi! What's Up???) = ";
-        // resp = c.call("put", "lianap", "email", "Hi! What's Up???").as<resp_tuple>();
-        // std::cout << std::get<1>(resp) << std::endl;
-        // isCorrect("OK", std::get<1>(resp));
+        std::cout << "put(lianap, email, Hi! What's Up???) = ";
+        resp = c.call("put", "lianap", "email", "Hi! What's Up???").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("OK", std::get<1>(resp));
 
         // std::cout << "put(lianap, file, homework 2) = ";
         // resp = c.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
