@@ -48,32 +48,31 @@ void log(std::string str) {
         stderr_msg(str);
 }
 
-// Returns an active server from the cluster that contains row-col-val based on first letter of row
-// Returns 0 w/ active server in cluster on success
-// Returns 1 w/ "Error" on failure
-std::tuple<int, std::string> where(std::string row, std::string session_id) {
+// Returns the cluster # that contains the row based on first letter of row
+// Returns -1 on error
+int where(std::string row, std::string session_id) {
     log("Received WHERE: " + row+" for Session "+session_id);
     if(row.length() <= 0 || !isalnum(row.at(0))) {
-        // error
-         return std::make_tuple(1, "Error");
+        // Error
+        return -1;
     }
 
     if(testMode) {
-        return std::make_tuple(0, std::string("127.0.0.1:10000"));
+        return 0;
     }
 
     char firstChar = toupper(row.at(0));
     std::deque<std::string> clusterToChooseFrom;
     if(firstChar >= '0' && firstChar <= '9') {
-         clusterToChooseFrom = clusterToActiveNodesMap[0 % numClusters];
+        return 0 % numClusters;
     } else if(firstChar >= 'A' && firstChar <= 'I') {
-         clusterToChooseFrom = clusterToActiveNodesMap[1 % numClusters];
+        return 1 % numClusters;
     } else if(firstChar >= 'J' && firstChar <= 'R') {
-         clusterToChooseFrom = clusterToActiveNodesMap[2 % numClusters];
+        return 2 % numClusters;
     } else if(firstChar >= 'S' && firstChar <= 'Z') {
-         clusterToChooseFrom = clusterToActiveNodesMap[3 % numClusters];
+        return 3 % numClusters;
     }
-    return std::make_tuple(0, clusterToChooseFrom[rand() % clusterToChooseFrom.size()]);
+    return -1;
 }
 
 void *notifyOfNewLeaderThreadFunc(void *arg) {
@@ -138,8 +137,6 @@ std::tuple<int, std::string> getNewClusterLeader(std::string oldLeader) {
     }
     free(tinfo);
     return std::make_tuple(0, newLeader);
-
-
 }
 
 // Backend kvServer node should register themselves with the Master when they first come online
@@ -162,6 +159,10 @@ std::tuple<int, std::string> registerWithMaster(std::string serverAddr) {
 
 std::deque<server_addr_tuple> getNodesFromMap(std::map<int, std::deque<std::string>> clusterToServers) {
     std::deque<server_addr_tuple> result;
+    if(testMode) {
+        result.push_back(std::make_tuple(0, true, "127.0.0.1:10000", "127.0.0.1:10001"));
+        return result;
+    }
     for (auto const& entry : clusterToServers) {
         int clusterNum = entry.first;
         for (std::string server : entry.second) {
@@ -176,11 +177,13 @@ std::deque<server_addr_tuple> getNodesFromMap(std::map<int, std::deque<std::stri
 
 // Returns a deque of server_addr_tuples for all active backend nodes
 std::deque<server_addr_tuple> getActiveNodes() {
+    log("getActiveNodes requested.");
     return getNodesFromMap(clusterToActiveNodesMap);
 }
 
 // Returns a deque of server_addr_tuples for all backend nodes
 std::deque<server_addr_tuple> getAllNodes() {
+    log("getAllNodes requested.");
     return getNodesFromMap(clusterToServersMap);
 }
 
@@ -233,14 +236,18 @@ int main(int argc, char *argv[]) {
             std::string addrPortForAdmin = line.substr(line.find(",") + 1);
             std::string server = line.substr(0, line.find(","));
             int currCluster = serverNum/3;
+            /*
             if(clusterToServersMap.count(currCluster) <= 0) {
                 clusterToServersMap[currCluster] = std::deque<std::string> {};
             }
+            */
             clusterToServersMap[currCluster].push_back(server);
             serverToClusterMap[server] = currCluster;
+            /*
             if(clusterToActiveNodesMap.count(currCluster) <= 0) {
                 clusterToActiveNodesMap[currCluster] = std::deque<std::string> {};
             }
+            */
             frontendAddrPortToAdminAddrPort[server] = addrPortForAdmin;
         } else {
             masterNodeAddr = line;
