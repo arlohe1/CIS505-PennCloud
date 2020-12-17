@@ -16,6 +16,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <vector>
+#include <deque>
 #include <rpc/client.h>
 #include <rpc/rpc_error.h>
 #include <regex>
@@ -57,6 +58,7 @@ std::vector<sockaddr_in> frontend_internal_list;
 std::map<std::string, std::string> sessionToServerMap;
 
 using resp_tuple = std::tuple<int, std::string>;
+using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
 
 /********************** HTTP data structures *********************/
 
@@ -588,6 +590,75 @@ resp_tuple deleteKVS(std::string session_id, std::string row, std::string column
 	return resp;
 }
 
+std::deque<server_addr_tuple> getActiveNodesKVS(){
+	int masterPortNo = getPortNoFromString(kvMaster_addr);
+	std::string masterServAddress = getAddrFromString(kvMaster_addr);
+	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
+	std::deque<server_addr_tuple> resp;
+	try {
+		log("MASTERNODE getActiveNodes");
+		resp = masterNodeRPCClient.call("getActiveNodes").as<std::deque<server_addr_tuple>>();
+		return resp;
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getActiveNodesKVS TRY CATCH"); // TODO
+	}
+	log("Error in getActiveNodesKVS");
+	return resp;
+}
+
+std::deque<server_addr_tuple> getAllNodesKVS(){
+	int masterPortNo = getPortNoFromString(kvMaster_addr);
+	std::string masterServAddress = getAddrFromString(kvMaster_addr);
+	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
+	std::deque<server_addr_tuple> resp;
+	try {
+		log("MASTERNODE getAllNodesKVS");
+		resp = masterNodeRPCClient.call("getAllNodes").as<std::deque<server_addr_tuple>>();
+		return resp;
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getAllNodesKVS TRY CATCH"); // TODO
+	}
+	log("Error in getAllNodesKVS");
+	return resp;
+}
+
+void stopServerKVS(std::string target){
+	int targetPortNo = getPortNoFromString(target);
+	std::string targetServAddress = getAddrFromString(target);
+	rpc::client targetNodeRPCClient(targetServAddress, targetPortNo);
+	try{
+		targetNodeRPCClient.call("killServer");
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getAllNodesKVS TRY CATCH"); // TODO
+	}
+}
+
+void reviveServerKVS(std::string target){
+	int targetPortNo = getPortNoFromString(target);
+	std::string targetServAddress = getAddrFromString(target);
+	rpc::client targetNodeRPCClient(targetServAddress, targetPortNo);
+	try{
+		targetNodeRPCClient.call("reviveServer");
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getAllNodesKVS TRY CATCH"); // TODO
+	}
+}
 
 /***************************** Start storage service functions ************************/
 
@@ -1807,25 +1878,52 @@ struct http_response processRequest(struct http_request &req) {
 			time_t now = time(NULL);
 			log("now" + std::to_string(now));
 			requstStateFromAllServers();
+			auto allBackendNodes = getAllNodesKVS();
+			auto activeBackendNodes = getActiveNodesKVS();
+			std::deque<std::string> activeBackendNodesCollection;
+			for(auto node: activeBackendNodes) activeBackendNodesCollection.push_back(std::get<2>(node));
 			sleep(1);
 			std::string message =
 								"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
-										"<input type = \"submit\" value=\"Logout\" /></form><br><ul><hr>";
+										"<input type = \"submit\" value=\"Logout\" /></form><br><h3>Frontend servers:</h3><br><ul><hr>";
 			for(std::map<std::string, struct server_state>::iterator it = frontend_state_map.begin();
 					it != frontend_state_map.end(); it++){
 				log_server_state( it->second);
 				log("Last modified: " + std::to_string(it->second.last_modified));
 				std::string status = (it->second.last_modified >= now) ? "Active" : "Not Responding";
-				message += "<l1>" + it->first;
-				message += " Status: " + status;
-				message += "<form action=\"/serverinfo/"+ it->first + "\" method=\"POST\">"
-						"<input type = \"submit\" value=\"More Info\" /></form>";
 				if(this_server_state.http_address.compare(it->first) != 0){
-					message += "<form action=\"/stopserver/"+ it->first + "\" method=\"POST\">"
+					message += "<l1>" + it->first;
+					message += " Status: " + status;
+					message += "<form action=\"/serverinfo/f/"+ it->first + "\" method=\"POST\">"
+							"<input type = \"submit\" value=\"More Info\" /></form>";
+					message += "<form action=\"/stopserver/f/"+ it->first + "\" method=\"POST\">"
 						"<input type = \"submit\" value=\"Stop\" /></form>";
-					message += "<form action=\"/resumeserver/"+ it->first + "\" method=\"POST\">"
+					message += "<form action=\"/resumeserver/f/"+ it->first + "\" method=\"POST\">"
 											"<input type = \"submit\" value=\"Resume\" /></form>";
+				} else {
+					message += "<l1>" + it->first + " (this node)";
+					message += " Status: " + status;
+					message += "<form action=\"/serverinfo/f/"+ it->first + "\" method=\"POST\">"
+							"<input type = \"submit\" value=\"More Info\" /></form>";
 				}
+				message += "</l1><hr>";
+			}
+			message += "</ul><h3>Backend servers:</h3><ul>";
+			log("ADMIN all nodes");
+			for(auto node: allBackendNodes){
+				log(std::get<2>(node));
+				std::string status =
+						(std::find(activeBackendNodesCollection.begin(),
+								activeBackendNodesCollection.end(), std::get<2>(node)) != activeBackendNodesCollection.end()) ?
+						"Active" : "Not Responding";
+				message += "<l1>" + std::get<2>(node);
+				message += " Status: " + status;
+				message += "<form action=\"/serverinfo/b/"+ std::get<3>(node) + "\" method=\"POST\">"
+						"<input type = \"submit\" value=\"More Info\" /></form>";
+				message += "<form action=\"/stopserver/b/"+ std::get<3>(node)+ "\" method=\"POST\">"
+					"<input type = \"submit\" value=\"Stop\" /></form>";
+				message += "<form action=\"/resumeserver/b/"+ std::get<3>(node) + "\" method=\"POST\">"
+										"<input type = \"submit\" value=\"Resume\" /></form>";
 				message += "</l1><hr>";
 			}
 			message += "</ul></body></html>";
@@ -1837,22 +1935,38 @@ struct http_response processRequest(struct http_request &req) {
 		}
 	} else if (req.filepath.compare(0, 12,"/stopserver/") == 0) {
 		if (req.cookies.find("username") != req.cookies.end() && req.cookies["username"].compare("admin") == 0) {
-			std::string target = trim(split(req.filepath, "/").back());
-			int target_index = getServerIndexFromAddr(target);
+			std::deque<std::string> tokens = split(req.filepath, "/");
+			log("SUSPICION: " + tokens[0]);
+			std::string target = trim(tokens.back());
+			tokens.pop_back();
+			bool frontend_target = (trim(tokens.back()).compare("f") == 0);
 			log("Stopping: " + target);
-			log("Target index: " + std::to_string(target_index));
-			sendStopMessage(target_index);
+			if(frontend_target){
+				int target_index = getServerIndexFromAddr(target);
+				log("Target index: " + std::to_string(target_index));
+				sendStopMessage(target_index);
+			} else {
+				stopServerKVS(target);
+			}
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/admin";
 		}
 	} else if (req.filepath.compare(0, 14,"/resumeserver/") == 0) {
 		if (req.cookies.find("username") != req.cookies.end() && req.cookies["username"].compare("admin") == 0) {
-			std::string target = trim(split(req.filepath, "/").back());
-			int target_index = getServerIndexFromAddr(target);
+			std::deque<std::string> tokens = split(req.filepath, "/");
+			log("SUSPICION: " + tokens[0]);
+			std::string target = trim(tokens.back());
+			tokens.pop_back();
 			log("Resuming: " + target);
-			log("Target index: " + std::to_string(target_index));
-			sendResumeMessage(target_index);
+			bool frontend_target = (trim(tokens.back()).compare("f") == 0);
+			if(frontend_target){
+				int target_index = getServerIndexFromAddr(target);
+				log("Target index: " + std::to_string(target_index));
+				sendResumeMessage(target_index);
+			} else {
+				reviveServerKVS(target);
+			}
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/admin";
