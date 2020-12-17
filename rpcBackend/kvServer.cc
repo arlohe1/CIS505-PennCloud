@@ -435,7 +435,7 @@ void runCheckpoint() {
 			//std::string col = y.first;
 			std::string col = (*it).first;
 			if (col.c_str() == NULL) {
-				printf("found nullllllllllllllllllllllll\n");
+				//printf("found nullllllllllllllllllllllll\n");
 			}
 			//std::string val = y.second;
 			//int loc = y.second;
@@ -476,20 +476,20 @@ void runCheckpoint() {
 			} else {
 				++it;
 			}
-			printf("reached 2\n");		
+			//printf("reached 2\n");		
 		}
-		printf("reached 3\n");
+		//printf("reached 3\n");
 		
 		chdir("..");
-		printf("reached 4\n");
+		//printf("reached 4\n");
 	}
 	// cd back out to server directory
 	chdir("..");
-	printf("reached 5\n");
+	//printf("reached 5\n");
 
 	// clear logfile if not currently replaying log
 	if (replay == 0) {
-		printf("reached 6\n");
+		//printf("reached 6\n");
 		FILE* logFilePtr;
 		logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
@@ -850,6 +850,7 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
 			        std::cout << t.what() << std::endl;
 			        exit(0);
 			    } catch (rpc::rpc_error &e) {
+			    	printf("SOMETHING BAD HAPPEND\n");
 				    std::cout << std::endl << e.what() << std::endl;
 				    std::cout << "in function " << e.get_function_name() << ": ";
 
@@ -980,7 +981,7 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 					//logCommand(CPUT, 4, row, col, expVal, newVal);
 					return std::make_tuple(0, "OK");
 				} else {
-					printf("unlocking row\n");
+					//printf("unlocking row\n");
 					unlockRow(row);
 					debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 					printKvMap();
@@ -1047,6 +1048,7 @@ std::tuple<int, std::string> cputReq(std::string row, std::string col, std::stri
 			        std::cout << t.what() << std::endl;
 			        exit(0);
 			    } catch (rpc::rpc_error &e) {
+			    	printf("SOMETHING BAD HAPPEND\n");
 				    std::cout << std::endl << e.what() << std::endl;
 				    std::cout << "in function " << e.get_function_name() << ": ";
 
@@ -1149,7 +1151,7 @@ std::tuple<int, std::string> delReq(std::string row, std::string col) {
 			        // default timeout is 5000 milliseconds TODO: adjust timeout as needed
 			        const uint64_t short_timeout = 5000;
 			        client.set_timeout(short_timeout);
-			        debugDetailed("---delREQ entered: %s: %s:%d\n", "trying remote put to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
+			        debugDetailed("---delREQ entered: %s: %s:%d\n", "trying remote del to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
 			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
 			        resp = client.call("delApproved", row, col).as<resp_tuple>();
 			        respSet[server.second] = resp;
@@ -1159,6 +1161,7 @@ std::tuple<int, std::string> delReq(std::string row, std::string col) {
 			        std::cout << t.what() << std::endl;
 			        exit(0);
 			    } catch (rpc::rpc_error &e) {
+			    	printf("SOMETHING BAD HAPPEND\n");
 				    std::cout << std::endl << e.what() << std::endl;
 				    std::cout << "in function " << e.get_function_name() << ": ";
 
