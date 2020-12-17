@@ -75,6 +75,7 @@ pthread_t kvServerWithFrontendThreadId;
 
 std::deque<std::string> clusterMembers;
 std::map<std::string, std::string> serverKVSPortToAdminPortMap;
+std::set<std::string> clusterNodesToSkip;
 
 // Cluster Number, isClusterLeader, Addr:Port for comm w/ Frontend, Addr:Port for comm w/ Admin
 using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
@@ -853,6 +854,26 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 	return std::make_tuple(1, "No such row, column pair");
 }
 
+
+bool checkIfServerIsAlive(std::string otherServer) {
+    // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+    std::string otherServerHeartbeatIP = serverKVSPortToAdminPortMap[otherServer];
+    debugDetailed("Checking heartbeat for %s at heartbeat address: %s\n", otherServer.c_str(), otherServerHeartbeatIP.c_str());
+    int heartbeatPortNo = getIPPort(otherServerHeartbeatIP);
+    std::string heartbeatAddress = getIPAddr(otherServerHeartbeatIP);
+    rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
+    kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
+    try {
+        bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
+        debugDetailed("Heartbeat for %s returned true!\n", otherServer.c_str());
+        return isAlive;
+    } catch(rpc::timeout &t) {
+        debugDetailed("Heartbeat for %s failed to return. Node is dead.\n", otherServer.c_str());
+        return false;
+    }
+    return false;
+}
+
 // TODO (AMIT): 1) add timeout in primary and nonprimary case for calling put or put approved
 			// if timeout - call heartbeat method (which is on admit thread) with shorter timeout
 							// if timeout occurs, you know node is dead and can skip it
@@ -880,41 +901,51 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
         }
         debugDetailed("Local %s completed on primary", kvsFunc.c_str());
         for (std::string otherServer : clusterMembers) {
-            if(otherServer.compare(myAddrPortForFrontend) != 0) {
-                rpc::client client(getIPAddr(otherServer), getIPPort(otherServer));
-                try { // TODO - on timeout, query connection state and retry if connected
-                    const uint64_t timeout = TIMEOUT_MILLISEC;
-                    client.set_timeout(timeout);
-                    debugDetailed("Trying remote %s to: %s\n", kvsFunc.c_str(), otherServer.c_str());
-                    if(kvsFunc.compare("PUT") == 0) {
-                        resp = client.call("putApproved", row, col, val).as<resp_tuple>();
-                        debug("putApproved returned: %s\n", std::get<1>(resp).c_str());
-                    } else if(kvsFunc.compare("CPUT") == 0) {
-                        resp = client.call("cputApproved", row, col, oldVal, val).as<resp_tuple>();
-                    } else if(kvsFunc.compare("DEL") == 0) {
-                        resp = client.call("delApproved", row, col).as<resp_tuple>();
-                    } else {
-                        debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
+            if(otherServer.compare(myAddrPortForFrontend) != 0 && clusterNodesToSkip.count(otherServer) <= 0) {
+                bool nodeIsAlive = true;
+                uint64_t timeout = TIMEOUT_MILLISEC;
+                while(nodeIsAlive) {
+                    rpc::client client(getIPAddr(otherServer), getIPPort(otherServer));
+                    try { // TODO - on timeout, query connection state and retry if connected
+                        client.set_timeout(timeout);
+                        debugDetailed("Trying remote %s to: %s\n", kvsFunc.c_str(), otherServer.c_str());
+                        if(kvsFunc.compare("PUT") == 0) {
+                            resp = client.call("putApproved", row, col, val).as<resp_tuple>();
+                            debug("putApproved returned: %s\n", std::get<1>(resp).c_str());
+                        } else if(kvsFunc.compare("CPUT") == 0) {
+                            resp = client.call("cputApproved", row, col, oldVal, val).as<resp_tuple>();
+                        } else if(kvsFunc.compare("DEL") == 0) {
+                            resp = client.call("delApproved", row, col).as<resp_tuple>();
+                        } else {
+                            debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
+                            return std::make_tuple(1, "ERR");
+                        }
+                        respSet[otherServer] = resp;
+                    } catch (rpc::timeout &t) {
+                        debugDetailed("%s for (%s, %s) with server %s timed out!", kvsFunc.c_str(), row.c_str(), col.c_str(), otherServer.c_str());
+                        // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+                        nodeIsAlive = checkIfServerIsAlive(otherServer);
+                        if(nodeIsAlive) {
+                            // Double timeout and try again if node is still alive
+                            timeout *= 2;
+                            debugDetailed("Node %s is still alive! Doubling timeout and trying again.", otherServer.c_str());
+                        } else {
+                            debugDetailed("Node %s is dead! Adding node to set of dead nodes.", otherServer.c_str());
+                            // Add node to set of dead nodes (nodes to skip)
+                            clusterNodesToSkip.insert(otherServer);
+                        }
+                    } catch (rpc::rpc_error &e) {
+                        printf("SOMETHING BAD HAPPENED\n");
+                        std::cout << std::endl << e.what() << std::endl;
+                        std::cout << "in function " << e.get_function_name() << ": ";
+
+                        using err_t = std::tuple<int, std::string>;
+                        auto err = e.get_error().as<err_t>();
+                        std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
+                                  << std::endl;
+                        unlockPrimary();
                         return std::make_tuple(1, "ERR");
                     }
-                    respSet[otherServer] = resp;
-                } catch (rpc::timeout &t) {
-                    // will display a message like
-                    // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
-                    // TODO - send heartbeat to server that timedout - if alive (ie reponse received before timeout), retry rpc call (with timeout), else continue on to next member and update master
-                    std::cout << t.what() << std::endl;
-                    // exit(0);
-                } catch (rpc::rpc_error &e) {
-                    printf("SOMETHING BAD HAPPENED\n");
-                    std::cout << std::endl << e.what() << std::endl;
-                    std::cout << "in function " << e.get_function_name() << ": ";
-
-                    using err_t = std::tuple<int, std::string>;
-                    auto err = e.get_error().as<err_t>();
-                    std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
-                              << std::endl;
-                    unlockPrimary();
-                    return std::make_tuple(1, "ERR");
                 }
             }
         }
@@ -954,7 +985,6 @@ resp_tuple cputReq(std::string row, std::string col, std::string oldVal, std::st
 resp_tuple delReq(std::string row, std::string col) {
     return kvsFuncReq("DEL", row, col, "", "");
 }
-
 
 
 std::tuple<int, std::string> get(std::string row, std::string col) {
@@ -997,8 +1027,8 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 
 
 void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, int len1, int len2, int len3, int len4) {
-	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
-	if (strncmp(comm, "PUT", 3) == 0) {
+    numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
+    if (strncmp(comm, "PUT", 3) == 0) {
 		std::string rowString(arg1, len1);
 		std::string colString(arg2, len2);
 		std::string valString(arg3, len3);
@@ -1095,6 +1125,15 @@ int notifyOfNewLeader(std::string newLeader) {
     return 0;
 }
 
+int notifyOfNewNode(std::string newNode) {
+    debug("New node %s in cluster!\n", newNode.c_str());
+    if(clusterNodesToSkip.count(newNode) > 0) {
+        debug("Node %s in cluster was previously dead. Removing from set of dead nodes!\n", newNode.c_str());
+        clusterNodesToSkip.erase(newNode);
+    }
+    return 0;
+}
+
 void registerWithMasterNode() {
     debug("Registering with masterNode at %s\n", masterNodeAddrPort.c_str());
 	rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
@@ -1128,6 +1167,10 @@ void sigTermHandler(int signum) {
 void *kvServerThreadFunc(void *arg) {
     signal(SIGTERM, sigTermHandler);
     pthread_detach(pthread_self());
+
+    registerWithMasterNode();
+    getClusterNodes();
+
     debug("Server thread %lu started to communicate with frontend servers on port: %d\n", kvServerWithFrontendThreadId, kvsPortForFrontend);
 	rpc::server srv(kvsPortForFrontend);
 
@@ -1321,9 +1364,6 @@ int main(int argc, char *argv[]) {
  	printKvMap();
  	printKvLoc();
  	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
-
-    registerWithMasterNode();
-    getClusterNodes();
 
     pthread_create(&kvServerWithFrontendThreadId, NULL, &kvServerThreadFunc, NULL);
 

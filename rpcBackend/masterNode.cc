@@ -47,6 +47,16 @@ void log(std::string str) {
 	if (debugFlag)
         stderr_msg(str);
 }
+//
+// Returns addr from given string of format addr:port
+std::string getIPAddr(std::string addrPort) {
+    return addrPort.substr(0, addrPort.find(":"));
+}
+
+// Returns port from given string of format addr:port
+int getIPPort(std::string addrPort) {
+    return stoi(addrPort.substr(addrPort.find(":")+1));
+}
 
 // Returns the cluster # that contains the row based on first letter of row
 // Returns -1 on error
@@ -152,6 +162,13 @@ std::tuple<int, std::string> registerWithMaster(std::string serverAddr) {
         // First node for that cluster has been registered. Set it as cluster leader.
         clusterToLeaderMap[cluster] = serverAddr;
         log("New node "+serverAddr+" set as leader of cluster "+std::to_string(cluster));
+    }
+    std::string clusterLeader = clusterToLeaderMap[cluster];
+    if(serverAddr.compare(clusterLeader) != 0) {
+        rpc::client leaderClient(getIPAddr(clusterLeader), getIPPort(clusterLeader));
+        log("Notifying "+clusterLeader+" of new node "+serverAddr);
+        int result = leaderClient.call("notifyOfNewNode", serverAddr).as<int>();
+        log("Done notifying "+clusterLeader+" of new node "+serverAddr);
     }
     return std::make_tuple(0, clusterToLeaderMap[cluster]);
 }
