@@ -472,7 +472,7 @@ resp_tuple sendUpdates(int lastLogNum) {
 	std::string logText;
 	if (lastLogNum == myLastLogNum) {
 		// send as string log.txt content
-		logText = readFileToString("log.txt");
+		logText = readFileToString((char*) "log.txt");
 	} else {
 		std::string nextLog("logArchive/log");
 		nextLog = nextLog + std::to_string((lastLogNum + 1));
@@ -482,6 +482,7 @@ resp_tuple sendUpdates(int lastLogNum) {
 	debugDetailed("----sendUpdates: sndr's lastLogNum: %d, myLastLogNum: %d, text response: %s", lastLogNum, myLastLogNum, logText.c_str());
 	unlockPrimary();
 	resp_tuple resp = std::make_tuple(myLastLogNum, logText);
+	return resp;
 }
 
 // TODO - make sure deleted rows are handled correclty
@@ -563,7 +564,7 @@ void runCheckpoint() {
 
 	updateCheckpointCount();
 	// clear logfile if not currently replaying log
-	if (replay == 0) { // TODO - i think we can delete this casing
+	//if (replay == 0) { // TODO - change this case to be based on whether we are evicting due to numComm or space limit
 		// if not a replay, archive current log - else (a checkpoint might happen due to eviction when replaying log - do not want to clear log file in this case)
 		int lastCnt = getCurrCheckpointCnt();
 		std::string archiveLog("logArchive/log");
@@ -580,7 +581,7 @@ void runCheckpoint() {
 		// logFilePtr = fopen("log.txt", "w");
 		// fclose(logFilePtr);
 		// debugDetailed("%s,\n", "--------cleared log file and return--------");
-	}
+	//}
 	numCommandsSinceLastCheckpoint = 0;
 	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
 	printKvMap();
@@ -807,10 +808,12 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 
 // helper to compare responses
 resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, std::string>> respSet) {
+	debugDetailed("---combineReps: %s\n", "entered");
 	std::tuple<int, std::string> firstVal = std::make_tuple(0, "");
 	std::tuple<int, std::string> resp = std::make_tuple(0, "");
 	for (const auto& x : respSet) {
 		//x.first is ip:port, x.second is resp_tuple
+		debugDetailed("---combineReps: %s\n", "respset iter");
     	if (firstVal == std::make_tuple(0, "")) {
     		firstVal = x.second;
     		resp = x.second;
@@ -821,6 +824,7 @@ resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, s
     		}
     	}	
 	}
+	debugDetailed("---combineReps: %s\n", "completed loop over respSet");
 	if (firstVal == std::make_tuple(0, "")) {
 		debugDetailed("%s\n", "error in combine resps - empty respSet arg");
 		resp = std::make_tuple(-1, "Error: empty resp set");
@@ -1388,10 +1392,38 @@ bool heartbeat() {
 
 
 void getLoggingUpdates() {
-	int myLastLogNum = getCurrCheckpointCnt();
+	//int myLastLogNum = getCurrCheckpointCnt();
 	// TODO need to add primary choosing here
+	if (isPrimary()) {
+		return;
+	}
 	rpc::client client(std::get<0>(primaryIp), std::get<1>(primaryIp));
-    resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
+    
+    //resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
+    //int primaryLogNum = std::get<0>(resp);
+    // while (primaryLogNum != myLastLogNum) {
+    // 	// write log to file, replayLog, runCheckpnt
+    // 	FILE* nextLogFile = fopen("log.txt", "w");
+    // 	fwrite(std::get<1>(resp_tuple).c_str(), sizeof(char), std::get<1>(resp_tuple).length(), nextLogFile);
+    // 	fclose(nextLogFile);
+    // 	replayLog(); // this will trigger a checkpoint
+    // }
+    int myLastLogNum = getCurrCheckpointCnt();
+   	int primaryLogNum = 0;
+    do {
+    	resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); 
+    	primaryLogNum = std::get<0>(resp);
+    	std::string primaryLog = std::get<1>(resp);
+    	
+    	FILE* logFile = fopen((char*) "log.txt", "w");
+    	fwrite(primaryLog.c_str(), sizeof(char), primaryLog.length(), logFile);
+    	fclose(logFile);
+    	replayLog(); // this will trigger a checkpoint
+
+    	myLastLogNum = getCurrCheckpointCnt();
+    } while (myLastLogNum != primaryLogNum);
+    return;
+
 }
 
 
@@ -1546,6 +1578,7 @@ int main(int argc, char *argv[]) {
  	debug("%s\n", "kvMap before log replay: ");
  	printKvMap();
  	// get updates and most recent logfile from leader -- TODO: need to add function to get leader
+ 	getLoggingUpdates();
  	replayLog();
  	debug("%s\n", "kvMap after log replay: ");
  	printKvMap();
