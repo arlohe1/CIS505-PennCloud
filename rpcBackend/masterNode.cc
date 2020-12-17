@@ -310,6 +310,7 @@ int main(int argc, char *argv[]) {
 	srv.bind("getAllNodes", &getAllNodes);
 	srv.bind("registerWithMaster", &registerWithMaster);
 	srv.bind("getClusterNodes", &getClusterNodes);
+    srv.bind("getNewClusterLeader", &getnewClusterLeader);
 
 	srv.run();
 
