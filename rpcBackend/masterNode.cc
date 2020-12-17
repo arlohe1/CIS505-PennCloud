@@ -175,6 +175,23 @@ std::deque<server_addr_tuple> getNodesFromMap(std::map<int, std::deque<std::stri
     return result;
 }
 
+std::deque<server_addr_tuple> getNodesFromDeque(int clusterNum, std::deque<std::string> serverList) {
+    std::deque<server_addr_tuple> result;
+
+    if(testMode) {
+        result.push_back(std::make_tuple(0, true, "127.0.0.1:10000", "127.0.0.1:10001"));
+        return result;
+    }
+
+    for (std::string server : serverList) {
+        bool isClusterLeader = ((clusterToLeaderMap[clusterNum]).compare(server) == 0);
+        std::string addrPortForAdmin = frontendAddrPortToAdminAddrPort[server];
+        server_addr_tuple serverInfo = std::make_tuple(clusterNum, isClusterLeader, server, addrPortForAdmin);
+        result.push_back(serverInfo);
+    }
+    return result;
+}
+
 // Returns a deque of server_addr_tuples for all active backend nodes
 std::deque<server_addr_tuple> getActiveNodes() {
     log("getActiveNodes requested.");
@@ -185,6 +202,14 @@ std::deque<server_addr_tuple> getActiveNodes() {
 std::deque<server_addr_tuple> getAllNodes() {
     log("getAllNodes requested.");
     return getNodesFromMap(clusterToServersMap);
+}
+
+// Returns a deque of server_addr_tuples for all nodes in the given server's cluster
+std::deque<server_addr_tuple> getClusterNodes(std::string server) {
+    log("getClusterNodes requested from server: "+server);
+    int clusterNum = serverToClusterMap[server];
+    std::deque<std::string> serverList = clusterToServersMap[clusterNum];
+    return getNodesFromDeque(clusterNum, serverList);
 }
 
 int main(int argc, char *argv[]) {	
@@ -267,6 +292,7 @@ int main(int argc, char *argv[]) {
 	srv.bind("getActiveNodes", &getActiveNodes);
 	srv.bind("getAllNodes", &getAllNodes);
 	srv.bind("registerWithMaster", &registerWithMaster);
+	srv.bind("getClusterNodes", &getClusterNodes);
 
 	srv.run();
 
