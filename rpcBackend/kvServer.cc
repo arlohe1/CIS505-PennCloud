@@ -948,6 +948,10 @@ int main(int argc, char *argv[]) {
  		exit(-1);
  	}
 
+	std::string adminRow("admin");
+	std::string adminCol("password");
+	std::string adminVal("password");
+	put(adminRow, adminCol, adminVal);
  	debug("%s\n", "kvMap before log replay or checkpoint: ");
  	printKvMap();
  	loadKvStoreFromDisk();
@@ -973,5 +977,3 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-
-                                                                                                                                                                            
