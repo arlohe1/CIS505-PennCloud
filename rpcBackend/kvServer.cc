@@ -839,7 +839,7 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 }
 
 
-bool checkIfServerIsAlive(std::string otherServer) {
+bool checkIfNodeIsAlive(std::string otherServer) {
     // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
     std::string otherServerHeartbeatIP = serverKVSPortToAdminPortMap[otherServer];
     debugDetailed("Checking heartbeat for %s at heartbeat address: %s\n", otherServer.c_str(), otherServerHeartbeatIP.c_str());
@@ -887,7 +887,7 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
             debugDetailed("Local %s completed on primary\n", kvsFunc.c_str());
             for (std::string otherServer : clusterMembers) {
                 if(otherServer.compare(myAddrPortForFrontend) != 0 && clusterNodesToSkip.count(otherServer) <= 0) {
-                    bool continueTrying = true;
+                    bool continueTrying = checkIfNodeIsAlive(otherServer);
                     uint64_t timeout = TIMEOUT_MILLISEC;
                     while(continueTrying) {
                         rpc::client client(getIPAddr(otherServer), getIPPort(otherServer));
@@ -910,10 +910,11 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                         } catch (rpc::timeout &t) {
                             debugDetailed("%s for (%s, %s) with server %s timed out!\n", kvsFunc.c_str(), row.c_str(), col.c_str(), otherServer.c_str());
                             // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
-                            bool nodeIsAlive = checkIfServerIsAlive(otherServer);
+                            bool nodeIsAlive = checkIfNodeIsAlive(otherServer);
                             if(nodeIsAlive) {
                                 // Double timeout and try again if node is still alive
                                 timeout *= 2;
+                                // assuming that request is canceled on timeout
                                 debugDetailed("Node %s is still alive! Doubling timeout to %ld and trying again.\n", otherServer.c_str(), timeout);
                             } else {
                                 debugDetailed("Node %s is dead! Adding node to set of dead nodes.\n", otherServer.c_str());
@@ -945,7 +946,7 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
         } else {
             debugDetailed("Current Node %s is NOT primary for %s Request. Forwarding to primary: %s\n", myAddrPortForFrontend.c_str(), kvsFunc.c_str(), myClusterLeader.c_str());
             // send put Req to primary
-            bool continueTrying = true;
+            bool continueTrying = checkIfNodeIsAlive(myClusterLeader);
             uint64_t timeout = TIMEOUT_MILLISEC;
             while(continueTrying) {
                 debugDetailed("Starting new rpc::client to primary %s\n", myClusterLeader.c_str());
@@ -968,7 +969,7 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                 } catch (rpc::timeout &t) {
                     debugDetailed("Attempt to forward %s to primary %s timed out!\n", kvsFunc.c_str(), myClusterLeader.c_str());
                     // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
-                    bool nodeIsAlive = checkIfServerIsAlive(myClusterLeader);
+                    bool nodeIsAlive = checkIfNodeIsAlive(myClusterLeader);
                     if(nodeIsAlive) {
                         // Double timeout and try again if node is still alive
                         timeout *= 2;
@@ -1230,10 +1231,10 @@ void adminReviveServer() {
     }
 }
 
-// Returns true. Used to check if server is alive.
+// Returns true if the kv thread is running. Used to check if server is alive.
 bool heartbeat() {
     debug("%s\n", "Heartbeat requested! Returning true.");
-    return true;
+    return (kvServerWithFrontendThreadId != 0);
 }
 
 void signalHandler(int sig) {
