@@ -23,6 +23,7 @@
 #include <time.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 
 #include <map>
 #include <iostream>
@@ -37,31 +38,18 @@
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
 #define COM_PER_CHECKPOINT 10
-#define TIMEOUT_MILLISEC 5000
-
-
-using resp_tuple = std::tuple<int, std::string>;
+#define TIMEOUT_MILLISEC 10000
 
 enum Command {GET, PUT, CPUT, DELETE};
-
 
 int debugFlag;
 int err = -1;
 int detailed = 0;
 int replay = 0;
 
-
 int serverIdx;
 int maxCache;
 int startCacheThresh;
-std::string currServerAddr;
-
-
-//TODO read these from the config file instead of hardcoding
-std::string masterIP;
-std::map<int, std::tuple<std::string, int>> clusterMembers;
-std::tuple<std::string, int> myIp; // set after setting serverIdx
-std::tuple<std::string, int> primaryIp;
 
 // shared read/write data structures for threads
 volatile int numCommandsSinceLastCheckpoint = 0;
@@ -76,8 +64,6 @@ pthread_mutex_t primarySemaphore;
 pthread_mutex_t numCommandsSinceLastCheckpointSemaphore;
 pthread_mutex_t logfileSemaphore;
 std::map<std::string, pthread_mutex_t> rwSemaphores; // row -> rw semaphore
-//std::map<std::string, pthread_mutex_t> countSemaphores; // row -> count semaphore
-//volatile int readcount = 0;
 
 std::string myAddrPortForFrontend;
 std::string myAddrPortForAdmin;
@@ -87,58 +73,43 @@ std::string masterNodeAddrPort;
 std::string myClusterLeader;
 pthread_t kvServerWithFrontendThreadId;
 
+std::deque<std::string> clusterMembers;
+std::map<std::string, std::string> serverKVSPortToAdminPortMap;
+std::set<std::string> clusterNodesToSkip;
+
+// Cluster Number, isClusterLeader, Addr:Port for comm w/ Frontend, Addr:Port for comm w/ Admin
+using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
+using resp_tuple = std::tuple<int, std::string>;
 
 
-// TODO read from config fiel
-void setClusterMembership(int serverIndx) {
-	masterIP = "127.0.0.1:8000";
-	clusterMembers[1] = std::make_tuple("127.0.0.1", 10000);
-	clusterMembers[2] = std::make_tuple("127.0.0.1", 10002);
-	clusterMembers[3] = std::make_tuple("127.0.0.1", 10004);
-	// clusterMembers[2] = "127.0.0.1:10001";
-	// clusterMembers[3] = "127.0.0.1:10002"; 
-	myIp = clusterMembers[serverIndx]; // set after setting serverIdx
-	primaryIp = std::make_tuple("127.0.0.1", 10000);
 
+// Returns addr from given string of format addr:port
+std::string getIPAddr(std::string addrPort) {
+    return addrPort.substr(0, addrPort.find(":"));
 }
 
-
-// checks if this node is the primary - returns 1 for yes else 0
-int isPrimary() {
-	if (primaryIp == myIp) {
-		return 1;
-	} 
-	return 0;
+// Returns port from given string of format addr:port
+int getIPPort(std::string addrPort) {
+    return stoi(addrPort.substr(addrPort.find(":")+1));
 }
 
-
+// Returns true if this node is the cluster leader (false o/w)
+bool isPrimary() {
+    return (myAddrPortForFrontend.compare(myClusterLeader) == 0);
+}
 
 void debugTime() {
 	if (debugFlag) {
-		std::chrono::time_point<std::chrono::system_clock> now = std::chrono::system_clock::now();
-		auto duration = now.time_since_epoch();
-
-		typedef std::chrono::duration<int, std::ratio_multiply<std::chrono::hours::period, std::ratio<8>
-		>::type> Days; 
-
-		Days days = std::chrono::duration_cast<Days>(duration);
-		    duration -= days;
-		auto hours = std::chrono::duration_cast<std::chrono::hours>(duration);
-		    duration -= hours;
-		auto minutes = std::chrono::duration_cast<std::chrono::minutes>(duration);
-		    duration -= minutes;
-		auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration);
-		    duration -= seconds;
-		auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(duration);
-		    duration -= microseconds;
-
-		std::cout << hours.count() << ":"
-		          << minutes.count() << ":"
-		          << seconds.count() << "."
-		          << microseconds.count() << " S"
-		          << serverIdx << " " << std::flush;
-	}
-	
+        struct timeval tval;
+        gettimeofday(&tval, NULL);
+        struct tm *tm_info = localtime(&tval.tv_sec);
+        char timeBuff[25] = "";
+        strftime(timeBuff, 25, "%H:%M:%S", tm_info);
+        char timeBuffWithMilli[50] = "";
+        sprintf(timeBuffWithMilli, "%s.%06ld ", timeBuff, tval.tv_usec);
+        std::string timestamp(timeBuffWithMilli);
+		std::cout << timestamp << std::flush;
+    }
 }
 
 //needs atleast 2 args always
@@ -289,7 +260,6 @@ void printKvLoc() {
 	    }
 	    std::cout << std::flush;
 	}
-	
 }
 
 // TODO - eviction: global count of values put into mem, map of r, c, 0/1 in mem or disk, 
@@ -307,11 +277,7 @@ void chdirToCheckpoint() {
  		}
  		exit(-1);
  	}
-
-
 }
-
-
 
 // makes dirName directory if doesnt already exist, and cds gto the directory //returns 0 if dir exists, else -1
 int chdirToRow(const char* dirName) {
@@ -322,8 +288,8 @@ int chdirToRow(const char* dirName) {
  	} else {
  		int mkdirRet = mkdir(dirName, 0777);
  		if (mkdirRet < 0) {
- 			debugDetailed("failed to create new row dir: %s", dirName);
- 			if (write(STDERR_FILENO, "failed to create a checkpointing row directory", strlen( "failed to create a checkpointing row directory")) < 0) {
+            debugDetailed("failed to create new row dir: %s\n", dirName);
+            if (write(STDERR_FILENO, "failed to create a checkpointing row directory\n", strlen( "failed to create a checkpointing row directory\n")) < 0) {
 	 			perror("invalid write: ");
 	 		}
 	 		exit (-1); //TODO - handle this better
@@ -332,8 +298,8 @@ int chdirToRow(const char* dirName) {
 	 	if (chdirRet == 0) {
 	 		debugDetailed("cd into row dir (just created): %s\n", dirName);	
 	 	} else {
-	 		debugDetailed("failed to cd into newly created row dir: %s", dirName);
-	 		if (write(STDERR_FILENO, "failed to cd into newly created row directory", strlen("failed to cd into newly created row directory")) < 0) {
+            debugDetailed("failed to cd into newly created row dir: %s\n", dirName);
+            if (write(STDERR_FILENO, "failed to cd into newly created row directory\n", strlen("failed to cd into newly created row directory\n")) < 0) {
 	 			perror("invalid write: ");
 	 		}
 	 		exit(-1);
@@ -349,7 +315,7 @@ int lockPrimary() {
 		debugDetailed("%s\n", "error obtaining numComm. mutex lock");
 		return -1;
 	}
-	debugDetailed("-----LOCK primarySemaphore------: %s\n", "lock obtained, returning");
+	debugDetailed("LOCK primarySemaphore: %s\n", "lock obtained, returning");
 	return 0;
 }
 
@@ -358,7 +324,7 @@ int unlockPrimary() {
 		debug("%s\n", "error unlocking numComm mutex");
 		return -1;
 	}
-	debugDetailed("-----UNLOCK primarySemaphore------: %s\n", "completed unlock, returning");
+	debugDetailed("UNLOCK primarySemaphore: %s\n", "completed unlock, returning");
 	return 0;
 }
 
@@ -367,7 +333,7 @@ int lockNumComm() {
 		debugDetailed("%s\n", "error obtaining numComm. mutex lock");
 		return -1;
 	}
-	debugDetailed("-----LOCK numCommandsSinceLastCheckpointSemaphore------: %s\n", "lock obtained, returning");
+	debugDetailed("LOCK numCommandsSinceLastCheckpointSemaphore: %s\n", "lock obtained, returning");
 	return 0;
 }
 
@@ -376,7 +342,7 @@ int unlockNumComm() {
 		debug("%s\n", "error unlocking numComm mutex");
 		return -1;
 	}
-	debugDetailed("-----UNLOCK numComm------: %s\n", "completed unlock, returning");
+	debugDetailed("UNLOCK numComm: %s\n", "completed unlock, returning");
 	return 0;
 }
 
@@ -385,7 +351,7 @@ int lockLogFile() {
 		debugDetailed("%s\n", "error obtaining logfile mutex lock");
 		return -1;
 	}
-	debugDetailed("-----LOCK LOGFILE------: %s\n", "lock obtained, returning");
+	debugDetailed("LOCK LOGFILE: %s\n", "lock obtained, returning");
 	return 0;
 }
 
@@ -394,7 +360,7 @@ int unlockLogFile() {
 		debug("%s\n", "error unlocking logfile mutex");
 		return -1;
 	}
-	debugDetailed("-----UNLOCK LOGFILE------: %s\n", "completed unlock, returning");
+	debugDetailed("UNLOCK LOGFILE: %s\n", "completed unlock, returning");
 	return 0;
 }
 
@@ -404,7 +370,7 @@ int lockCheckpoint() {
 		debugDetailed("%s\n", "error obtaining checkpoint mutex lock");
 		return -1;
 	}
-	debugDetailed("-----LOCK CHECKPOINT------: %s\n", "lock obtained, returning");
+	debugDetailed("LOCK CHECKPOINT: %s\n", "lock obtained, returning");
 	return 0;
 }
 
@@ -413,17 +379,14 @@ int unlockCheckpoint() {
 		debug("%s\n", "error unlocking checkpoint mutex");
 		return -1;
 	}
-	debugDetailed("-----UNLOCK CHECKPOINT------: %s\n", "completed unlock, returning");
+	debugDetailed("UNLOCK CHECKPOINT: %s\n", "completed unlock, returning");
 	return 0;
 }
 
 // TODO - make sure deleted rows are handled correclty
 void runCheckpoint() {
 	int valLen;
-	debugDetailed("%s,\n", "--------RUNNING CHECKPOINT--------");
-	// if (lockCheckpoint() < 0) {
-	// 	return;
-	// }
+	debugDetailed("%s\n", "RUNNING CHECKPOINT");
 	lockAllRows();
 	printKvMap();
 	printKvLoc();
@@ -444,34 +407,23 @@ void runCheckpoint() {
 			if (col.c_str() == NULL) {
 				//printf("found nullllllllllllllllllllllll\n");
 			}
-			//std::string val = y.second;
-			//int loc = y.second;
 			int loc = (*it).second;
 			debugDetailed("loop for: %s, -> %d\n", col.c_str(), loc);
 			// case on kvLoc val -1 (deleted), 0 (on disk), or 1 (in local kvMap)
 			if (loc == -1) {
 				if(remove( col.c_str() ) != 0 ) {
-     				perror( "Error deleting file" );
+                    debugDetailed("File did not exist for col %s. Skipping!\n", col.c_str());
 				} else {
-				 	debugDetailed("checkpoint deletes file: %s\n", col.c_str());
-				 	// NOTE - del has already been called and removed the val form kvMap and adjusted cache size
-				// 	//valLen = kvMap[row][col].length();
-				// 	kvMap[row].erase(col);
-				// 	printf("reached 0\n");
-				 	//kvLoc[row].erase(col);
-				 	it = kvLoc[row].erase(it);
-
-				// 	//cacheSize = cacheSize - valLen;
-				 	printKvMap();
-					printKvLoc();
-				// 	printf("reached 1\n");
-					
+                    debugDetailed("Deleting file for col %s\n", col.c_str());
 				}
+                // NOTE - del has already been called and removed the val form kvMap and adjusted cache size
+                it = kvLoc[row].erase(it);
+                printKvLoc();
 			} else if (loc == 1) {
 				debugDetailed("checkpoint writes file: %s\n", col.c_str());
 				colFilePtr = fopen((col).c_str(), "w");
-				// write all value to file with format valLen\nvalue
-				fprintf(colFilePtr, "%ld\n", kvMap[row][col].length());
+                // write all value to file with format valLen\nvalue
+                fprintf(colFilePtr, "%ld\n", kvMap[row][col].length());
 				fwrite(kvMap[row][col].c_str(), sizeof(char), kvMap[row][col].length(), colFilePtr);
 				fclose(colFilePtr);	
 				valLen = kvMap[row][col].length();
@@ -483,20 +435,13 @@ void runCheckpoint() {
 			} else {
 				++it;
 			}
-			//printf("reached 2\n");		
 		}
-		//printf("reached 3\n");
-		
 		chdir("..");
-		//printf("reached 4\n");
 	}
 	// cd back out to server directory
 	chdir("..");
-	//printf("reached 5\n");
-
 	// clear logfile if not currently replaying log
 	if (replay == 0) {
-		//printf("reached 6\n");
 		FILE* logFilePtr;
 		logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
@@ -509,10 +454,7 @@ void runCheckpoint() {
 	debugDetailed("%s,\n", "--------checkpoint finished and return--------");
 	unlockAllRows();
 	return;
-	
-
 	// need to add new function - loadKvStore - parses all row files and enters the appropriate column, value into map
-
 }
 
 FILE * openValFile(char* row, char* col, const char* mode) {
@@ -733,17 +675,35 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 	} else {
 		debugDetailed("%s\n", "did not re-log, replay flag is 1");
 	}
-	
-
 	return 0;
 }
 
 
+// get val if known to exist
+std::string getValDiskorLocal(std::string row, std::string col) {
+	std::string val;
+	lockRow(row);
+	if (kvLoc[row][col] == 0) { // TODO would need to claim semaphore here in this case on checkpoint where eviction happens
+		debugDetailed("%s\n", "row, col, val on disk, retrieiving..");
+		// try to load from disk, and run checkpoint if needed
+		FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
+		int valLen = getValSize(colFilePtr);
+		unlockRow(row);
+		int loadRes = readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
+		if (loadRes == -1) {
+			runCheckpoint();
+			readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
+		}	
+	}
+	unlockRow(row);
+	val = kvMap[row][col];
+	return val;
+}
 
 // helper to compare responses
-resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, std::string>> respSet) {
-	std::tuple<int, std::string> firstVal = std::make_tuple(0, "");
-	std::tuple<int, std::string> resp = std::make_tuple(0, "");
+resp_tuple combineResps(std::map<std::string, resp_tuple> respSet) {
+	resp_tuple firstVal = std::make_tuple(0, "");
+	resp_tuple resp = std::make_tuple(0, "");
 	for (const auto& x : respSet) {
 		//x.first is ip:port, x.second is resp_tuple
     	if (firstVal == std::make_tuple(0, "")) {
@@ -760,11 +720,8 @@ resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, s
 		debugDetailed("%s\n", "error in combine resps - empty respSet arg");
 		resp = std::make_tuple(-1, "Error: empty resp set");
 	}
-	return (resp_tuple) resp;
-	//return respSet[myIp];
+	return resp;
 }
-
-
 
 
 
@@ -792,7 +749,7 @@ resp_tuple put(std::string row, std::string col, std::string val) {
     		cacheSize = cacheSize - oldLen;
     	}
     	debugDetailed("------PUT row: %s, column: %s, val: %s, cahceSize: %d\n", row.c_str(), col.c_str(), val.c_str(), cacheSize);
-    	printKvMap();
+        printKvMap();
     	logCommand(PUT, 3, row, col, val, row);
     	if (unlockRow(row) < 0) {
 			return std::make_tuple(1, "ERR");
@@ -807,93 +764,244 @@ resp_tuple put(std::string row, std::string col, std::string val) {
     }
 }
 
+std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
+	debugDetailed("---CPUT entered - row: %s, column: %s, expVal: %s, newVal: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+
+	lockRow(row);
+	if (kvLoc.count(row) > 0) {
+		if (kvLoc[row].count(col) > 0) {
+			if (kvLoc[row][col] != -1) {
+				unlockRow(row);
+				std::string val = getValDiskorLocal(row, col);	
+				debugDetailed("------CPUT correct val: %s\n", val.c_str());	
+				lockRow(row);
+				if (expVal.compare(kvMap[row][col]) == 0) {
+					unlockRow(row);
+					put(row, col, newVal);
+					debugDetailed("------CPUT called put and updated val - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+                    printKvMap();
+					return std::make_tuple(0, "OK");
+				} else {
+					unlockRow(row);
+					debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+                    printKvMap();
+					return std::make_tuple(2, "Incorrect expVal");
+				}
+			} else {
+				unlockRow(row);
+			}
+		} else {
+			unlockRow(row);
+		}
+	} else {
+		unlockRow(row);
+	}
+	
+	debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+    printKvMap();
+	return std::make_tuple(1, "No such row, column pair");
+}
+
+std::tuple<int, std::string> del(std::string row, std::string col) {
+	debugDetailed("%s\n", "del entered");
+    printKvMap();
+	printKvLoc();
+	lockRow(row);
+	if (kvLoc.count(row) > 0) {
+		if (kvLoc[row].count(col) > 0) {
+			if (kvLoc[row][col] != -1) {
+				if (kvLoc[row][col] == 1) {
+					cacheSize = cacheSize - kvMap[row][col].length();
+					
+				}
+				kvMap[row].erase(col);
+				kvLoc[row][col] = -1;	
+				debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());
+                printKvMap();	
+				unlockRow(row);
+				logCommand(DELETE, 2, row, col, row, row);
+				return std::make_tuple(0, "OK");
+			} else {
+				unlockRow(row);
+			}
+			
+		} else {
+			unlockRow(row);
+		}
+	} else {
+		unlockRow(row);
+	}
+	
+	debugDetailed("---DELETE val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
+	printKvMap();
+	//logCommand(DELETE, 2, row, col, row, row);
+	return std::make_tuple(1, "No such row, column pair");
+}
+
+
+bool checkIfNodeIsAlive(std::string otherServer) {
+    // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+    std::string otherServerHeartbeatIP = serverKVSPortToAdminPortMap[otherServer];
+    debugDetailed("Checking heartbeat for %s at heartbeat address: %s\n", otherServer.c_str(), otherServerHeartbeatIP.c_str());
+    int heartbeatPortNo = getIPPort(otherServerHeartbeatIP);
+    std::string heartbeatAddress = getIPAddr(otherServerHeartbeatIP);
+    rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
+    kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
+    try {
+        bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
+        debugDetailed("Heartbeat for %s returned true!\n", otherServer.c_str());
+        return isAlive;
+    } catch(rpc::timeout &t) {
+        debugDetailed("Heartbeat for %s failed to return. Node is dead.\n", otherServer.c_str());
+        return false;
+    }
+    return false;
+}
+
 // TODO (AMIT): 1) add timeout in primary and nonprimary case for calling put or put approved
 			// if timeout - call heartbeat method (which is on admit thread) with shorter timeout
 							// if timeout occurs, you know node is dead and can skip it
 							// else need to call put / put approved again with timeout
 
-std::tuple<int, std::string> putReq(std::string row, std::string col, std::string val) {
-	debugDetailed("---PUTREQ entered, primary is: %s:%d\n", std::get<0>(primaryIp).c_str(), std::get<1>(primaryIp));
-	std::map<std::tuple<std::string, int>, resp_tuple> respSet; // map from ip:port -> resp tuple 
-	resp_tuple resp;
-	// handle whether of not receiving node is a primary
-    if (isPrimary() == 1) {
-    	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
-    	lockPrimary();	
-    	respSet[myIp] = put(row, col, val);
-    	debugDetailed("---PUTREQ entered - I am primary: %s\n", "local put completed");
-    	for (const auto& server : clusterMembers) {
-    		// server.first is serverIndx, server.second is tuple (ip string, port int)
-    		if (server.second != myIp) {
-    			rpc::client client(std::get<0>(server.second), std::get<1>(server.second));
-				try { // TODO - on timeout, query connection state and retry if connected
-			        // default timeout is 5000 milliseconds TODO: adjust timeout as needed
-			        const uint64_t short_timeout = TIMEOUT_MILLISEC;
-			        client.set_timeout(short_timeout);
-			        debugDetailed("---PUTREQ entered: %s: %s:%d\n", "trying remote put to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
-			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
-			        resp = client.call("putApproved", row, col, val).as<resp_tuple>();
-                    debug("putApproved returned: %s\n", std::get<1>(resp).c_str());
-			        respSet[server.second] = resp;
-			    } catch (rpc::timeout &t) {
-			        // will display a message like
-			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
-			        // TODO - send heartbeat to server that timedout - if alive (ie reponse received before timeout), retry rpc call (with timeout), else continue on to next member and update master
-			        std::cout << t.what() << std::endl;
-			        // exit(0);
-			    } catch (rpc::rpc_error &e) {
-			    	printf("SOMETHING BAD HAPPEND\n");
-				    std::cout << std::endl << e.what() << std::endl;
-				    std::cout << "in function " << e.get_function_name() << ": ";
-
-				    using err_t = std::tuple<int, std::string>;
-				    auto err = e.get_error().as<err_t>();
-				    std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
-				              << std::endl;
-				    unlockPrimary();
-				    return std::make_tuple(1, "ERR");
-			    }
-    		}
-		}
-		// release semaphor on primary
-		unlockPrimary();
-		debugDetailed("---PUTREQ entered - primary: %s\n", "calling combineResps");
-		// return resp tuple
-		resp = combineResps(respSet);
-		return resp;
-		//return respSet[myIp];
-    } else {
-    	debugDetailed("---PUTREQ entered - I am NOT primary: %s\n", "sending to primary");
-    	// send put Req to primary //TODO need to handle case where primary has failed
-    	//std::cout << "received a put request and reached putReq fct " << std::endl;
-    	rpc::client client(std::get<0>(primaryIp), std::get<1>(primaryIp));
-    	resp = client.call("put", row, col, val).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
-    	//debugDetailed("---PUTREQ entered - I am NOT primary: %s\n", "local put completed");
-    	return resp;
+// oldVal used for CPUT
+resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std::string val, std::string oldVal) {
+    while(true) {
+        debugDetailed("Beginning %s Request with (r, c): (%s, %s)\n", kvsFunc.c_str(), row.c_str(), col.c_str());
+        std::map<std::string, resp_tuple> respSet; // map from ip:port -> resp tuple
+        resp_tuple resp;
+        // handle whether of not receiving node is a primary
+        if (isPrimary()) {
+            debugDetailed("Current Node %s is primary for %s Request\n", myAddrPortForFrontend.c_str(), kvsFunc.c_str());
+            // If node is primary, perform local kvs operation and loop over memebers in cluster and call operation (synchronous w timeout) on them
+            lockPrimary();
+            if(kvsFunc.compare("PUT") == 0) {
+                respSet[myAddrPortForFrontend] = put(row, col, val);
+            } else if(kvsFunc.compare("CPUT") == 0) {
+                respSet[myAddrPortForFrontend] = cput(row, col, oldVal, val);
+            } else if(kvsFunc.compare("DEL") == 0) {
+                respSet[myAddrPortForFrontend] = del(row, col);
+            } else {
+                debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
+                return std::make_tuple(1, "ERR");
+            }
+            debugDetailed("Local %s completed on primary\n", kvsFunc.c_str());
+            for (std::string otherServer : clusterMembers) {
+                if(otherServer.compare(myAddrPortForFrontend) != 0 && clusterNodesToSkip.count(otherServer) <= 0) {
+                    bool continueTrying = checkIfNodeIsAlive(otherServer);
+                    uint64_t timeout = TIMEOUT_MILLISEC;
+                    while(continueTrying) {
+                        rpc::client client(getIPAddr(otherServer), getIPPort(otherServer));
+                        try { // TODO - on timeout, query connection state and retry if connected
+                            client.set_timeout(timeout);
+                            debugDetailed("Trying remote %s to: %s with timeout %ld\n", kvsFunc.c_str(), otherServer.c_str(), timeout);
+                            if(kvsFunc.compare("PUT") == 0) {
+                                resp = client.call("putApproved", row, col, val).as<resp_tuple>();
+                                debug("putApproved returned: %s\n", std::get<1>(resp).c_str());
+                            } else if(kvsFunc.compare("CPUT") == 0) {
+                                resp = client.call("cputApproved", row, col, oldVal, val).as<resp_tuple>();
+                            } else if(kvsFunc.compare("DEL") == 0) {
+                                resp = client.call("delApproved", row, col).as<resp_tuple>();
+                            } else {
+                                debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
+                                return std::make_tuple(1, "ERR");
+                            }
+                            continueTrying = false;
+                            respSet[otherServer] = resp;
+                        } catch (rpc::timeout &t) {
+                            debugDetailed("%s for (%s, %s) with server %s timed out!\n", kvsFunc.c_str(), row.c_str(), col.c_str(), otherServer.c_str());
+                            // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+                            bool nodeIsAlive = checkIfNodeIsAlive(otherServer);
+                            if(nodeIsAlive) {
+                                // Double timeout and try again if node is still alive
+                                timeout *= 2;
+                                // assuming that request is canceled on timeout
+                                debugDetailed("Node %s is still alive! Doubling timeout to %ld and trying again.\n", otherServer.c_str(), timeout);
+                            } else {
+                                debugDetailed("Node %s is dead! Adding node to set of dead nodes.\n", otherServer.c_str());
+                                // Add node to set of dead nodes (nodes to skip)
+                                clusterNodesToSkip.insert(otherServer);
+                                continueTrying = false;
+                            }
+                        } catch (rpc::rpc_error &e) {
+                            printf("SOMETHING BAD HAPPENED\n");
+                            std::cout << std::endl << e.what() << std::endl;
+                            std::cout << "in function " << e.get_function_name() << ": ";
+                            using err_t = std::tuple<int, std::string>;
+                            auto err = e.get_error().as<err_t>();
+                            std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
+                                      << std::endl;
+                            unlockPrimary();
+                            return std::make_tuple(1, "ERR");
+                        }
+                    }
+                }
+            }
+            // release semaphor on row
+            unlockPrimary();
+            debugDetailed("%s: Primary calling combineResps\n", kvsFunc.c_str());
+            // return resp tuple
+            resp = combineResps(respSet);
+            printKvLoc();
+            return resp;
+        } else {
+            debugDetailed("Current Node %s is NOT primary for %s Request. Forwarding to primary: %s\n", myAddrPortForFrontend.c_str(), kvsFunc.c_str(), myClusterLeader.c_str());
+            // send put Req to primary
+            bool continueTrying = checkIfNodeIsAlive(myClusterLeader);
+            uint64_t timeout = TIMEOUT_MILLISEC;
+            while(continueTrying) {
+                debugDetailed("Starting new rpc::client to primary %s\n", myClusterLeader.c_str());
+                rpc::client clusterLeaderClient(getIPAddr(myClusterLeader), getIPPort(myClusterLeader));
+                debugDetailed("Trying to forward %s to: primary with timeout %ld\n", kvsFunc.c_str(), timeout);
+                try {
+                    clusterLeaderClient.set_timeout(timeout);
+                    if(kvsFunc.compare("PUT") == 0) {
+                        resp = clusterLeaderClient.call("put", row, col, val).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
+                    } else if(kvsFunc.compare("CPUT") == 0) {
+                        resp = clusterLeaderClient.call("cput", row, col, oldVal, val).as<resp_tuple>();
+                    } else if(kvsFunc.compare("DEL") == 0) {
+                        resp = clusterLeaderClient.call("del", row, col).as<resp_tuple>();
+                    } else {
+                        debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
+                        return std::make_tuple(1, "ERR");
+                    }
+                    printKvLoc();
+                    return resp;
+                } catch (rpc::timeout &t) {
+                    debugDetailed("Attempt to forward %s to primary %s timed out!\n", kvsFunc.c_str(), myClusterLeader.c_str());
+                    // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+                    bool nodeIsAlive = checkIfNodeIsAlive(myClusterLeader);
+                    if(nodeIsAlive) {
+                        // Double timeout and try again if node is still alive
+                        timeout *= 2;
+                        debugDetailed("Primary Node %s is still alive! Doubling timeout to %ld and trying again.\n", myClusterLeader.c_str(), timeout);
+                    } else {
+                        debugDetailed("Primary Node %s is dead! Adding node to set of dead nodes.\n", myClusterLeader.c_str());
+                        // Add node to set of dead nodes (nodes to skip)
+                        clusterNodesToSkip.insert(myClusterLeader);
+                        // Get new cluster leader and try again
+                        // TODO Make sure this syntax is right
+                        rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
+                        resp_tuple newLeaderResp = masterNodeRPCClient.call("getNewClusterLeader", myClusterLeader).as<resp_tuple>();
+                        myClusterLeader = std::get<1>(newLeaderResp);
+                        continueTrying = false;
+                    }
+                }
+            }
+        }
     }
     return std::make_tuple(-1, "ERR");
-
 }
 
-// get val if known to exist
-std::string getValDiskorLocal(std::string row, std::string col) {
-	std::string val;
-	lockRow(row);
-	if (kvLoc[row][col] == 0) { // TODO would need to claim semaphore here in this case on checkpoint where eviction happens
-		debugDetailed("%s\n", "row, col, val on disk, retrieiving..");
-		// try to load from disk, and run checkpoint if needed
-		FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
-		int valLen = getValSize(colFilePtr);
-		unlockRow(row);
-		int loadRes = readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
-		if (loadRes == -1) {
-			runCheckpoint();
-			readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
-		}	
-	}
-	unlockRow(row);
-	val = kvMap[row][col];
-	return val;
+resp_tuple putReq(std::string row, std::string col, std::string val) {
+    return kvsFuncReq("PUT", row, col, val, "");
+}
+
+resp_tuple cputReq(std::string row, std::string col, std::string oldVal, std::string newVal) {
+    return kvsFuncReq("CPUT", row, col, newVal, oldVal);
+}
+
+resp_tuple delReq(std::string row, std::string col) {
+    return kvsFuncReq("DEL", row, col, "", "");
 }
 
 
@@ -934,229 +1042,11 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 	return std::make_tuple(1, "No such row, column pair");	
 }
 
-std::tuple<int, std::string> exists(std::string row, std::string col) {
-    lockRow(row);
-    if (kvLoc.count(row) > 0) {
-		if (kvLoc[row].count(col) > 0) {
-			debugDetailed("---EXISTS succeeded - row: %s, column: %s\n", row.c_str(), col.c_str());
-			printKvMap();
-			unlockRow(row);
-			return std::make_tuple(0, "OK");
-		} else {
-			unlockRow(row);
-		}
-	} else {
-		unlockRow(row);
-	}
-	debugDetailed("---EXISTS val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
-	printKvMap();
-	return std::make_tuple(1, "No such row, column pair");
-}
-
-std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
-	debugDetailed("---CPUT entered - row: %s, column: %s, expVal: %s, newVal: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-
-	lockRow(row);
-	if (kvLoc.count(row) > 0) {
-		if (kvLoc[row].count(col) > 0) {
-			if (kvLoc[row][col] != -1) {
-				unlockRow(row);
-				std::string val = getValDiskorLocal(row, col);	
-				debugDetailed("------CPUT correct val: %s\n", val.c_str());	
-				lockRow(row);
-				if (expVal.compare(kvMap[row][col]) == 0) {
-					unlockRow(row);
-					put(row, col, newVal);
-					debugDetailed("------CPUT called put and updated val - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					//debugDetailed("------CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					printKvMap();
-					//logCommand(CPUT, 4, row, col, expVal, newVal);
-					return std::make_tuple(0, "OK");
-				} else {
-					//printf("unlocking row\n");
-					unlockRow(row);
-					debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					printKvMap();
-					//logCommand(CPUT, 4, row, col, expVal, newVal);
-					return std::make_tuple(2, "Incorrect expVal");
-				}
-			} else {
-				unlockRow(row);
-			}
-		} else {
-			unlockRow(row);
-		}
-	} else {
-		unlockRow(row);
-	}
-	
-	debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-	printKvMap();
-	//logCommand(CPUT, 4, row, col, expVal, newVal);
-	return std::make_tuple(1, "No such row, column pair");
-}
-
-std::tuple<int, std::string> cputReq(std::string row, std::string col, std::string val, std::string newVal) {
-	debugDetailed("---CPUTREQ entered, primary is: %s:%d\n", std::get<0>(primaryIp).c_str(), std::get<1>(primaryIp));
-	std::map<std::tuple<std::string, int>, resp_tuple> respSet; // map from ip:port -> resp tuple 
-	resp_tuple resp;
-	// handle whether of not receiving node is a primary
-    if (isPrimary() == 1) {
-    	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
-    	lockPrimary();
-    	respSet[myIp] = cput(row, col, val, newVal);
-    	debugDetailed("---CPUTREQ entered - I am primary: %s\n", "local cput completed");
-    	for (const auto& server : clusterMembers) {
-    		// server.first is serverIndx, server.second is tuple (ip string, port int)
-    		if (server.second != myIp) {
-    			rpc::client client(std::get<0>(server.second), std::get<1>(server.second));
-				try { // TODO - on timeout, query connection state and retry if connected
-			        // default timeout is 5000 milliseconds TODO: adjust timeout as needed
-			        const uint64_t short_timeout = 5000;
-			        client.set_timeout(short_timeout);
-			        debugDetailed("---CPUTREQ entered: %s: %s:%d\n", "trying remote cput to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
-			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
-			        resp = client.call("cputApproved", row, col, val, newVal).as<resp_tuple>();
-			        respSet[server.second] = resp;
-			    } catch (rpc::timeout &t) {
-			        // will display a message like
-			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
-			        std::cout << t.what() << std::endl;
-			        // exit(0);
-			    } catch (rpc::rpc_error &e) {
-			    	printf("SOMETHING BAD HAPPEND\n");
-				    std::cout << std::endl << e.what() << std::endl;
-				    std::cout << "in function " << e.get_function_name() << ": ";
-
-				    using err_t = std::tuple<int, std::string>;
-				    auto err = e.get_error().as<err_t>();
-				    std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
-				              << std::endl;
-				    return std::make_tuple(1, "ERR");
-			    }
-    		}
-		}
-		// release semaphor on row
-		unlockPrimary();
-		debugDetailed("---CPUTREQ entered - primary: %s\n", "calling combineResps");
-		// return resp tuple
-		resp = combineResps(respSet);
-		return resp;
-		//return respSet[myIp];
-    } else {
-    	debugDetailed("---CPUTREQ entered - I am NOT primary: %s\n", "sending to primary");
-    	// send put Req to primary //TODO need to handle case where primary has failed
-    	//std::cout << "received a put request and reached putReq fct " << std::endl;
-    	rpc::client client(std::get<0>(primaryIp), std::get<1>(primaryIp));
-    	resp = client.call("cput", row, col, val, newVal).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
-    	//debugDetailed("---PUTREQ entered - I am NOT primary: %s\n", "local put completed");
-    	return resp;
-    }
-    return std::make_tuple(-1, "ERR");
-
-}
-
-std::tuple<int, std::string> del(std::string row, std::string col) {
-	debugDetailed("%s\n", "del entered");
-	printKvMap();
-	printKvLoc();
-	lockRow(row);
-	if (kvLoc.count(row) > 0) {
-		if (kvLoc[row].count(col) > 0) {
-			if (kvLoc[row][col] != -1) {
-				if (kvLoc[row][col] == 1) {
-					cacheSize = cacheSize - kvMap[row][col].length();
-					
-				}
-				kvMap[row].erase(col);
-				kvLoc[row][col] = -1;	
-				debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());	
-				printKvMap();	
-				unlockRow(row);
-				logCommand(DELETE, 2, row, col, row, row);
-				return std::make_tuple(0, "OK");
-			} else {
-				unlockRow(row);
-			}
-			
-		} else {
-			unlockRow(row);
-		}
-	} else {
-		unlockRow(row);
-	}
-	
-	debugDetailed("---DELETE val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
-	printKvMap();
-	//logCommand(DELETE, 2, row, col, row, row);
-	return std::make_tuple(1, "No such row, column pair");
-}
-
-
-std::tuple<int, std::string> delReq(std::string row, std::string col) {
-	debugDetailed("---delREQ entered, primary is: %s:%d\n", std::get<0>(primaryIp).c_str(), std::get<1>(primaryIp));
-	std::map<std::tuple<std::string, int>, resp_tuple> respSet; // map from ip:port -> resp tuple 
-	resp_tuple resp;
-	// handle whether of not receiving node is a primary
-    if (isPrimary() == 1) {
-    	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
-    	lockPrimary();	
-    	respSet[myIp] = del(row, col);
-    	debugDetailed("---delREQ entered - I am primary: %s\n", "local del completed");
-    	for (const auto& server : clusterMembers) {
-    		// server.first is serverIndx, server.second is tuple (ip string, port int)
-    		if (server.second != myIp) {
-    			rpc::client client(std::get<0>(server.second), std::get<1>(server.second));
-				try { // TODO - on timeout, query connection state and retry if connected
-			        // default timeout is 5000 milliseconds TODO: adjust timeout as needed
-			        const uint64_t short_timeout = 5000;
-			        client.set_timeout(short_timeout);
-			        debugDetailed("---delREQ entered: %s: %s:%d\n", "trying remote del to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
-			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
-			        resp = client.call("delApproved", row, col).as<resp_tuple>();
-			        respSet[server.second] = resp;
-			    } catch (rpc::timeout &t) {
-			        // will display a message like
-			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
-			        std::cout << t.what() << std::endl;
-			        // exit(0);
-			    } catch (rpc::rpc_error &e) {
-			    	printf("SOMETHING BAD HAPPEND\n");
-				    std::cout << std::endl << e.what() << std::endl;
-				    std::cout << "in function " << e.get_function_name() << ": ";
-
-				    using err_t = std::tuple<int, std::string>;
-				    auto err = e.get_error().as<err_t>();
-				    std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
-				              << std::endl;
-				    return std::make_tuple(1, "ERR");
-			    }
-    		}
-		}
-		// release semaphor on row
-		unlockPrimary();
-		debugDetailed("---delREQ entered - primary: %s\n", "calling combineResps");
-		// return resp tuple
-		resp = combineResps(respSet);
-		return resp;
-		//return respSet[myIp];
-    } else {
-    	debugDetailed("---delREQ entered - I am NOT primary: %s\n", "sending to primary");
-    	// send put Req to primary //TODO need to handle case where primary has failed
-    	//std::cout << "received a put request and reached putReq fct " << std::endl;
-    	rpc::client client(std::get<0>(primaryIp), std::get<1>(primaryIp));
-    	resp = client.call("del", row, col).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
-    	//debugDetailed("---PUTREQ entered - I am NOT primary: %s\n", "local put completed");
-    	return resp;
-    }
-    return std::make_tuple(-1, "ERR");
-
-}
 
 
 void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, int len1, int len2, int len3, int len4) {
-	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
-	if (strncmp(comm, "PUT", 3) == 0) {
+    numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
+    if (strncmp(comm, "PUT", 3) == 0) {
 		std::string rowString(arg1, len1);
 		std::string colString(arg2, len2);
 		std::string valString(arg3, len3);
@@ -1253,15 +1143,37 @@ int notifyOfNewLeader(std::string newLeader) {
     return 0;
 }
 
+int notifyOfNewNode(std::string newNode) {
+    debug("New node %s in cluster!\n", newNode.c_str());
+    if(clusterNodesToSkip.count(newNode) > 0) {
+        debug("Node %s in cluster was previously dead. Removing from set of dead nodes!\n", newNode.c_str());
+        clusterNodesToSkip.erase(newNode);
+    }
+    return 0;
+}
+
 void registerWithMasterNode() {
     debug("Registering with masterNode at %s\n", masterNodeAddrPort.c_str());
-    int masterNodePort = stoi(masterNodeAddrPort.substr(masterNodeAddrPort.find(":")+1));
-	std::string masterNodeAddr = masterNodeAddrPort.substr(0, masterNodeAddrPort.find(":"));
-	rpc::client masterNodeRPCClient(masterNodeAddr, masterNodePort);
+	rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
     std::tuple<int, std::string> resp = masterNodeRPCClient.call("registerWithMaster", myAddrPortForFrontend).as<std::tuple<int, std::string>>();
     myClusterLeader = std::get<1>(resp);
     debug("%s\n", "Finished registering with masterNode");
     debug("Cluster leader set to %s\n", myClusterLeader.c_str());
+}
+
+void getClusterNodes() {
+    debug("getClusterNodes: Requesting cluster nodes from masterNode at %s\n", masterNodeAddrPort.c_str());
+	rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
+    std::deque<server_addr_tuple> resp = masterNodeRPCClient.call("getClusterNodes", myAddrPortForFrontend).as<std::deque<server_addr_tuple>>();
+
+    for(server_addr_tuple serverInfo : resp) {
+        std::string serverKVSAddrPort = std::get<2>(serverInfo);
+        std::string serverAdminAddrPort = std::get<3>(serverInfo);
+        debug("Adding cluster member: (%s, %s)\n", serverKVSAddrPort.c_str(), serverAdminAddrPort.c_str());
+        clusterMembers.push_back(serverKVSAddrPort);
+        serverKVSPortToAdminPortMap[serverKVSAddrPort] = serverAdminAddrPort;
+    }
+    debug("%s\n", "Finished retrieving all cluster members from masterNode");
 }
 
 void sigTermHandler(int signum) {
@@ -1273,6 +1185,10 @@ void sigTermHandler(int signum) {
 void *kvServerThreadFunc(void *arg) {
     signal(SIGTERM, sigTermHandler);
     pthread_detach(pthread_self());
+
+    registerWithMasterNode();
+    getClusterNodes();
+
     debug("Server thread %lu started to communicate with frontend servers on port: %d\n", kvServerWithFrontendThreadId, kvsPortForFrontend);
 	rpc::server srv(kvsPortForFrontend);
 
@@ -1284,6 +1200,7 @@ void *kvServerThreadFunc(void *arg) {
 	srv.bind("del", &delReq);
 	srv.bind("get", &get);
 	srv.bind("notifyOfNewLeader", &notifyOfNewLeader);
+	srv.bind("notifyOfNewNode", &notifyOfNewNode);
 
 	srv.async_run(30);
 
@@ -1314,12 +1231,11 @@ void adminReviveServer() {
     }
 }
 
-// Returns true. Used to check if server is alive.
+// Returns true if the kv thread is running. Used to check if server is alive.
 bool heartbeat() {
     debug("%s\n", "Heartbeat requested! Returning true.");
-    return true;
+    return (kvServerWithFrontendThreadId != 0);
 }
-
 
 void signalHandler(int sig) {
 	debugDetailed("%s\n", "signal caught by server");	
@@ -1329,9 +1245,7 @@ void signalHandler(int sig) {
 		// quit server
 		rpc::this_server().stop();
 		exit(0);
-		
 	}
-	
 }
 
 /* sets up signal handler given @signum and @handler and prints error if necessary */
@@ -1340,7 +1254,6 @@ void makeSignal(int signum, sighandler_t handler) {
 		perror("invalid: ");
 	}
 }
-
 
 int main(int argc, char *argv[]) {	
 	int opt;
@@ -1398,7 +1311,6 @@ int main(int argc, char *argv[]) {
         exit(-1);
     }
 
-
     // parse config file
     int serverNum = 0;
     char buffer[300];
@@ -1412,9 +1324,8 @@ int main(int argc, char *argv[]) {
             myAddrPortForFrontend = line.substr(0, line.find(","));
             myAddrPortForAdmin = line.substr(line.find(",")+1);
             try {
-                kvsPortForFrontend = stoi(myAddrPortForFrontend.substr(myAddrPortForFrontend.find(":")+1));
-                debugDetailed("kvsPortForFrontend: %d\n", kvsPortForFrontend);
-                kvsPortForAdmin = stoi(myAddrPortForAdmin.substr(myAddrPortForAdmin.find(":")+1));
+                kvsPortForFrontend = getIPPort(myAddrPortForFrontend);
+                kvsPortForAdmin = getIPPort(myAddrPortForAdmin);
                 if(kvsPortForFrontend <= 0 || kvsPortForAdmin <= 0) {
                     fprintf(stderr, "Invalid port provided! Exiting\n");
                     exit(-1);
@@ -1429,9 +1340,6 @@ int main(int argc, char *argv[]) {
         serverNum += 1;
     }
     fclose(f);
-
-    setClusterMembership(serverIdx); // TODO need to fix this funciton
-    
 
     //initialize semaphores
     if (pthread_mutex_init(&checkpointSemaphore, NULL) != 0) {
@@ -1475,8 +1383,6 @@ int main(int argc, char *argv[]) {
  	printKvMap();
  	printKvLoc();
  	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
-
-    registerWithMasterNode();
 
     pthread_create(&kvServerWithFrontendThreadId, NULL, &kvServerThreadFunc, NULL);
 

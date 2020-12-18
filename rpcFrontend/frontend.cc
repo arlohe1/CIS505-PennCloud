@@ -340,7 +340,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string 
                 if(isAlive) {
                     // Double timeout and try again if node is still alive
                     timeout *= 2;
-                    log("Node "+targetServer+" is still alive! Doubling timeout and trying again.");
+                    log("Node "+targetServer+" is still alive! Doubling timeout to "+std::to_string(timeout)+" and trying again.");
                 } 
             } catch(rpc::timeout &t) {
                 // Resetting timeout for new server
