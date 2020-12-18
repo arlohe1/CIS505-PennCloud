@@ -19,6 +19,7 @@
 #include <rpc/client.h>
 #include <rpc/rpc_error.h>
 #include <regex>
+#include <resolv.h>
 
 std::string greeting =
 		"+OK Server ready (Author: Prasanna Poudyal / poudyal)\r\n";
@@ -111,6 +112,17 @@ void log(std::string str) {
 		std::cerr << "<AND THE STARTING 500 BYTES> " << str.substr(0, 500)
 				<< "\n";
 	}
+}
+
+bool do_write(int fd, char *buf, int len) {
+	int sent = 0;
+	while (sent < len) {
+		int n = write(fd, &buf[sent], len - sent);
+		if (n < 0)
+			return false;
+		sent += n;
+	}
+	return true;
 }
 
 int readNBytes(int *client_fd, int n, char *buffer) {
@@ -805,6 +817,90 @@ struct http_request parseRequest(int *client_fd) {
 	return req;
 }
 
+// Attributed to https://stackoverflow.com/questions/1688432/querying-mx-record-in-c-linux and
+// https://stackoverflow.com/questions/52727565/client-in-c-use-gethostbyname-or-getaddrinfo
+int getSocketExternalMail(const char *name) {
+	printf("%s\n", name);
+	char *mxs[10];
+	unsigned char response[NS_PACKETSZ];
+	ns_msg handle;
+	ns_rr rr;
+	int mx_index, ns_index, len;
+	char dispbuf[4096];
+	printf("here5\n");
+	if ((len = res_search(name, C_IN, T_MX, response, sizeof(response))) < 0) {
+		return -1;
+	}
+
+	if (ns_initparse(response, len, &handle) < 0) {
+		return 0;
+	}
+
+	len = ns_msg_count(handle, ns_s_an);
+	if (len < 0)
+		return 0;
+	printf("here6\n");
+	for (mx_index = 0, ns_index = 0; mx_index < 10 && ns_index < len;
+			ns_index++) {
+		if (ns_parserr(&handle, ns_s_an, ns_index, &rr)) {
+			continue;
+		}
+		ns_sprintrr(&handle, &rr, NULL, NULL, dispbuf, sizeof(dispbuf));
+		if (ns_rr_class(rr) == ns_c_in && ns_rr_type(rr) == ns_t_mx) {
+			char mxname[MAXDNAME];
+			dn_expand(ns_msg_base(handle),
+					ns_msg_base(handle) + ns_msg_size(handle),
+					ns_rr_rdata(rr) + NS_INT16SZ, mxname, sizeof(mxname));
+			mxs[mx_index++] = strdup(mxname);
+		}
+	}
+	printf("here7\n");
+	const char *hostname = mxs[mx_index - 1];
+	const char *port = "25";
+	struct hostent *host;
+	if ((host = gethostbyname(hostname)) == nullptr) {
+		perror(hostname);
+		return -1;
+	}
+	struct addrinfo hints = { 0 }, *addrs;
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_protocol = IPPROTO_TCP;
+
+	const int ERROR_STATUS = -1;
+	const int status = getaddrinfo(hostname, port, &hints, &addrs);
+	if (status != 0) {
+		fprintf(stderr, "%s: %s\n", hostname, gai_strerror(status));
+		return -1;
+	}
+	int sfd, err;
+	for (struct addrinfo *addr = addrs; addr != nullptr; addr = addr->ai_next) {
+		sfd = socket(addrs->ai_family, addrs->ai_socktype, addrs->ai_protocol);
+		if (sfd == ERROR_STATUS) {
+			err = errno;
+			continue;
+		}
+
+		if (connect(sfd, addr->ai_addr, addr->ai_addrlen) == 0) {
+			printf("here9\n");
+			break;
+		}
+
+		err = errno;
+		sfd = ERROR_STATUS;
+		close(sfd);
+	}
+	printf("here8\n");
+	freeaddrinfo(addrs);
+
+	if (sfd == ERROR_STATUS) {
+		fprintf(stderr, "%s: %s\n", hostname, strerror(err));
+		return -1;
+	}
+
+	return sfd;
+}
+
 std::string escape(std::string input) {
 	std::string output = "";
 	output.reserve(input.size());
@@ -1132,6 +1228,8 @@ struct http_response processRequest(struct http_request &req) {
 							"<form action=\"/compose\" method=\"POST\"> <input type = \"submit\" value=\"Compose Email\" /></form>"
 							"<form action=\"/files/" + userRootDir
 							+ "\" method=\"POST\"> <input type = \"submit\" value=\"Storage Service\" /></form>"
+									"<form action=\"/change-password\" method=\"POST\"><input type = \"submit\" value=\"Change Password\" /></form>"
+									"</body></html>"
 									"<form action=\"/logout\" method=\"POST\"><input type = \"submit\" value=\"Logout\" /></form>"
 									"</body></html>";
 			resp.headers["Content-length"] = std::to_string(
@@ -1244,10 +1342,20 @@ struct http_response processRequest(struct http_request &req) {
 			std::string getRespMsg = kvsResponseMsg(getResp);
 			std::stringstream ss(getRespMsg);
 			std::string to;
+			std::string subject;
 			std::string display = "";
 			if (getRespMsg != "") {
 				while (std::getline(ss, to, '\n')) {
 					if (to.rfind("From <", 0) == 0) {
+						std::getline(ss, subject, '\n');
+						std::string title = "";
+						std::string title1 = "";
+						std::string title2 = "";
+						unsigned first = to.find('<');
+						unsigned last = to.find('>');
+						title = to.substr(first + 1, last - first - 1);
+						title1 = subject.substr(9);
+						title2 = to.substr(last + 2);
 						display +=
 								"<ul style=\"border-top: 1px solid black; padding:15px; margin: 0;\">";
 						display +=
@@ -1255,9 +1363,13 @@ struct http_response processRequest(struct http_request &req) {
 										"<form action=\"/email\" method=\"post\" style=\"margin: 0;\">"
 										"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to) + "\" />"
-										+ "<label for =\"submit\" style=\"padding-right: 20px;\">"
-										+ escape(to)
-										+ "</label><input type=\"submit\" name=\"submit\" value=\"View\" />"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 300px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+										+ escape(title) + "</label>"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 300px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+										+ escape(title1) + "</label>"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; vertical-align: middle;\">"
+										+ escape(title2) + "</label>"
+										+ "<input type=\"submit\" name=\"submit\" value=\"View\" />"
 												"</form>"
 												"<form style=\"padding-left:15px; padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
 												"<input type=\"hidden\" name=\"type\" value=\"reply\">"
@@ -1289,8 +1401,10 @@ struct http_response processRequest(struct http_request &req) {
 							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
 							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input type = \"submit\" value=\"Dashboard\" /></form>"
-							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Compose Email\"/></form></div>"
-							+ display + "</body></html>";
+							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Compose Email\"/></form></div>" "<div style=\"padding-left: 15px;padding-bottom: 5px;padding-top: 10px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 300px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
+							"<label style=\"margin-right: 20px; width: 300px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Subject</label>"
+							"<label style=\"margin-right: 20px; vertical-align:middle;\">Date</label>"
+							"</div>" + display + "</body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -1325,19 +1439,25 @@ struct http_response processRequest(struct http_request &req) {
 			std::string getRespMsg = kvsResponseMsg(getResp);
 			int getRespStatusCode = kvsResponseStatusCode(getResp);
 			std::string existing = "";
+			std::string fullSubject = "";
 			std::string fullHeader = "";
 			std::string rec = "";
+			std::string sub = "";
 			if (header != "" && (type == "forward" || type == "reply")) {
 				std::stringstream ss(getRespMsg);
 				std::string to;
 				if (getRespMsg != "") {
 					bool found = false;
+					bool foundHeader = false;
 					while (std::getline(ss, to, '\n')) {
-						if (!found && to.rfind(header, 0) == 0) {
+						if (!foundHeader && to.rfind(header, 0) == 0) {
 							fullHeader = to;
-							found = true;
-						} else if (found) {
-							if (to.rfind("From <", 0) == 0) {
+							foundHeader = true;
+						} else if (foundHeader) {
+							if (!found) {
+								fullSubject = to;
+								found = true;
+							} else if (to.rfind("From <", 0) == 0) {
 								break;
 							} else {
 								existing += to + "\n";
@@ -1350,15 +1470,18 @@ struct http_response processRequest(struct http_request &req) {
 					if (type == "forward") {
 						temp =
 								"\n\n\n----------------------------------------\n\nFwd:&nbsp;"
-										+ fullHeader + "\n\n";
+										+ fullHeader + fullSubject + "\n\n";
+						sub = "Fwd: "
+								+ fullSubject.substr(9, fullSubject.size() - 2);
 					} else {
 						temp =
 								"\n\n\n----------------------------------------\n\nRe:&nbsp;"
-										+ fullHeader + "\n\n";
+										+ fullHeader + fullSubject + "\n\n";
 						unsigned first = fullHeader.find('<');
 						unsigned last = fullHeader.find('>');
 						rec = fullHeader.substr(first + 1, last - first - 1);
-
+						sub = "Re: "
+								+ fullSubject.substr(9, fullSubject.size() - 2);
 					}
 					temp += existing;
 					existing = temp;
@@ -1369,14 +1492,17 @@ struct http_response processRequest(struct http_request &req) {
 							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
 							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/mailbox\" method=\"POST\"> <input type = \"submit\" value=\"Discard\" /></form>"
-							"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
+							"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"subject\")[0].value = encodeURIComponent(document.getElementsByName(\"subject\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
 							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Send\" /></form></div>"
 							"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
 							"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
-							"<label form=\"compose\" for=\"to\" style=\"height:30px; display: flex; align-items: center;\">To:&nbsp;</label><input required form=\"compose\" style=\"flex:1;\" name=\"to\" type=\"text\" value=\""
-							+ rec
-							+ "\"/></div>"
-									"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
+							"<label form=\"compose\" for=\"to\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">To:&nbsp;</label><input required form=\"compose\" style=\"flex:1;\" name=\"to\" type=\"text\" value=\""
+							+ rec + "\"/></div>"
+							+ "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
+									"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
+									"<label form=\"compose\" for=\"subject\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">Subject:&nbsp;</label><input required form=\"compose\" style=\"flex:1;\" name=\"subject\" type=\"text\" value=\""
+							+ sub + "\"/></div>"
+							+ "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
 									"<div style=\"padding:15px\">"
 									"<textarea name=\"content\" form=\"compose\" style=\"width:100%; height: 450px;\">"
 							+ existing + "</textarea>"
@@ -1400,6 +1526,7 @@ struct http_response processRequest(struct http_request &req) {
 				std::string getRespMsg = kvsResponseMsg(getResp);
 				std::stringstream ss(getRespMsg);
 				std::string to;
+				std::string subject;
 				std::string display = "";
 				std::string header = decodeURIComponent(req.formData["header"]);
 				header = decodeURIComponent(header);
@@ -1416,9 +1543,24 @@ struct http_response processRequest(struct http_request &req) {
 					std::string message = "";
 					while (std::getline(ss, to, '\n')) {
 						if (!found && to.rfind(header, 0) == 0) {
+							std::getline(ss, subject, '\n');
+							std::string title = "From: ";
+							std::string title1 = "Subject: ";
+							std::string title2 = "";
+							unsigned first = to.find('<');
+							unsigned last = to.find('>');
+							title += to.substr(first + 1, last - first - 1);
+							title1 += subject.substr(9);
+							title2 = to.substr(last + 2);
 							display +=
 									"<ul style=\"border-bottom: 1px solid black; padding:15px; margin: 0;\">";
-							display += escape(to);
+							display +=
+									"<label style=\"margin-right: 20px; margin-bottom: 10px; width: 100%; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+											+ escape(title) + "</label>"
+											+ "<label style=\"margin-right: 20px; margin-bottom: 10px; width: 100%; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+											+ escape(title1) + "</label>"
+											+ "<label style=\"margin-right: 20px; margin-bottom: 10px; vertical-align: middle;\">"
+											+ escape(title2) + "</label>";
 							display += "</ul>";
 							found = true;
 							display +=
@@ -1540,6 +1682,17 @@ struct http_response processRequest(struct http_request &req) {
 					to.replace(index, 2, "\r");
 					index += 2;
 				}
+				std::string subject = decodeURIComponent(
+						req.formData["subject"]);
+				subject = decodeURIComponent(subject);
+				index = 0;
+				while (true) {
+					index = subject.find("%D", index);
+					if (index == std::string::npos)
+						break;
+					subject.replace(index, 2, "\r");
+					index += 2;
+				}
 				std::string message = "";
 				if (req.formData.find("content") != req.formData.end()) {
 					message = req.formData["content"];
@@ -1554,11 +1707,10 @@ struct http_response processRequest(struct http_request &req) {
 					message.replace(index, 2, "\r");
 					index += 2;
 				}
-				std::vector < std::string > toSend;
 				std::istringstream ss { to };
 				std::string token;
 				bool local;
-				std::string ending = "@localhost";
+				std::string ending = "@penncloud.com";
 				std::string sender = req.cookies["username"] + ending;
 				time_t rawtime;
 				struct tm *timeinfo;
@@ -1567,8 +1719,19 @@ struct http_response processRequest(struct http_request &req) {
 				std::string temp = "From <" + sender + "> " + asctime(timeinfo)
 						+ "\n";
 				temp[temp.length() - 2] = '\r';
+				temp += "Subject: " + subject + "\r\n";
+				temp += message;
+				temp += "\r\n";
+				std::string tempNotLocal = "Subject: " + subject + "\r\n";
+				tempNotLocal += message;
+				tempNotLocal += "\r\n";
 				while (std::getline(ss, token, ',')) {
 					if (!token.empty()) {
+						size_t first = token.find_first_not_of(' ');
+						if (std::string::npos != first) {
+							size_t last = token.find_last_not_of(' ');
+							token = token.substr(first, (last - first + 1));
+						}
 						if (token.length() >= ending.length()) {
 							local = (0
 									== token.compare(
@@ -1578,7 +1741,38 @@ struct http_response processRequest(struct http_request &req) {
 							local = false;
 						}
 						if (!local) {
-							toSend.push_back(token);
+							std::size_t found = token.find("@");
+							if (found != std::string::npos) {
+								int sd = getSocketExternalMail(
+										token.substr(found + 1).c_str());
+								if (sd > 0) {
+									char helo[] = "HELO penncloud.com\r\n";
+									do_write(sd, helo, sizeof(helo) - 1);
+									char buf[1000];
+									read(sd, &buf[0], 1000);
+									std::string mailStr = "MAIL FROM:<" + sender
+											+ ">\r\n";
+									send(sd, mailStr.c_str(), mailStr.length(),
+											0);
+									read(sd, &buf[0], 1000);
+									std::string rcptStr = "RCPT TO:<" + token
+											+ ">\r\n";
+									send(sd, rcptStr.c_str(), rcptStr.length(),
+											0);
+									read(sd, &buf[0], 1000);
+									char data[] = "DATA\r\n";
+									do_write(sd, data, sizeof(data) - 1);
+									read(sd, &buf[0], 1000);
+									send(sd, tempNotLocal.c_str(),
+											tempNotLocal.length(), 0);
+									char ending[] = ".\r\n";
+									do_write(sd, ending, sizeof(ending) - 1);
+									read(sd, &buf[0], 1000);
+									char quit[] = "QUIT\r\n";
+									do_write(sd, quit, sizeof(quit) - 1);
+									read(sd, &buf[0], 1000);
+								}
+							}
 						} else {
 							std::string addr = token.substr(0, token.find("@"));
 							resp_tuple getResp = getKVS(addr, addr, "mailbox");
@@ -1586,8 +1780,6 @@ struct http_response processRequest(struct http_request &req) {
 							int getRespStatusCode = kvsResponseStatusCode(
 									getResp);
 							if (getRespStatusCode == 0) {
-								temp += message;
-								temp += "\r\n";
 								std::string final = temp;
 								final += current;
 								resp_tuple resp2 = cputKVS(addr, addr,
@@ -1632,6 +1824,97 @@ struct http_response processRequest(struct http_request &req) {
 							"<input type = \"submit\" value=\"Logout\" /></form></body></html>";
 			resp.headers["Content-length"] = message.size();
 			resp.content = message;
+		}
+	} else if (req.filepath.compare("/change-password") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+			std::string test = "";
+			if (req.cookies.find("error") != req.cookies.end()) {
+				test = "<p style=\"color:red\";>" + req.cookies["error"]
+						+ "</p><br/>";
+				resp.cookies.erase("error");
+			}
+			printf("HERHEHREHRHERHE\n");
+			resp.content =
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
+							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
+							"center;\">" + test
+							+ "<form id=\"change\" style=\"display: block;\""
+							+ "action=\"/change\" "
+									"enctype=\"multipart/form-data\" "
+									"method=\"POST\""
+									"<label for =\"old\">Current Password:</label><br/><input required name=\"old\" type=\"password\"/><br/>"
+									"<label for=\"new\">New Password:</label><br/><input required name=\"new\" "
+									"type=\"password\"/><br/>"
+									"<label for=\"confirm_new\">Confirm Password:</label><br/><input required "
+									"name=\"confirm_new\" "
+									"type=\"password\"/><br/>"
+									"<br/><input type=\"submit\" name=\"submit\" value=\"Change Password\"><br/>"
+									"</form>"
+									"</body></html>";
+			resp.headers["Content-length"] = std::to_string(
+					resp.content.size());
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare("/change") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			if (req.formData["old"].size() == 0) {
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/change-password";
+				resp.cookies["error"] = "Current password is required.";
+			} else if (req.formData["new"].size() == 0
+					|| std::all_of(req.formData["new"].begin(),
+							req.formData["new"].end(), isspace)) {
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/change-password";
+				resp.cookies["error"] =
+						"New password cannot be empty or only spaces.";
+			} else if (req.formData["new"] != req.formData["confirm_new"]) {
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/change-password";
+				resp.cookies["error"] = "New passwords do not match.";
+			} else {
+				resp_tuple getResp = getKVS(req.cookies["username"],
+						req.cookies["username"], "password");
+				std::string getRespMsg = kvsResponseMsg(getResp);
+				int getRespStatusCode = kvsResponseStatusCode(getResp);
+				if (getRespMsg != req.formData["old"]
+						|| getRespStatusCode != 0) {
+					resp.status_code = 307;
+					resp.status = "Temporary Redirect";
+					resp.headers["Location"] = "/change-password";
+					resp.cookies["error"] = "Current password is not correct.";
+				} else {
+					resp_tuple resp2 = cputKVS(req.cookies["username"],
+							req.cookies["username"], "password",
+							req.formData["old"], req.formData["new"]);
+					int respStatus2 = kvsResponseStatusCode(resp2);
+					if (respStatus2 != 0) {
+						resp.status_code = 307;
+						resp.status = "Temporary Redirect";
+						resp.headers["Location"] = "/change-password";
+						resp.cookies["error"] =
+								"Error updating password or current password is not correct.";
+					} else {
+						resp.status_code = 307;
+						resp.status = "Temporary Redirect";
+						resp.headers["Location"] = "/dashboard";
+					}
+				}
+			}
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
 		}
 	} else {
 		if (req.cookies.find("username") != req.cookies.end()) {
@@ -1711,17 +1994,6 @@ void* handleClient(void *arg) {
 	(NULL);
 }
 
-bool do_write(int fd, char *buf, int len) {
-	int sent = 0;
-	while (sent < len) {
-		int n = write(fd, &buf[sent], len - sent);
-		if (n < 0)
-			return false;
-		sent += n;
-	}
-	return true;
-}
-
 void* handle_smtp_connections(void *arg) {
 	sigset_t newmask;
 	sigemptyset(&newmask);
@@ -1749,18 +2021,18 @@ void* handle_smtp_connections(void *arg) {
 	bool checked = false;
 	bool alreadySet;
 	int state = 0;
-	char helo[] = "250 localhost\r\n";
+	char helo[] = "250 penncloud.com\r\n";
 	char stateError[] = "503 Bad sequence of commands\r\n";
 	char paramError[] = "501 Syntax error in parameters or arguments\r\n";
 	char commandError[] = "500 Syntax error, command unrecognized\r\n";
-	char quit[] = "221 localhost Service closing transmission channel\r\n";
+	char quit[] = "221 penncloud.com Service closing transmission channel\r\n";
 	char ok[] = "250 OK\r\n";
-	char localhost[] = "@localhost";
+	char penncloud[] = "@penncloud.com";
 	char notLocalError[] = "551 User not local\r\n";
 	char noUserError[] = "550 No such user here\r\n";
 	char intermediateReply[] =
 			"354 Start mail input; end with <CRLF>.<CRLF>\r\n";
-	char shutDown[] = "421 localhost Service not available\r\n";
+	char shutDown[] = "421 penncloud.com Service not available\r\n";
 	while (true) {
 		alreadySet = false;
 		if (checked) {
@@ -1773,7 +2045,6 @@ void* handle_smtp_connections(void *arg) {
 		else
 			start = 0;
 		checked = true;
-		printf("%s\n", buf);
 		// Check for complete command in unchecked or newly read buffer.
 		for (int i = start; i < len - 1; i++) {
 			if (buf[i] == '\r' && buf[i + 1] == '\n') {
@@ -1869,7 +2140,7 @@ void* handle_smtp_connections(void *arg) {
 							checkIndex = 0;
 							bool validDomain = true;
 							for (int j = i - 11; j < i - 1; j++) {
-								if (tolower(buf[j]) != localhost[checkIndex])
+								if (tolower(buf[j]) != penncloud[checkIndex])
 									validDomain = false;
 								checkIndex++;
 							}
@@ -2213,7 +2484,7 @@ int initialize_socket(int port_no, bool address, bool datagram) {
 
 int main(int argc, char *argv[]) {
 	/* Set signal handler */
-	//signal(SIGINT, sigint_handler);
+//signal(SIGINT, sigint_handler);
 	/* Initialize mutex to access fd set */
 	if (pthread_mutex_init(&fd_mutex, NULL) != 0)
 		log("Couldn't initialize mutex for fd set");
@@ -2364,8 +2635,8 @@ int main(int argc, char *argv[]) {
 	sigset_t empty_set;
 	sigemptyset(&empty_set);
 
-	//set up admin account (preferably in only one place: load balancer) TODO
-	//putKVS("admin", "password", "505");
+//set up admin account (preferably in only one place: load balancer) TODO
+//putKVS("admin", "password", "505");
 
 	while (!shut_down) {
 		/* Initialize read set for select and call select */
