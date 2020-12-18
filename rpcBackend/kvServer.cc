@@ -7,7 +7,6 @@
 #include <sys/resource.h>
 #include <pthread.h>
 
-
 #include <rpc/server.h>
 #include "rpc/client.h"
 #include "rpc/rpc_error.h"
@@ -33,12 +32,15 @@
 #include <ctime>
 #include <tuple>
 #include <string>
+#include <fstream>
+#include <streambuf>
 
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
 #define COM_PER_CHECKPOINT 10
 #define TIMEOUT_MILLISEC 10000
+#define CHECKPOINT_CNT_FILE "checkpointNum.txt"
 
 enum Command {GET, PUT, CPUT, DELETE};
 
@@ -383,6 +385,71 @@ int unlockCheckpoint() {
 	return 0;
 }
 
+// gets header from a newly opened row file in checkpoint folder
+int getValSize(FILE* colFilePtr) {
+	char headerBuf[MAX_LEN_LOG_HEADER];
+	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
+	// read from column file the formatted length
+	if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
+		perror("invalid fgets when trying to read col file reader: ");	
+		return -1;
+	}
+	headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
+	int valLen = (atoi(headerBuf));
+	debugDetailed("getValSize returns len:%d\n", valLen);
+	return valLen;
+	
+}
+
+int getCurrCheckpointCnt() {
+	int lastCnt;
+	FILE* cntFile;
+	if ((cntFile = fopen(CHECKPOINT_CNT_FILE, "r")) == NULL) {
+		lastCnt = 0;
+	} else {
+		lastCnt = getValSize(cntFile);
+		fclose(cntFile);
+	}
+	return lastCnt;
+}
+
+void updateCheckpointCount() {
+	// try to open file - if failed (numCheckpoint is 1), else read and update
+	FILE* cntFile;
+	int lastCnt = getCurrCheckpointCnt();	
+	if ((cntFile = fopen(CHECKPOINT_CNT_FILE, "w")) == NULL) {
+		perror("error crating checkpoint cnt file: ");
+	}
+	fprintf(cntFile, "%d\n", lastCnt+1);
+	fclose(cntFile);
+}
+
+std::string readFileToString(char* filePath) {
+	std::ifstream logFile(filePath);
+	std::string str((std::istreambuf_iterator<char>(logFile)), std::istreambuf_iterator<char>());
+	return str;
+}
+
+resp_tuple sendUpdates(int lastLogNum) {
+	// lock primary semaphore - if this node is a primary, prevent it from performing new requests
+	lockPrimary();
+	int myLastLogNum = getCurrCheckpointCnt();
+	std::string logText;
+	if (lastLogNum == myLastLogNum) {
+		// send as string log.txt content
+		logText = readFileToString((char*) "log.txt");
+	} else {
+		std::string nextLog("logArchive/log");
+		nextLog = nextLog + std::to_string((lastLogNum + 1));
+		logText = readFileToString((char*) nextLog.c_str());
+		// send log{lastLogNum + 1} from archive folder
+	}
+	debugDetailed("----sendUpdates: sndr's lastLogNum: %d, myLastLogNum: %d, text response: %s\n", lastLogNum, myLastLogNum, logText.c_str());
+	unlockPrimary();
+	resp_tuple resp = std::make_tuple(myLastLogNum, logText);
+	return resp;
+}
+
 // TODO - make sure deleted rows are handled correclty
 void runCheckpoint() {
 	int valLen;
@@ -440,13 +507,26 @@ void runCheckpoint() {
 	}
 	// cd back out to server directory
 	chdir("..");
+	updateCheckpointCount();
 	// clear logfile if not currently replaying log
-	if (replay == 0) {
-		FILE* logFilePtr;
-		logFilePtr = fopen("log.txt", "w");
+	//if (replay == 0) { // TODO - change this case to be based on whether we are evicting due to numComm or space limit
+		// if not a replay, archive current log - else (a checkpoint might happen due to eviction when replaying log - do not want to clear log file in this case)
+		int lastCnt = getCurrCheckpointCnt();
+		std::string archiveLog("logArchive/log");
+		archiveLog = archiveLog + std::to_string(lastCnt);
+		debugDetailed("----------checkpoint archive log: %s\n", archiveLog.c_str());
+		rename("log.txt", archiveLog.c_str());
+		FILE* logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
-		debugDetailed("%s,\n", "--------cleared log file and return--------");
-	}
+		debugDetailed("%s,\n", "--------moved old logfile to archive and created new--------");
+
+
+		// // if not a replay, clear file on checkpoint
+		// FILE* logFilePtr;
+		// logFilePtr = fopen("log.txt", "w");
+		// fclose(logFilePtr);
+		// debugDetailed("%s,\n", "--------cleared log file and return--------");
+	//}
 	numCommandsSinceLastCheckpoint = 0;
 	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
 	printKvMap();
@@ -476,22 +556,6 @@ FILE * openValFile(char* row, char* col, const char* mode) {
 	}
 	return ret;
 
-}
-
-// gets header from a newly opened row file in checkpoint folder
-int getValSize(FILE* colFilePtr) {
-	char headerBuf[MAX_LEN_LOG_HEADER];
-	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
-	// read from column file the formatted length
-	if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
-		perror("invalid fgets when trying to read col file reader: ");	
-		return -1;
-	}
-	headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
-	int valLen = (atoi(headerBuf));
-	debugDetailed("getValSize returns len:%d\n", valLen);
-	return valLen;
-	
 }
 
 
@@ -702,10 +766,12 @@ std::string getValDiskorLocal(std::string row, std::string col) {
 
 // helper to compare responses
 resp_tuple combineResps(std::map<std::string, resp_tuple> respSet) {
+	debugDetailed("---combineReps: %s\n", "entered");
 	resp_tuple firstVal = std::make_tuple(0, "");
 	resp_tuple resp = std::make_tuple(0, "");
 	for (const auto& x : respSet) {
 		//x.first is ip:port, x.second is resp_tuple
+		debugDetailed("---combineReps: %s\n", "respset iter");
     	if (firstVal == std::make_tuple(0, "")) {
     		firstVal = x.second;
     		resp = x.second;
@@ -716,10 +782,12 @@ resp_tuple combineResps(std::map<std::string, resp_tuple> respSet) {
     		}
     	}	
 	}
+	debugDetailed("---combineReps: %s\n", "completed loop over respSet");
 	if (firstVal == std::make_tuple(0, "")) {
 		debugDetailed("%s\n", "error in combine resps - empty respSet arg");
 		resp = std::make_tuple(-1, "Error: empty resp set");
 	}
+	debugDetailed("---combineReps: %s\n", "returned");
 	return resp;
 }
 
@@ -1025,7 +1093,6 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 			} else {
 				unlockRow(row);
 			}
-			
 		} else {
 			unlockRow(row);
 		}
@@ -1045,8 +1112,7 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 
 
 void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, int len1, int len2, int len3, int len4) {
-    numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
-    if (strncmp(comm, "PUT", 3) == 0) {
+	if (strncmp(comm, "PUT", 3) == 0) {
 		std::string rowString(arg1, len1);
 		std::string colString(arg2, len2);
 		std::string valString(arg3, len3);
@@ -1096,22 +1162,22 @@ int replayLog() {
 			break;
 		}
 		headerBuf[strlen(headerBuf)] = '\0'; //set newline to null
-		debugDetailed("buf read from log file is: %s\n", headerBuf);
+		//debugDetailed("buf read from log file is: %s\n", headerBuf);
 		comm = strtok(headerBuf, ","); // this should never be null if headerBuf is well formatted
 		for (i = 0; i < MAX_COMM_ARGS; i++) {
 			lens[i] = atoi(strtok(NULL, ","));
-			debugDetailed("---replayLog: lens[%d] = %d\n", i, lens[i]);
+			//debugDetailed("---replayLog: lens[%d] = %d\n", i, lens[i]);
 		}
 		for (i = 0; i < MAX_COMM_ARGS; i++) {
 			if (lens[i] != 0) {
-				debugDetailed("---replayLog: calloc'd args[%d] for lens[%d] = %d\n", i, i, lens[i]);
+				//debugDetailed("---replayLog: calloc'd args[%d] for lens[%d] = %d\n", i, i, lens[i]);
 				args[i] = (char*) calloc(lens[i], sizeof(char));
 			} else {
-				debugDetailed("---replayLog: calloc'd args[%d] is NULL\n", i);
+				//debugDetailed("---replayLog: calloc'd args[%d] is NULL\n", i);
 				args[i] = NULL;
 			}
 			if (args[i] != NULL) {
-				debugDetailed("---replayLog: reading into args[%d], lens[%d] = %d\n", i, i, lens[i]);
+				//debugDetailed("---replayLog: reading into args[%d], lens[%d] = %d\n", i, i, lens[i]);
 				fread(args[i], sizeof(char), lens[i], logfile);
 			}
 		}
@@ -1119,6 +1185,7 @@ int replayLog() {
 		// NOTE: uncomment lines below for debug statements, but this will casue 3 memory erros from one context when run in valgrind
 		//debugDetailed("header args - comm: %s, len1: %d, len2: %d, len3: %d, len4: %d\n", comm, lens[0], lens[1], lens[2], lens[3]);
 		//debugDetailed("parsed args - arg1: %s, arg2: %s, arg3: %s, arg4: %s\n", args[0], args[1], args[2], args[3]);
+		debugDetailed("---replayLog: %s\n", "calling function");
 		callFunction(comm, args[0], args[1], args[2], args[3], lens[0], lens[1], lens[2], lens[3]);
 
 
@@ -1182,18 +1249,76 @@ void sigTermHandler(int signum) {
     }
 }
 
+void getLoggingUpdates() {
+	//int myLastLogNum = getCurrCheckpointCnt();
+	// TODO need to add primary choosing here
+	debugDetailed("---getLoggingUpdates: %s\n", "entered");
+	if (isPrimary()) {
+		debugDetailed("---getLoggingUpdates: %s\n", "returned - primary");
+		return;
+	}
+
+	rpc::client client(getIPAddr(myClusterLeader), getIPPort(myClusterLeader));
+    
+    //resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
+    //int primaryLogNum = std::get<0>(resp);
+    // while (primaryLogNum != myLastLogNum) {
+    // 	// write log to file, replayLog, runCheckpnt
+    // 	FILE* nextLogFile = fopen("log.txt", "w");
+    // 	fwrite(std::get<1>(resp_tuple).c_str(), sizeof(char), std::get<1>(resp_tuple).length(), nextLogFile);
+    // 	fclose(nextLogFile);
+    // 	replayLog(); // this will trigger a checkpoint
+    // }
+    int myLastLogNum = getCurrCheckpointCnt();
+   	int primaryLogNum = 0;
+    do {
+    	myLastLogNum = getCurrCheckpointCnt();
+    	debugDetailed("------GETLOGGINGUPDATES: myLastLogNum: %d\n", myLastLogNum);
+    	resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); 
+    	primaryLogNum = std::get<0>(resp);
+    	std::string primaryLog = std::get<1>(resp);
+    	
+    	FILE* logFile = fopen((char*) "log.txt", "w");
+    	fwrite(primaryLog.c_str(), sizeof(char), primaryLog.length(), logFile);
+    	fclose(logFile);
+    	replayLog(); // this will trigger a checkpoint	
+    } while (myLastLogNum != primaryLogNum);
+    debugDetailed("---getLoggingUpdates: %s\n", "returned - non-primary");
+    return;
+
+}
+
+
+// Requests latest log files from primary node via getLoggingUpdates(). Should be run on boot to ensure data is
+// up-to-date.
+void loadLatestKVMapOnBoot() {
+ 	debug("%s\n", "kvMap before log replay or checkpoint: ");
+ 	printKvMap();
+ 	loadKvStoreFromDisk();
+ 	debug("%s\n", "kvMap before log replay: ");
+ 	printKvMap();
+ 	// get updates and most recent logfile from leader -- TODO: need to add function to get leader
+ 	getLoggingUpdates(); // this function will get logging updates and replay them as needed
+ 	debug("%s\n", "kvMap after log replay: ");
+ 	printKvMap();
+ 	printKvLoc();
+ 	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
+}
+
 void *kvServerThreadFunc(void *arg) {
     signal(SIGTERM, sigTermHandler);
     pthread_detach(pthread_self());
 
     registerWithMasterNode();
     getClusterNodes();
+    loadLatestKVMapOnBoot();
 
     debug("Server thread %lu started to communicate with frontend servers on port: %d\n", kvServerWithFrontendThreadId, kvsPortForFrontend);
 	rpc::server srv(kvsPortForFrontend);
 
 	srv.bind("putApproved", &put); 
 	srv.bind("put", &putReq);
+	srv.bind("sendUpdates", &sendUpdates);
 	srv.bind("cputApproved", &cput); 
 	srv.bind("cput", &cputReq);
 	srv.bind("delApproved", &del);
@@ -1280,7 +1405,7 @@ int main(int argc, char *argv[]) {
 	// set memory cache size
 	struct rlimit *rlim = (struct rlimit*) calloc(1, sizeof(struct rlimit));
 	getrlimit(RLIMIT_MEMLOCK, rlim);
-	maxCache = rlim->rlim_cur/3;
+	maxCache = rlim->rlim_cur/2;
 	fprintf(stderr, "total mem limit: %ld\n", rlim->rlim_cur);
 	fprintf(stderr, "cache mem limit: %d\n", maxCache);
 	startCacheThresh = maxCache / 2;
@@ -1372,17 +1497,6 @@ int main(int argc, char *argv[]) {
  		}
  		exit(-1);
  	}
-
- 	debug("%s\n", "kvMap before log replay or checkpoint: ");
- 	printKvMap();
- 	loadKvStoreFromDisk();
- 	debug("%s\n", "kvMap before log replay: ");
- 	printKvMap();
- 	replayLog();
- 	debug("%s\n", "kvMap after log replay: ");
- 	printKvMap();
- 	printKvLoc();
- 	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
 
     pthread_create(&kvServerWithFrontendThreadId, NULL, &kvServerThreadFunc, NULL);
 

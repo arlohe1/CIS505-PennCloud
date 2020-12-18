@@ -23,11 +23,10 @@ void isCorrectStrings(std::string exp, std::string resp) {
 }
 
 int main() {
-    //rpc::client c("localhost", rpc::constants::DEFAULT_PORT);
-    rpc::client c("127.0.0.1", 10000);
-    rpc::client c1("127.0.0.1", 10000);
-    rpc::client c2("127.0.0.1", 10002);
-    rpc::client c3("127.0.0.1", 10004);
+    rpc::client c("localhost", 10000);
+    rpc::client c1("localhost", 10000);
+    rpc::client c2("localhost", 10002);
+    rpc::client c3("localhost", 10004);
 
     try {
         std::string rowString("lianap");
@@ -56,7 +55,7 @@ int main() {
         
 
         // std::cout << "ON SERV(p=10002) put(lianap, file, homework 2) = ";
-        // resp = c3.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
+        // resp = c.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
         // std::cout << std::get<1>(resp) << std::endl;
         // isCorrect("OK", std::get<1>(resp));
 

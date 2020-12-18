@@ -29,9 +29,16 @@ serverfiles:
 clean:
 	rm -f kvServer
 	rm -f masterNode
+	rm -f server_1/checkpointNum.txt
+	rm -f server_2/checkpointNum.txt
+	rm -f server_3/checkpointNum.txt
 	: > server_1/log.txt # clear logfile
 	: > server_2/log.txt
 	: > server_3/log.txt
+	rm -r server_1/logArchive
+	rm -r server_2/logArchive
+	rm -r server_3/logArchive
+	mkdir server_1/logArchive server_2/logArchive server_3/logArchive
 	rm -r server_1/checkpoint/* # empties checkpoint directory (add -r for removing folders in checkpoint)
 	rm -r server_2/checkpoint/*
 	rm -r server_3/checkpoint/*
