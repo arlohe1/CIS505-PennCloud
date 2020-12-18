@@ -948,6 +948,7 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
             bool continueTrying = true;
             uint64_t timeout = TIMEOUT_MILLISEC;
             while(continueTrying) {
+                debugDetailed("Starting new rpc::client to primary %s\n", myClusterLeader.c_str());
                 rpc::client clusterLeaderClient(getIPAddr(myClusterLeader), getIPPort(myClusterLeader));
                 debugDetailed("Trying to forward %s to: primary with timeout %ld\n", kvsFunc.c_str(), timeout);
                 try {
