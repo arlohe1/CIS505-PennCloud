@@ -39,7 +39,7 @@
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
 #define COM_PER_CHECKPOINT 2
-#define TIMEOUT_MILLISEC 5000
+#define TIMEOUT_MILLISEC 1000
 #define CHECKPOINT_CNT_FILE "checkpointNum.txt"
 
 
@@ -479,7 +479,7 @@ resp_tuple sendUpdates(int lastLogNum) {
 		logText = readFileToString((char*) nextLog.c_str());
 		// send log{lastLogNum + 1} from archive folder
 	}
-	debugDetailed("----sendUpdates: sndr's lastLogNum: %d, myLastLogNum: %d, text response: %s", lastLogNum, myLastLogNum, logText.c_str());
+	debugDetailed("----sendUpdates: sndr's lastLogNum: %d, myLastLogNum: %d, text response: %s\n", lastLogNum, myLastLogNum, logText.c_str());
 	unlockPrimary();
 	resp_tuple resp = std::make_tuple(myLastLogNum, logText);
 	return resp;
@@ -569,7 +569,7 @@ void runCheckpoint() {
 		int lastCnt = getCurrCheckpointCnt();
 		std::string archiveLog("logArchive/log");
 		archiveLog = archiveLog + std::to_string(lastCnt);
-		debugDetailed("----------checkpoint archive log: %s", archiveLog.c_str());
+		debugDetailed("----------checkpoint archive log: %s\n", archiveLog.c_str());
 		rename("log.txt", archiveLog.c_str());
 		FILE* logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
@@ -829,6 +829,7 @@ resp_tuple combineResps(std::map<std::tuple<std::string, int>, std::tuple<int, s
 		debugDetailed("%s\n", "error in combine resps - empty respSet arg");
 		resp = std::make_tuple(-1, "Error: empty resp set");
 	}
+	debugDetailed("---combineReps: %s\n", "returned");
 	return (resp_tuple) resp;
 	//return respSet[myIp];
 }
@@ -890,7 +891,8 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
     	// if node is primary, perform local put and loop over memebers in cluster and call put (synchronous w timeout) on them
     	lockPrimary();	
     	respSet[myIp] = put(row, col, val);
-    	debugDetailed("---PUTREQ entered - I am primary: %s\n", "local put completed");
+    	debugDetailed("---PUTREQ respset size: %ld\n", respSet.size());
+    	debugDetailed("---PUTREQ - I am primary: %s\n", "local put completed");
     	for (const auto& server : clusterMembers) {
     		// server.first is serverIndx, server.second is tuple (ip string, port int)
     		if (server.second != myIp) {
@@ -899,11 +901,12 @@ std::tuple<int, std::string> putReq(std::string row, std::string col, std::strin
 			        // default timeout is 5000 milliseconds TODO: adjust timeout as needed
 			        const uint64_t short_timeout = TIMEOUT_MILLISEC;
 			        client.set_timeout(short_timeout);
-			        debugDetailed("---PUTREQ entered: %s: %s:%d\n", "trying remote put to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
+			        debugDetailed("---PUTREQ : %s: %s:%d\n", "trying remote put to ", std::get<0>(server.second).c_str(), std::get<1>(server.second));
 			        //resp = client.call("put", short_timeout + 10).as<resp_tuple>();
 			        resp = client.call("putApproved", row, col, val).as<resp_tuple>();
                     debug("putApproved returned: %s\n", std::get<1>(resp).c_str());
 			        respSet[server.second] = resp;
+			        debugDetailed("---PUTREQ respset size: %ld\n", respSet.size());
 			    } catch (rpc::timeout &t) {
 			        // will display a message like
 			        // rpc::timeout: Timeout of 50ms while calling RPC function 'put'
@@ -1224,7 +1227,7 @@ std::tuple<int, std::string> delReq(std::string row, std::string col) {
 
 
 void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, int len1, int len2, int len3, int len4) {
-	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
+	//numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
 	if (strncmp(comm, "PUT", 3) == 0) {
 		std::string rowString(arg1, len1);
 		std::string colString(arg2, len2);
@@ -1275,22 +1278,22 @@ int replayLog() {
 			break;
 		}
 		headerBuf[strlen(headerBuf)] = '\0'; //set newline to null
-		debugDetailed("buf read from log file is: %s\n", headerBuf);
+		//debugDetailed("buf read from log file is: %s\n", headerBuf);
 		comm = strtok(headerBuf, ","); // this should never be null if headerBuf is well formatted
 		for (i = 0; i < MAX_COMM_ARGS; i++) {
 			lens[i] = atoi(strtok(NULL, ","));
-			debugDetailed("---replayLog: lens[%d] = %d\n", i, lens[i]);
+			//debugDetailed("---replayLog: lens[%d] = %d\n", i, lens[i]);
 		}
 		for (i = 0; i < MAX_COMM_ARGS; i++) {
 			if (lens[i] != 0) {
-				debugDetailed("---replayLog: calloc'd args[%d] for lens[%d] = %d\n", i, i, lens[i]);
+				//debugDetailed("---replayLog: calloc'd args[%d] for lens[%d] = %d\n", i, i, lens[i]);
 				args[i] = (char*) calloc(lens[i], sizeof(char));
 			} else {
-				debugDetailed("---replayLog: calloc'd args[%d] is NULL\n", i);
+				//debugDetailed("---replayLog: calloc'd args[%d] is NULL\n", i);
 				args[i] = NULL;
 			}
 			if (args[i] != NULL) {
-				debugDetailed("---replayLog: reading into args[%d], lens[%d] = %d\n", i, i, lens[i]);
+				//debugDetailed("---replayLog: reading into args[%d], lens[%d] = %d\n", i, i, lens[i]);
 				fread(args[i], sizeof(char), lens[i], logfile);
 			}
 		}
@@ -1298,6 +1301,7 @@ int replayLog() {
 		// NOTE: uncomment lines below for debug statements, but this will casue 3 memory erros from one context when run in valgrind
 		//debugDetailed("header args - comm: %s, len1: %d, len2: %d, len3: %d, len4: %d\n", comm, lens[0], lens[1], lens[2], lens[3]);
 		//debugDetailed("parsed args - arg1: %s, arg2: %s, arg3: %s, arg4: %s\n", args[0], args[1], args[2], args[3]);
+		debugDetailed("---replayLog: %s\n", "calling function");
 		callFunction(comm, args[0], args[1], args[2], args[3], lens[0], lens[1], lens[2], lens[3]);
 
 
@@ -1394,7 +1398,9 @@ bool heartbeat() {
 void getLoggingUpdates() {
 	//int myLastLogNum = getCurrCheckpointCnt();
 	// TODO need to add primary choosing here
+	debugDetailed("---getLoggingUpdates: %s\n", "entered");
 	if (isPrimary()) {
+		debugDetailed("---getLoggingUpdates: %s\n", "returned - primary");
 		return;
 	}
 	rpc::client client(std::get<0>(primaryIp), std::get<1>(primaryIp));
@@ -1411,6 +1417,8 @@ void getLoggingUpdates() {
     int myLastLogNum = getCurrCheckpointCnt();
    	int primaryLogNum = 0;
     do {
+    	myLastLogNum = getCurrCheckpointCnt();
+    	debugDetailed("------GETLOGGINGUPDATES: myLastLogNum: %d\n", myLastLogNum);
     	resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); 
     	primaryLogNum = std::get<0>(resp);
     	std::string primaryLog = std::get<1>(resp);
@@ -1418,10 +1426,9 @@ void getLoggingUpdates() {
     	FILE* logFile = fopen((char*) "log.txt", "w");
     	fwrite(primaryLog.c_str(), sizeof(char), primaryLog.length(), logFile);
     	fclose(logFile);
-    	replayLog(); // this will trigger a checkpoint
-
-    	myLastLogNum = getCurrCheckpointCnt();
+    	replayLog(); // this will trigger a checkpoint	
     } while (myLastLogNum != primaryLogNum);
+    debugDetailed("---getLoggingUpdates: %s\n", "returned - non-primary");
     return;
 
 }
@@ -1578,8 +1585,8 @@ int main(int argc, char *argv[]) {
  	debug("%s\n", "kvMap before log replay: ");
  	printKvMap();
  	// get updates and most recent logfile from leader -- TODO: need to add function to get leader
- 	getLoggingUpdates();
- 	replayLog();
+ 	getLoggingUpdates(); // this function will get logging updates and replay them as needed
+ 	//replayLog();
  	debug("%s\n", "kvMap after log replay: ");
  	printKvMap();
  	printKvLoc();
