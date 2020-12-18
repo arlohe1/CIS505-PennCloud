@@ -288,8 +288,8 @@ int chdirToRow(const char* dirName) {
  	} else {
  		int mkdirRet = mkdir(dirName, 0777);
  		if (mkdirRet < 0) {
- 			debugDetailed("failed to create new row dir: %s", dirName);
- 			if (write(STDERR_FILENO, "failed to create a checkpointing row directory", strlen( "failed to create a checkpointing row directory")) < 0) {
+            debugDetailed("failed to create new row dir: %s\n", dirName);
+            if (write(STDERR_FILENO, "failed to create a checkpointing row directory\n", strlen( "failed to create a checkpointing row directory\n")) < 0) {
 	 			perror("invalid write: ");
 	 		}
 	 		exit (-1); //TODO - handle this better
@@ -298,8 +298,8 @@ int chdirToRow(const char* dirName) {
 	 	if (chdirRet == 0) {
 	 		debugDetailed("cd into row dir (just created): %s\n", dirName);	
 	 	} else {
-	 		debugDetailed("failed to cd into newly created row dir: %s", dirName);
-	 		if (write(STDERR_FILENO, "failed to cd into newly created row directory", strlen("failed to cd into newly created row directory")) < 0) {
+            debugDetailed("failed to cd into newly created row dir: %s\n", dirName);
+            if (write(STDERR_FILENO, "failed to cd into newly created row directory\n", strlen("failed to cd into newly created row directory\n")) < 0) {
 	 			perror("invalid write: ");
 	 		}
 	 		exit(-1);
@@ -412,15 +412,13 @@ void runCheckpoint() {
 			// case on kvLoc val -1 (deleted), 0 (on disk), or 1 (in local kvMap)
 			if (loc == -1) {
 				if(remove( col.c_str() ) != 0 ) {
-     				perror( "Error deleting file" );
-                    // exit(-1);
+                    debugDetailed("File did not exist for col %s. Skipping!\n", col.c_str());
 				} else {
-				 	debugDetailed("checkpoint deletes file: %s\n", col.c_str());
-				 	// NOTE - del has already been called and removed the val form kvMap and adjusted cache size
-				 	it = kvLoc[row].erase(it);
-				 	printKvMap();
-					printKvLoc();
+                    debugDetailed("Deleting file for col %s\n", col.c_str());
 				}
+                // NOTE - del has already been called and removed the val form kvMap and adjusted cache size
+                it = kvLoc[row].erase(it);
+                printKvLoc();
 			} else if (loc == 1) {
 				debugDetailed("checkpoint writes file: %s\n", col.c_str());
 				colFilePtr = fopen((col).c_str(), "w");
@@ -437,20 +435,13 @@ void runCheckpoint() {
 			} else {
 				++it;
 			}
-			//printf("reached 2\n");		
 		}
-		//printf("reached 3\n");
-		
 		chdir("..");
-		//printf("reached 4\n");
 	}
 	// cd back out to server directory
 	chdir("..");
-	//printf("reached 5\n");
-
 	// clear logfile if not currently replaying log
 	if (replay == 0) {
-		//printf("reached 6\n");
 		FILE* logFilePtr;
 		logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
@@ -463,10 +454,7 @@ void runCheckpoint() {
 	debugDetailed("%s,\n", "--------checkpoint finished and return--------");
 	unlockAllRows();
 	return;
-	
-
 	// need to add new function - loadKvStore - parses all row files and enters the appropriate column, value into map
-
 }
 
 FILE * openValFile(char* row, char* col, const char* mode) {
@@ -761,7 +749,7 @@ resp_tuple put(std::string row, std::string col, std::string val) {
     		cacheSize = cacheSize - oldLen;
     	}
     	debugDetailed("------PUT row: %s, column: %s, val: %s, cahceSize: %d\n", row.c_str(), col.c_str(), val.c_str(), cacheSize);
-    	printKvMap();
+        printKvMap();
     	logCommand(PUT, 3, row, col, val, row);
     	if (unlockRow(row) < 0) {
 			return std::make_tuple(1, "ERR");
@@ -791,16 +779,12 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 					unlockRow(row);
 					put(row, col, newVal);
 					debugDetailed("------CPUT called put and updated val - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					//debugDetailed("------CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					printKvMap();
-					//logCommand(CPUT, 4, row, col, expVal, newVal);
+                    printKvMap();
 					return std::make_tuple(0, "OK");
 				} else {
-					//printf("unlocking row\n");
 					unlockRow(row);
 					debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					printKvMap();
-					//logCommand(CPUT, 4, row, col, expVal, newVal);
+                    printKvMap();
 					return std::make_tuple(2, "Incorrect expVal");
 				}
 			} else {
@@ -814,14 +798,13 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 	}
 	
 	debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-	printKvMap();
-	//logCommand(CPUT, 4, row, col, expVal, newVal);
+    printKvMap();
 	return std::make_tuple(1, "No such row, column pair");
 }
 
 std::tuple<int, std::string> del(std::string row, std::string col) {
 	debugDetailed("%s\n", "del entered");
-	printKvMap();
+    printKvMap();
 	printKvLoc();
 	lockRow(row);
 	if (kvLoc.count(row) > 0) {
@@ -833,8 +816,8 @@ std::tuple<int, std::string> del(std::string row, std::string col) {
 				}
 				kvMap[row].erase(col);
 				kvLoc[row][col] = -1;	
-				debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());	
-				printKvMap();	
+				debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());
+                printKvMap();	
 				unlockRow(row);
 				logCommand(DELETE, 2, row, col, row, row);
 				return std::make_tuple(0, "OK");
@@ -901,7 +884,7 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                 debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
                 return std::make_tuple(1, "ERR");
             }
-            debugDetailed("Local %s completed on primary", kvsFunc.c_str());
+            debugDetailed("Local %s completed on primary\n", kvsFunc.c_str());
             for (std::string otherServer : clusterMembers) {
                 if(otherServer.compare(myAddrPortForFrontend) != 0 && clusterNodesToSkip.count(otherServer) <= 0) {
                     bool continueTrying = true;
@@ -925,15 +908,15 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                             continueTrying = false;
                             respSet[otherServer] = resp;
                         } catch (rpc::timeout &t) {
-                            debugDetailed("%s for (%s, %s) with server %s timed out!", kvsFunc.c_str(), row.c_str(), col.c_str(), otherServer.c_str());
+                            debugDetailed("%s for (%s, %s) with server %s timed out!\n", kvsFunc.c_str(), row.c_str(), col.c_str(), otherServer.c_str());
                             // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
                             bool nodeIsAlive = checkIfServerIsAlive(otherServer);
                             if(nodeIsAlive) {
                                 // Double timeout and try again if node is still alive
                                 timeout *= 2;
-                                debugDetailed("Node %s is still alive! Doubling timeout to %ld and trying again.", otherServer.c_str(), timeout);
+                                debugDetailed("Node %s is still alive! Doubling timeout to %ld and trying again.\n", otherServer.c_str(), timeout);
                             } else {
-                                debugDetailed("Node %s is dead! Adding node to set of dead nodes.", otherServer.c_str());
+                                debugDetailed("Node %s is dead! Adding node to set of dead nodes.\n", otherServer.c_str());
                                 // Add node to set of dead nodes (nodes to skip)
                                 clusterNodesToSkip.insert(otherServer);
                                 continueTrying = false;
@@ -957,6 +940,7 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
             debugDetailed("%s: Primary calling combineResps\n", kvsFunc.c_str());
             // return resp tuple
             resp = combineResps(respSet);
+            printKvLoc();
             return resp;
         } else {
             debugDetailed("Current Node %s is NOT primary for %s Request. Forwarding to primary: %s\n", myAddrPortForFrontend.c_str(), kvsFunc.c_str(), myClusterLeader.c_str());
@@ -978,17 +962,18 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                         debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
                         return std::make_tuple(1, "ERR");
                     }
+                    printKvLoc();
                     return resp;
                 } catch (rpc::timeout &t) {
-                    debugDetailed("Attempt to forward %s to primary %s timed out!", kvsFunc.c_str(), myClusterLeader.c_str());
+                    debugDetailed("Attempt to forward %s to primary %s timed out!\n", kvsFunc.c_str(), myClusterLeader.c_str());
                     // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
                     bool nodeIsAlive = checkIfServerIsAlive(myClusterLeader);
                     if(nodeIsAlive) {
                         // Double timeout and try again if node is still alive
                         timeout *= 2;
-                        debugDetailed("Primary Node %s is still alive! Doubling timeout to %ld and trying again.", myClusterLeader.c_str(), timeout);
+                        debugDetailed("Primary Node %s is still alive! Doubling timeout to %ld and trying again.\n", myClusterLeader.c_str(), timeout);
                     } else {
-                        debugDetailed("Primary Node %s is dead! Adding node to set of dead nodes.", myClusterLeader.c_str());
+                        debugDetailed("Primary Node %s is dead! Adding node to set of dead nodes.\n", myClusterLeader.c_str());
                         // Add node to set of dead nodes (nodes to skip)
                         clusterNodesToSkip.insert(myClusterLeader);
                         // Get new cluster leader and try again
