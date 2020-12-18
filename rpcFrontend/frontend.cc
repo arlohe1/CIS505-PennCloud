@@ -2106,6 +2106,7 @@ struct http_response processRequest(struct http_request &req) {
 					message.replace(index, 2, "\r");
 					index += 2;
 				}
+				std::replace(to.begin(), to.end(), ';', ',');
 				std::istringstream ss { to };
 				std::string token;
 				bool local;
@@ -2389,63 +2390,64 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
-		else if (req.filepath.compare(0, 12,"/stopserver/") == 0) {
-			if (req.cookies.find("username") != req.cookies.end() && req.cookies["username"].compare("admin") == 0) {
-				std::deque<std::string> tokens = split(req.filepath, "/");
-				log("SUSPICION: " + tokens[0]);
-				std::string target = trim(tokens.back());
-				tokens.pop_back();
-				bool frontend_target = (trim(tokens.back()).compare("f") == 0);
-				log("Stopping: " + target);
-				if(frontend_target) {
-					int target_index = getServerIndexFromAddr(target);
-					log("Target index: " + std::to_string(target_index));
-					sendStopMessage(target_index);
-				} else {
-					stopServerKVS(target);
-				}
-				resp.status_code = 307;
-				resp.status = "Temporary Redirect";
-				resp.headers["Location"] = "/admin";
-			}
-		} else if (req.filepath.compare(0, 14,"/resumeserver/") == 0) {
-			if (req.cookies.find("username") != req.cookies.end() && req.cookies["username"].compare("admin") == 0) {
-				std::deque<std::string> tokens = split(req.filepath, "/");
-				log("SUSPICION: " + tokens[0]);
-				std::string target = trim(tokens.back());
-				tokens.pop_back();
-				log("Resuming: " + target);
-				bool frontend_target = (trim(tokens.back()).compare("f") == 0);
-				if(frontend_target) {
-					int target_index = getServerIndexFromAddr(target);
-					log("Target index: " + std::to_string(target_index));
-					sendResumeMessage(target_index);
-				} else {
-					reviveServerKVS(target);
-				}
-				resp.status_code = 307;
-				resp.status = "Temporary Redirect";
-				resp.headers["Location"] = "/admin";
-				>>>>>>> b6fc9c522ac94e88c2b738bf57bed594002f2091
-			}
-		} else {
-			if (req.cookies.find("username") != req.cookies.end()) {
-				resp.status_code = 307;
-				resp.status = "Temporary Redirect";
-				resp.headers["Location"] = "/dashboard";
+	} else if (req.filepath.compare(0, 12, "/stopserver/") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()
+				&& req.cookies["username"].compare("admin") == 0) {
+			std::deque < std::string > tokens = split(req.filepath, "/");
+			log("SUSPICION: " + tokens[0]);
+			std::string target = trim(tokens.back());
+			tokens.pop_back();
+			bool frontend_target = (trim(tokens.back()).compare("f") == 0);
+			log("Stopping: " + target);
+			if (frontend_target) {
+				int target_index = getServerIndexFromAddr(target);
+				log("Target index: " + std::to_string(target_index));
+				sendStopMessage(target_index);
 			} else {
-				resp.status_code = 307;
-				resp.status = "Temporary Redirect";
-				resp.headers["Location"] = "/";
+				stopServerKVS(target);
 			}
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/admin";
 		}
-		return resp;
+	} else if (req.filepath.compare(0, 14, "/resumeserver/") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()
+				&& req.cookies["username"].compare("admin") == 0) {
+			std::deque < std::string > tokens = split(req.filepath, "/");
+			log("SUSPICION: " + tokens[0]);
+			std::string target = trim(tokens.back());
+			tokens.pop_back();
+			log("Resuming: " + target);
+			bool frontend_target = (trim(tokens.back()).compare("f") == 0);
+			if (frontend_target) {
+				int target_index = getServerIndexFromAddr(target);
+				log("Target index: " + std::to_string(target_index));
+				sendResumeMessage(target_index);
+			} else {
+				reviveServerKVS(target);
+			}
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/admin";
+		}
+	} else {
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/dashboard";
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
 	}
+	return resp;
+}
 
 void sendResponseToClient(struct http_response &resp, int *client_fd) {
 	std::string response;
 	response = "HTTP/1.0 " + std::to_string(resp.status_code) + " "
-	+ resp.status + "\r\n";
+			+ resp.status + "\r\n";
 	response += "Connection: close\r\n";
 	for (std::map<std::string, std::string>::iterator it = resp.headers.begin();
 			it != resp.headers.end(); it++) {
@@ -2505,8 +2507,8 @@ void* handleClient(void *arg) {
 	close(*client_fd);
 	free(client_fd);
 	decrementThreadCounter(HTTP_THREAD);
-	pthread_detach(pthread_self());
-	pthread_exit(NULL);
+	pthread_detach (pthread_self());pthread_exit
+	(NULL);
 }
 
 void* handle_smtp_connections(void *arg) {
@@ -2520,8 +2522,8 @@ void* handle_smtp_connections(void *arg) {
 	timeout.tv_sec = 100;
 	timeout.tv_usec = 0;
 	if (setsockopt(comm_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
-					sizeof(timeout)) < 0)
-	log("setsockopt failed\n");
+			sizeof(timeout)) < 0)
+		log("setsockopt failed\n");
 	free(arg);
 	char buf[1000];
 	std::string sender;
@@ -2547,25 +2549,25 @@ void* handle_smtp_connections(void *arg) {
 	char notLocalError[] = "551 User not local\r\n";
 	char noUserError[] = "550 No such user here\r\n";
 	char intermediateReply[] =
-	"354 Start mail input; end with <CRLF>.<CRLF>\r\n";
+			"354 Start mail input; end with <CRLF>.<CRLF>\r\n";
 	char shutDown[] = "421 penncloud.com Service not available\r\n";
 	while (true) {
 		alreadySet = false;
 		if (checked) {
 			rcvd = read(comm_fd, &buf[len], 1000 - len);
 		} else
-		rcvd = 0;
+			rcvd = 0;
 		len += rcvd;
 		if (checked)
-		start = len - rcvd;
+			start = len - rcvd;
 		else
-		start = 0;
+			start = 0;
 		checked = true;
 		// Check for complete command in unchecked or newly read buffer.
 		for (int i = start; i < len - 1; i++) {
 			if (buf[i] == '\r' && buf[i + 1] == '\n') {
 				if (vflag)
-				fprintf(stderr, "[%d] C: %.*s", comm_fd, i + 2, &buf[0]);
+					fprintf(stderr, "[%d] C: %.*s", comm_fd, i + 2, &buf[0]);
 				// Handle HELO command.
 				if (tolower(buf[0]) == 'h' && i > 3 && tolower(buf[1]) == 'e'
 						&& tolower(buf[2]) == 'l' && tolower(buf[3]) == 'o'
@@ -2573,20 +2575,20 @@ void* handle_smtp_connections(void *arg) {
 					if (state != 0 && state != 1) {
 						do_write(comm_fd, stateError, sizeof(stateError) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(stateError) - 1, stateError);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
 					} else if (i > 5 && buf[5] != ' ') {
 						// Successful HELO command.
 						do_write(comm_fd, helo, sizeof(helo) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(helo) - 1, helo);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(helo) - 1, helo);
 						state = 1;
 					} else {
 						do_write(comm_fd, paramError, sizeof(paramError) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(paramError) - 1, paramError);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(paramError) - 1, paramError);
 					}
 				} // Handle MAIL command.
 				else if (tolower(buf[0]) == 'm' && i > 3
@@ -2596,8 +2598,8 @@ void* handle_smtp_connections(void *arg) {
 					if (state == 0) {
 						do_write(comm_fd, stateError, sizeof(stateError) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(stateError) - 1, stateError);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
 					} else if (i > 14 && tolower(buf[5]) == 'f'
 							&& tolower(buf[6]) == 'r' && tolower(buf[7]) == 'o'
 							&& tolower(buf[8]) == 'm' && buf[9] == ':'
@@ -2605,7 +2607,7 @@ void* handle_smtp_connections(void *arg) {
 						bool validAddress = false;
 						for (int j = 12; j < i - 2; j++) {
 							if (buf[j] == '@')
-							validAddress = true;
+								validAddress = true;
 						}
 						if (validAddress) {
 							// Successful MAIL command.
@@ -2618,21 +2620,21 @@ void* handle_smtp_connections(void *arg) {
 							state = 2;
 							do_write(comm_fd, ok, sizeof(ok) - 1);
 							if (vflag)
-							fprintf(stderr, "[%d] S: %.*s", comm_fd,
-									(int) sizeof(ok) - 1, ok);
+								fprintf(stderr, "[%d] S: %.*s", comm_fd,
+										(int) sizeof(ok) - 1, ok);
 						} else {
 							do_write(comm_fd, paramError,
 									sizeof(paramError) - 1);
 							if (vflag)
-							fprintf(stderr, "[%d] S: %.*s", comm_fd,
-									(int) sizeof(paramError) - 1,
-									paramError);
+								fprintf(stderr, "[%d] S: %.*s", comm_fd,
+										(int) sizeof(paramError) - 1,
+										paramError);
 						}
 					} else {
 						do_write(comm_fd, paramError, sizeof(paramError) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(paramError) - 1, paramError);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(paramError) - 1, paramError);
 					}
 				} // Handle RCPT command.
 				else if (tolower(buf[0]) == 'r' && i > 3
@@ -2642,22 +2644,22 @@ void* handle_smtp_connections(void *arg) {
 					if (state != 2 && state != 3) {
 						do_write(comm_fd, stateError, sizeof(stateError) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(stateError) - 1, stateError);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
 					} else if (i > 12 && tolower(buf[5]) == 't'
 							&& tolower(buf[6]) == 'o' && buf[7] == ':'
 							&& buf[8] == '<' && buf[i - 1] == '>') {
 						bool validAddress = false;
 						for (int j = 10; j < i - 2; j++) {
 							if (buf[j] == '@')
-							validAddress = true;
+								validAddress = true;
 						}
 						if (validAddress) {
 							checkIndex = 0;
 							bool validDomain = true;
 							for (int j = i - 11; j < i - 1; j++) {
 								if (tolower(buf[j]) != penncloud[checkIndex])
-								validDomain = false;
+									validDomain = false;
 								checkIndex++;
 							}
 							if (validDomain) {
@@ -2674,37 +2676,37 @@ void* handle_smtp_connections(void *arg) {
 									state = 3;
 									do_write(comm_fd, ok, sizeof(ok) - 1);
 									if (vflag)
-									fprintf(stderr, "[%d] S: %.*s", comm_fd,
-											(int) sizeof(ok) - 1, ok);
+										fprintf(stderr, "[%d] S: %.*s", comm_fd,
+												(int) sizeof(ok) - 1, ok);
 								} else {
 									do_write(comm_fd, noUserError,
 											sizeof(noUserError) - 1);
 									if (vflag)
-									fprintf(stderr, "[%d] S: %.*s", comm_fd,
-											(int) sizeof(noUserError) - 1,
-											noUserError);
+										fprintf(stderr, "[%d] S: %.*s", comm_fd,
+												(int) sizeof(noUserError) - 1,
+												noUserError);
 								}
 							} else {
 								do_write(comm_fd, notLocalError,
 										sizeof(notLocalError) - 1);
 								if (vflag)
-								fprintf(stderr, "[%d] S: %.*s", comm_fd,
-										(int) sizeof(notLocalError) - 1,
-										notLocalError);
+									fprintf(stderr, "[%d] S: %.*s", comm_fd,
+											(int) sizeof(notLocalError) - 1,
+											notLocalError);
 							}
 						} else {
 							do_write(comm_fd, paramError,
 									sizeof(paramError) - 1);
 							if (vflag)
-							fprintf(stderr, "[%d] S: %.*s", comm_fd,
-									(int) sizeof(paramError) - 1,
-									paramError);
+								fprintf(stderr, "[%d] S: %.*s", comm_fd,
+										(int) sizeof(paramError) - 1,
+										paramError);
 						}
 					} else {
 						do_write(comm_fd, paramError, sizeof(paramError) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(paramError) - 1, paramError);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(paramError) - 1, paramError);
 					}
 				} // Handle DATA command.
 				else if (tolower(buf[0]) == 'd' && i > 3
@@ -2713,16 +2715,16 @@ void* handle_smtp_connections(void *arg) {
 					if (state != 3) {
 						do_write(comm_fd, stateError, sizeof(stateError) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(stateError) - 1, stateError);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
 					} else {
 						// Successful DATA command.
 						do_write(comm_fd, intermediateReply,
 								sizeof(intermediateReply) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(intermediateReply) - 1,
-								intermediateReply);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(intermediateReply) - 1,
+									intermediateReply);
 						index = 0;
 						for (int j = i + 2; j < len; j++) {
 							buf[index] = buf[j];
@@ -2730,21 +2732,21 @@ void* handle_smtp_connections(void *arg) {
 						}
 						len = index;
 						if (len > 0)
-						checked = false;
+							checked = false;
 						bool dataComplete = false;
 						bool seenAlready = false;
 						bool isPeriodEnd = false;
 						// Read text of email.
 						while (!dataComplete) {
 							if (checked)
-							rcvd = read(comm_fd, &buf[len], 1000 - len);
+								rcvd = read(comm_fd, &buf[len], 1000 - len);
 							else
-							rcvd = 0;
+								rcvd = 0;
 							len += rcvd;
 							if (checked)
-							start = len - rcvd;
+								start = len - rcvd;
 							else
-							start = 0;
+								start = 0;
 							checked = true;
 							for (int j = start; j < len - 1; j++) {
 								if (buf[j] == '\r' && buf[j + 1] == '\n') {
@@ -2779,10 +2781,10 @@ void* handle_smtp_connections(void *arg) {
 										}
 									}
 									if (!isPeriodEnd)
-									data.push_back(dataLine);
+										data.push_back(dataLine);
 									len = index;
 									if (len > 0)
-									checked = false;
+										checked = false;
 									seenAlready = true;
 									break;
 								}
@@ -2793,7 +2795,7 @@ void* handle_smtp_connections(void *arg) {
 						time(&rawtime);
 						timeinfo = localtime(&rawtime);
 						std::string temp = "From <" + sender + "> "
-						+ asctime(timeinfo) + "\n";
+								+ asctime(timeinfo) + "\n";
 						temp[temp.length() - 2] = '\r';
 						// Write email to all recipient mailboxes.
 						for (std::size_t a = 0; a < recipients.size(); a++) {
@@ -2824,8 +2826,8 @@ void* handle_smtp_connections(void *arg) {
 						state = 1;
 						do_write(comm_fd, ok, sizeof(ok) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(ok) - 1, ok);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(ok) - 1, ok);
 					}
 				} // Handle RSET command.
 				else if (tolower(buf[0]) == 'r' && i > 3
@@ -2834,8 +2836,8 @@ void* handle_smtp_connections(void *arg) {
 					if (state == 0) {
 						do_write(comm_fd, stateError, sizeof(stateError) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(stateError) - 1, stateError);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(stateError) - 1, stateError);
 					} else {
 						// Successful RSET command.
 						sender = "";
@@ -2844,8 +2846,8 @@ void* handle_smtp_connections(void *arg) {
 						state = 1;
 						do_write(comm_fd, ok, sizeof(ok) - 1);
 						if (vflag)
-						fprintf(stderr, "[%d] S: %.*s", comm_fd,
-								(int) sizeof(ok) - 1, ok);
+							fprintf(stderr, "[%d] S: %.*s", comm_fd,
+									(int) sizeof(ok) - 1, ok);
 					}
 				} // Handle NOOP command.
 				else if (tolower(buf[0]) == 'n' && i > 3
@@ -2853,27 +2855,27 @@ void* handle_smtp_connections(void *arg) {
 						&& tolower(buf[3]) == 'p' && i == 4) {
 					do_write(comm_fd, ok, sizeof(ok) - 1);
 					if (vflag)
-					fprintf(stderr, "[%d] S: %.*s", comm_fd,
-							(int) sizeof(ok) - 1, ok);
+						fprintf(stderr, "[%d] S: %.*s", comm_fd,
+								(int) sizeof(ok) - 1, ok);
 				} // Handle QUIT command.
 				else if (tolower(buf[0]) == 'q' && i > 3
 						&& tolower(buf[1]) == 'u' && tolower(buf[2]) == 'i'
 						&& tolower(buf[3]) == 't' && i == 4) {
 					do_write(comm_fd, quit, sizeof(quit) - 1);
 					if (vflag)
-					fprintf(stderr, "[%d] S: %.*s", comm_fd,
-							(int) sizeof(quit) - 1, quit);
+						fprintf(stderr, "[%d] S: %.*s", comm_fd,
+								(int) sizeof(quit) - 1, quit);
 					close(comm_fd);
 					if (vflag)
-					fprintf(stderr, "[%d] Connection closed\n", comm_fd);
+						fprintf(stderr, "[%d] Connection closed\n", comm_fd);
 					pthread_detach (pthread_self());pthread_exit
 					(NULL);
 				} // Handle unknown command.
 				else {
 					do_write(comm_fd, commandError, sizeof(commandError) - 1);
 					if (vflag)
-					fprintf(stderr, "[%d] S: %.*s", comm_fd,
-							(int) sizeof(commandError) - 1, commandError);
+						fprintf(stderr, "[%d] S: %.*s", comm_fd,
+								(int) sizeof(commandError) - 1, commandError);
 				}
 				if (!alreadySet) {
 					index = 0;
@@ -2883,7 +2885,7 @@ void* handle_smtp_connections(void *arg) {
 					}
 					len = index;
 					if (len > 0)
-					checked = false;
+						checked = false;
 				}
 				break;
 			}
@@ -2892,7 +2894,7 @@ void* handle_smtp_connections(void *arg) {
 	do_write(comm_fd, shutDown, sizeof(shutDown) - 1);
 	close(comm_fd);
 	if (vflag)
-	fprintf(stderr, "[%d] Connection closed\n", comm_fd);
+		fprintf(stderr, "[%d] Connection closed\n", comm_fd);
 	decrementThreadCounter(SMTP_THREAD);
 	pthread_detach (pthread_self());pthread_exit
 	(NULL);
@@ -2925,7 +2927,7 @@ int create_thread(int socket_fd, bool http) {
 			free(client_fd);
 		} else {
 			if (verbose)
-			std::cerr << "[" << *client_fd << "] New connection\n";
+				std::cerr << "[" << *client_fd << "] New connection\n";
 			pthread_mutex_lock(&fd_mutex);
 			fd.insert(client_fd);
 			pthread_mutex_unlock(&fd_mutex);
@@ -2943,7 +2945,7 @@ int initialize_socket(int port_no, bool datagram) {
 	}
 	if (socket_fd < 0) {
 		std::cerr << "Socket failed to initialize for port no " << port_no
-		<< "\n";
+				<< "\n";
 		return -1;
 	} else if (verbose) {
 		std::cerr << "Socket initialized successfully!\n";
@@ -2952,7 +2954,7 @@ int initialize_socket(int port_no, bool datagram) {
 	if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &true_opt, sizeof(int))
 			< 0) {
 		if (verbose)
-		std::cerr << "Setsockopt failed\n";
+			std::cerr << "Setsockopt failed\n";
 	}
 	pthread_mutex_lock(&fd_mutex);
 	fd.insert(&socket_fd);
@@ -2989,8 +2991,8 @@ int initialize_socket(int port_no, bool datagram) {
 	timeout.tv_sec = 3;
 	timeout.tv_usec = 0;
 	if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char*) &timeout,
-					sizeof(timeout)) < 0)
-	log("setsockopt failed\n");
+			sizeof(timeout)) < 0)
+		log("setsockopt failed\n");
 
 	log("Socket_fd: " + std::to_string(socket_fd));
 	return socket_fd;
@@ -3001,103 +3003,103 @@ int main(int argc, char *argv[]) {
 	//signal(SIGINT, sigint_handler);
 	/* Initialize mutexes */
 	if (pthread_mutex_init(&fd_mutex, NULL) != 0)
-	log("Couldn't initialize mutex for fd set");
+		log("Couldn't initialize mutex for fd set");
 	if (pthread_mutex_init(&modify_server_state, NULL) != 0)
-	log("Couldn't initialize mutex for modify_server_state");
+		log("Couldn't initialize mutex for modify_server_state");
 	if (pthread_mutex_init(&crashing, NULL) != 0)
-	log("Couldn't initialize mutex for crashing");
+		log("Couldn't initialize mutex for crashing");
 	if (pthread_mutex_init(&access_state_map, NULL) != 0)
-	log("Couldn't initialize mutex for access_state_map");
+		log("Couldn't initialize mutex for access_state_map");
 
 	/* Parse command line args */
 	int c, port_no = 10000, smtp_port_no = 35000, internal_port_no = 40000;
 	std::string list_of_frontend = "";
 	while ((c = getopt(argc, argv, ":vlp:q:r:k:m:s:c:i:a")) != -1) {
 		switch (c) {
-			case 'v':
+		case 'v':
 			verbose = true;
 			vflag = 1;
 			break;
-			case 'l':
+		case 'l':
 			load_balancer = true;
 			break;
-			case 'p':
+		case 'p':
 			port_no = atoi(optarg);
 			if (port_no == 0) {
 				std::cerr
-				<< "Port number is 0 or '-p' is followed by non integer! Using default\n";
+						<< "Port number is 0 or '-p' is followed by non integer! Using default\n";
 				port_no = 10000;
 			}
 			break;
-			case 'k':
+		case 'k':
 			kvMaster_addr = trim(std::string(optarg));
 			break;
-			case 'q':
+		case 'q':
 			smtp_port_no = atoi(optarg);
 			if (smtp_port_no == 0) {
 				std::cerr
-				<< "Port number is 0 or '-q' is followed by non integer! Using default\n";
+						<< "Port number is 0 or '-q' is followed by non integer! Using default\n";
 				smtp_port_no = 15000;
 			}
 			break;
-			case 'r':
+		case 'r':
 			internal_port_no = atoi(optarg);
 			if (internal_port_no == 0) {
 				std::cerr
-				<< "Port number is 0 or '-r' is followed by non integer! Using default\n";
+						<< "Port number is 0 or '-r' is followed by non integer! Using default\n";
 				internal_port_no = 20000;
 			}
 			break;
-			case 'm':
+		case 'm':
 			mail_addr = trim(std::string(optarg));
 			break;
-			case 's':
+		case 's':
 			storage_addr = trim(std::string(optarg));
 			break;
-			case 'c':
+		case 'c':
 			list_of_frontend = trim(std::string(optarg));
 			break;
-			case 'a':
+		case 'a':
 			std::cerr << "TEAM 20\n";
 			exit(0);
 			break;
-			case 'i':
+		case 'i':
 			server_index = atoi(optarg);
 			if (server_index == 0) {
 				std::cerr
-				<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
+						<< "Port number is 0 or '-n' is followed by non integer! Using default\n";
 				server_index = 1;
 			}
 			break;
-			case ':':
+		case ':':
 			switch (optopt) {
-				case 'p':
+			case 'p':
 				std::cerr
-				<< "'-p' should be followed by a number! Using port 10000\n";
+						<< "'-p' should be followed by a number! Using port 10000\n";
 				break;
-				case 'k':
+			case 'k':
 				std::cerr << "'-k' should be followed by an address!\n";
 				break;
-				case 'q':
+			case 'q':
 				std::cerr
-				<< "'-q' should be followed by a number! Using port 10000\n";
+						<< "'-q' should be followed by a number! Using port 10000\n";
 				break;
-				case 'r':
+			case 'r':
 				std::cerr
-				<< "'-r' should be followed by a number! Using port 10000\n";
+						<< "'-r' should be followed by a number! Using port 10000\n";
 				break;
-				case 'm':
+			case 'm':
 				std::cerr << "'-m' should be followed by an address!\n";
 				break;
-				case 's':
+			case 's':
 				std::cerr << "'-s' should be followed by an address!\n";
 				break;
-				case 'c':
+			case 'c':
 				std::cerr << "'-c' should be followed by a file name!\n";
 				break;
-				case 'i':
+			case 'i':
 				std::cerr
-				<< "'-i' should be followed by a number! Using 1 as default";
+						<< "'-i' should be followed by a number! Using 1 as default";
 				break;
 			}
 			break;
@@ -3117,17 +3119,20 @@ int main(int argc, char *argv[]) {
 		FILE *f = fopen(list_of_frontend.c_str(), "r");
 		if (f == NULL) {
 			std::cerr
-			<< "Provide a valid list of frontend servers to the load balancer!"
-			<< "File " << list_of_frontend
-			<< " not found or couldn't be opened!\n";
+					<< "Provide a valid list of frontend servers to the load balancer!"
+					<< "File " << list_of_frontend
+					<< " not found or couldn't be opened!\n";
 			exit(-1);
 		}
 		char buffer[300];
 		fgets(buffer, 300, f);
-		auto load_balancer_address = split((split(trim(std::string(buffer)), ",")).at(1), ":");
+		auto load_balancer_address = split(
+				(split(trim(std::string(buffer)), ",")).at(1), ":");
 		load_balancer_addr.sin_family = AF_INET;
-		load_balancer_addr.sin_port = htons(std::stoi(load_balancer_address[1]));
-		load_balancer_addr.sin_addr.s_addr = inet_addr(load_balancer_address[0].data());
+		load_balancer_addr.sin_port = htons(
+				std::stoi(load_balancer_address[1]));
+		load_balancer_addr.sin_addr.s_addr = inet_addr(
+				load_balancer_address[0].data());
 		frontend_internal_list.push_back(load_balancer_addr);
 		int i = 1;
 		while (fgets(buffer, 300, f)) {
@@ -3138,16 +3143,19 @@ int main(int argc, char *argv[]) {
 			auto internal_server_address = split(trim(tokens[2]), ":");
 			sockaddr_in internal_server;
 			internal_server.sin_family = AF_INET;
-			internal_server.sin_port = htons(std::stoi(internal_server_address[1]));
-			internal_server.sin_addr.s_addr = inet_addr(internal_server_address[0].data());
+			internal_server.sin_port = htons(
+					std::stoi(internal_server_address[1]));
+			internal_server.sin_addr.s_addr = inet_addr(
+					internal_server_address[0].data());
 			frontend_internal_list.push_back(internal_server);
-			if(i == server_index) this_server_state.http_address = trim(tokens[0]);
+			if (i == server_index)
+				this_server_state.http_address = trim(tokens[0]);
 			i++;
 		}
 		fclose(f);
 
 		// Start heartbeat thread if not load balancer
-		if(!load_balancer) {
+		if (!load_balancer) {
 			log("Starting hearbeat");
 			pthread_t pthread_id;
 			pthread_create(&pthread_id, NULL, heartbeat, NULL);
@@ -3156,9 +3164,12 @@ int main(int argc, char *argv[]) {
 
 	/* Initialize socket: http and smtp are tcp, internal is UDP */
 	int socket_fd, smtp_socket_fd;
-	if((socket_fd = initialize_socket(port_no, false)) < 0) exit(-1);
-	if((smtp_socket_fd = initialize_socket(smtp_port_no, false)) < 0) exit(-1);
-	if((internal_socket_fd = initialize_socket(internal_port_no, true)) < 0) exit(-1);
+	if ((socket_fd = initialize_socket(port_no, false)) < 0)
+		exit(-1);
+	if ((smtp_socket_fd = initialize_socket(smtp_port_no, false)) < 0)
+		exit(-1);
+	if ((internal_socket_fd = initialize_socket(internal_port_no, true)) < 0)
+		exit(-1);
 
 	sigset_t empty_set;
 	sigemptyset(&empty_set);
@@ -3180,14 +3191,14 @@ int main(int argc, char *argv[]) {
 			r = pselect(nfds, &read_set, NULL, NULL, NULL, &empty_set);
 		}
 		if (r <= 0 || shut_down)
-		continue;
+			continue;
 
 		if (FD_ISSET(socket_fd, &read_set)) {
 			if (create_thread(socket_fd, true) < 0)
-			break;
+				break;
 		} else if (FD_ISSET(smtp_socket_fd, &read_set)) {
 			if (create_thread(smtp_socket_fd, false) < 0)
-			break;
+				break;
 		} else if (FD_ISSET(internal_socket_fd, &read_set)) {
 			// TODO handle internal server message
 			pthread_t pthread_id;
@@ -3201,10 +3212,10 @@ int main(int argc, char *argv[]) {
 	for (int *f : fd) {
 		write(*f, error_msg.data(), error_msg.size());
 		if (verbose)
-		std::cerr << "[" << *f << "] S: " << error_msg;
+			std::cerr << "[" << *f << "] S: " << error_msg;
 		close(*f);
 		if (verbose)
-		std::cerr << "[" << *f << "] Connection closed\n";
+			std::cerr << "[" << *f << "] Connection closed\n";
 		free(f);
 	}
 	close(socket_fd);
