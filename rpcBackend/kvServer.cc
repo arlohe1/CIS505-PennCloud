@@ -413,6 +413,7 @@ void runCheckpoint() {
 			if (loc == -1) {
 				if(remove( col.c_str() ) != 0 ) {
      				perror( "Error deleting file" );
+                    // exit(-1);
 				} else {
 				 	debugDetailed("checkpoint deletes file: %s\n", col.c_str());
 				 	// NOTE - del has already been called and removed the val form kvMap and adjusted cache size
@@ -423,8 +424,8 @@ void runCheckpoint() {
 			} else if (loc == 1) {
 				debugDetailed("checkpoint writes file: %s\n", col.c_str());
 				colFilePtr = fopen((col).c_str(), "w");
-				// write all value to file with format valLen\nvalue
-				fprintf(colFilePtr, "%ld\n", kvMap[row][col].length());
+                // write all value to file with format valLen\nvalue
+                fprintf(colFilePtr, "%ld\n", kvMap[row][col].length());
 				fwrite(kvMap[row][col].c_str(), sizeof(char), kvMap[row][col].length(), colFilePtr);
 				fclose(colFilePtr);	
 				valLen = kvMap[row][col].length();
@@ -903,9 +904,9 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
             debugDetailed("Local %s completed on primary", kvsFunc.c_str());
             for (std::string otherServer : clusterMembers) {
                 if(otherServer.compare(myAddrPortForFrontend) != 0 && clusterNodesToSkip.count(otherServer) <= 0) {
-                    bool nodeIsAlive = true;
+                    bool continueTrying = true;
                     uint64_t timeout = TIMEOUT_MILLISEC;
-                    while(nodeIsAlive) {
+                    while(continueTrying) {
                         rpc::client client(getIPAddr(otherServer), getIPPort(otherServer));
                         try { // TODO - on timeout, query connection state and retry if connected
                             client.set_timeout(timeout);
@@ -921,11 +922,12 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                                 debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
                                 return std::make_tuple(1, "ERR");
                             }
+                            continueTrying = false;
                             respSet[otherServer] = resp;
                         } catch (rpc::timeout &t) {
                             debugDetailed("%s for (%s, %s) with server %s timed out!", kvsFunc.c_str(), row.c_str(), col.c_str(), otherServer.c_str());
                             // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
-                            nodeIsAlive = checkIfServerIsAlive(otherServer);
+                            bool nodeIsAlive = checkIfServerIsAlive(otherServer);
                             if(nodeIsAlive) {
                                 // Double timeout and try again if node is still alive
                                 timeout *= 2;
@@ -934,6 +936,7 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                                 debugDetailed("Node %s is dead! Adding node to set of dead nodes.", otherServer.c_str());
                                 // Add node to set of dead nodes (nodes to skip)
                                 clusterNodesToSkip.insert(otherServer);
+                                continueTrying = false;
                             }
                         } catch (rpc::rpc_error &e) {
                             printf("SOMETHING BAD HAPPENED\n");
@@ -958,9 +961,9 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
         } else {
             debugDetailed("Current Node %s is NOT primary for %s Request. Forwarding to primary: %s\n", myAddrPortForFrontend.c_str(), kvsFunc.c_str(), myClusterLeader.c_str());
             // send put Req to primary
-            bool nodeIsAlive = true;
+            bool continueTrying = true;
             uint64_t timeout = TIMEOUT_MILLISEC;
-            while(nodeIsAlive) {
+            while(continueTrying) {
                 rpc::client clusterLeaderClient(getIPAddr(myClusterLeader), getIPPort(myClusterLeader));
                 debugDetailed("Trying to forward %s to: primary with timeout %ld\n", kvsFunc.c_str(), timeout);
                 try {
@@ -975,10 +978,11 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                         debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
                         return std::make_tuple(1, "ERR");
                     }
+                    return resp;
                 } catch (rpc::timeout &t) {
                     debugDetailed("Attempt to forward %s to primary %s timed out!", kvsFunc.c_str(), myClusterLeader.c_str());
                     // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
-                    nodeIsAlive = checkIfServerIsAlive(myClusterLeader);
+                    bool nodeIsAlive = checkIfServerIsAlive(myClusterLeader);
                     if(nodeIsAlive) {
                         // Double timeout and try again if node is still alive
                         timeout *= 2;
@@ -989,8 +993,10 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                         clusterNodesToSkip.insert(myClusterLeader);
                         // Get new cluster leader and try again
                         // TODO Make sure this syntax is right
-                        resp_tuple newLeaderResp = getNewCluster(myClusterLeader);
+                        rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
+                        resp_tuple newLeaderResp = masterNodeRPCClient.call("getNewClusterLeader", myClusterLeader).as<resp_tuple>();
                         myClusterLeader = std::get<1>(newLeaderResp);
+                        continueTrying = false;
                     }
                 }
             }
@@ -1207,6 +1213,7 @@ void *kvServerThreadFunc(void *arg) {
 	srv.bind("del", &delReq);
 	srv.bind("get", &get);
 	srv.bind("notifyOfNewLeader", &notifyOfNewLeader);
+	srv.bind("notifyOfNewNode", &notifyOfNewNode);
 
 	srv.async_run(30);
 

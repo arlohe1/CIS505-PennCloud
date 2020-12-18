@@ -144,6 +144,7 @@ std::tuple<int, std::string> getNewClusterLeader(std::string oldLeader) {
             errno = s;
             perror("Error with pthread_join");
         }
+        i++;
     }
     free(tinfo);
     return std::make_tuple(0, newLeader);
@@ -310,7 +311,7 @@ int main(int argc, char *argv[]) {
 	srv.bind("getAllNodes", &getAllNodes);
 	srv.bind("registerWithMaster", &registerWithMaster);
 	srv.bind("getClusterNodes", &getClusterNodes);
-    srv.bind("getNewClusterLeader", &getnewClusterLeader);
+    srv.bind("getNewClusterLeader", &getNewClusterLeader);
 
 	srv.run();
 
