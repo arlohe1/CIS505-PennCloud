@@ -626,14 +626,20 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 				//logCommand(GET, 2, row, col, row, row);
 				return std::make_tuple(0, val);
 			}
-			
 		}
 	} 
-
 	debugDetailed("---GET val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
 	//logCommand(GET, 2, row, col, row, row);
 	return std::make_tuple(1, "No such row, column pair");	
+}
+
+std::tuple<int, std::string> getFirstNBytes(std::string row, std::string col, int numBytes) {
+    std::tuple<int, std::string> resp = get(row, col);
+    if(std::get<0>(resp) == 0) {
+        std::make_tuple(0, std::get<1>(resp).substr(0, numBytes));
+    }
+    return resp;
 }
 
 std::tuple<int, std::string> exists(std::string row, std::string col) {
@@ -858,6 +864,27 @@ bool heartbeat() {
     return true;
 }
 
+std::deque<std::string> getAllRows() {
+    debug("%s\n", "All rows requested!");
+    std::deque<std::string> allRows;
+    for(std::map<std::string,std::map<std::string, int>>::iterator it = kvLoc.begin(); it != kvLoc.end(); ++it) {
+      allRows.push_back(it->first);
+    }
+    debug("All rows requested. Returning %ld rows.\n", allRows.size());
+    return allRows;
+}
+
+std::deque<std::string> getAllColsForRow(std::string row) {
+    debug("All columns for row %s requested!\n", row.c_str());
+    std::map<std::string, int> cols = kvLoc[row];
+    std::deque<std::string> allCols;
+    for(std::map<std::string, int>::iterator it = cols.begin(); it != cols.end(); ++it) {
+      allCols.push_back(it->first);
+    }
+    debug("All columns for row %s requested. Returning %ld columns.\n", row.c_str(), allCols.size());
+    return allCols;
+}
+
 int main(int argc, char *argv[]) {	
 	int opt;
 	debugFlag = 0;
@@ -978,7 +1005,9 @@ int main(int argc, char *argv[]) {
 	srv.bind("killServer", &adminKillServer);
 	srv.bind("reviveServer", &adminReviveServer);
 	srv.bind("heartbeat", &heartbeat);
-
+	srv.bind("getAllRows", &getAllRows);
+	srv.bind("getAllColsForRow", &getAllColsForRow);
+	srv.bind("getFirstNBytes", &getFirstNBytes);
 	srv.run();
 
     return 0;
