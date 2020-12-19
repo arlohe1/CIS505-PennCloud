@@ -776,84 +776,133 @@ resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
 
 /***************************** Start storage service functions ************************/
 
-void uploadFile(struct http_request req, std::string filepath) {
+int uploadFile(struct http_request req, std::string filepath) {
 	std::string username = req.cookies["username"];
 	std::string sessionid = req.cookies["sessionid"];
 	std::string filename = req.formData["filename"];
 	std::string fileData = req.formData["file"];
 
 	// Construct filepath of new file
+	time_t rawtime;
+	struct tm *timeinfo;
+	time(&rawtime);
+	timeinfo = gmtime(&rawtime);
+	std::string temp = asctime(timeinfo);
 	std::string filenameHash = generateStringHash(
-			username + filepath + filename);
+			username + filepath + filename + temp);
 	std::string kvsCol = "ss1_" + filenameHash;
+	std::string newEntry = filename + "," + kvsCol + "\n";
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(sessionid, username, filepath);
-	resp_tuple putCmdResponse;
-	if (kvsResponseStatusCode(getCmdResponse) == 0) {
+	int count = 0;
+	while (count < 10) {
+		resp_tuple getCmdResponse = getKVS(sessionid, username, filepath);
+		resp_tuple cputCmdResponse;
 		std::string fileList = kvsResponseMsg(getCmdResponse);
-		// Adding new file to existing file list (IF new file!)
-		std::string newEntry = filename + "," + kvsCol + "\n";
-		if (fileList.find(newEntry) == std::string::npos) {
-			fileList += newEntry;
-			// PUT length,row,col,value for MODIFIED FILE LIST
-			putCmdResponse = putKVS(sessionid, username, filepath, fileList);
+		std::stringstream ss(fileList);
+		std::string fileEntry;
+		std::string contents = "";
+		if (kvsResponseStatusCode(getCmdResponse) == 0) {
+			std::getline(ss, fileEntry, '\n');
+			contents += fileEntry + "\n";
+			bool found = false;
+			while (std::getline(ss, fileEntry, '\n')) {
+				if (!found) {
+					std::size_t foundPos = fileEntry.find_last_of(",");
+					std::string currName = fileEntry.substr(0, foundPos);
+					if (currName == filename) {
+						return -1;
+					} else if (currName.compare(filename) < 0) {
+						contents += fileEntry + "\n";
+					} else {
+						contents += newEntry;
+						contents += fileEntry + "\n";
+						found = true;
+					}
+				} else {
+					contents += fileEntry + "\n";
+				}
+			}
+			if (!found) {
+				contents += newEntry;
+			}
+
+			// CPUT length,row,col,value for MODIFIED FILE LIST
+			cputCmdResponse = cputKVS(sessionid, username, filepath, fileList,
+					contents);
+			int respStatus = kvsResponseStatusCode(cputCmdResponse);
+			if (respStatus == 0) {
+				putKVS(sessionid, username, kvsCol, fileData);
+				return 0;
+			}
+			count++;
+		} else {
+			return -2;
 		}
-		// PUT username,kvsCol,filedata
-		putCmdResponse = putKVS(sessionid, username, kvsCol, fileData);
 	}
+	return -2;
 }
 
-void deleteFile(struct http_request req, std::string containingDir,
+int deleteFile(struct http_request req, std::string containingDir,
 		std::string itemToDeleteHash) {
 	std::string username = req.cookies["username"];
 	std::string sessionid = req.cookies["sessionid"];
 
-	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(sessionid, username, containingDir);
-	resp_tuple putCmdResponse;
-	if (kvsResponseStatusCode(getCmdResponse) == 0) {
+	int count = 0;
+	while (count < 10) {
+		resp_tuple getCmdResponse = getKVS(sessionid, username, containingDir);
+		resp_tuple cputCmdResponse;
 		std::string fileList = kvsResponseMsg(getCmdResponse);
-		// Removing itemToDelete hash from  existing file list
-		size_t hashPos = fileList.find(itemToDeleteHash);
-		size_t startLine = fileList.substr(0, hashPos).find_last_of("\n");
-		size_t endLine = fileList.find("\n", hashPos);
-		if (startLine != std::string::npos) {
-			fileList = fileList.replace(startLine + 1, endLine - startLine, "");
+		std::stringstream ss(fileList);
+		std::string fileEntry;
+		std::string contents = "";
+		if (kvsResponseStatusCode(getCmdResponse) == 0) {
+			std::getline(ss, fileEntry, '\n');
+			contents += fileEntry + "\n";
+			bool found = false;
+			while (std::getline(ss, fileEntry, '\n')) {
+				if (!found) {
+					std::size_t foundPos = fileEntry.find_last_of(",");
+					std::string currHash = fileEntry.substr(foundPos + 1);
+					if (currHash != itemToDeleteHash) {
+						contents += fileEntry + "\n";
+					} else {
+						found = true;
+					}
+				} else {
+					contents += fileEntry + "\n";
+				}
+			}
+			if (!found) {
+				return -1;
+			}
+
+			// CPUT length,row,col,value for MODIFIED FILE LIST
+			cputCmdResponse = cputKVS(sessionid, username, containingDir,
+					fileList, contents);
+
+			int respStatus = kvsResponseStatusCode(cputCmdResponse);
+			if (respStatus == 0) {
+				deleteKVS(sessionid, username, itemToDeleteHash);
+				return 0;
+			}
+			count++;
+		} else {
+			return -2;
 		}
-		// PUT length,row,col,value for MODIFIED FILE LIST
-		putCmdResponse = putKVS(sessionid, username, containingDir, fileList);
 	}
-	// DELETE username,itemToDeleteHash
-	putCmdResponse = deleteKVS(sessionid, username, itemToDeleteHash);
+	return -2;
 }
 
-void deleteDirectory(struct http_request req, std::string containingDir,
+void forceDeleteDirectory(struct http_request req,
 		std::string itemToDeleteHash) {
 	std::string username = req.cookies["username"];
 	std::string sessionid = req.cookies["sessionid"];
 
-	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(sessionid, username, containingDir);
-	resp_tuple putCmdResponse;
-	if (kvsResponseStatusCode(getCmdResponse) == 0) {
-		std::string fileList = kvsResponseMsg(getCmdResponse);
-		// Removing itemToDelete hash from  existing file list
-		size_t hashPos = fileList.find(itemToDeleteHash);
-		size_t startLine = fileList.substr(0, hashPos).find_last_of("\n");
-		size_t endLine = fileList.find("\n", hashPos);
-		if (startLine != std::string::npos) {
-			fileList = fileList.replace(startLine + 1, endLine - startLine, "");
-		}
-		// PUT length,row,col,value for MODIFIED FILE LIST
-		putCmdResponse = putKVS(sessionid, username, containingDir, fileList);
-	}
 	resp_tuple recursiveDeleteResp = getKVS(sessionid, username,
 			itemToDeleteHash);
 	int respStatus = kvsResponseStatusCode(recursiveDeleteResp);
 	std::string respValue = kvsResponseMsg(recursiveDeleteResp);
 	if (respStatus == 0) {
-		// DELETE username,itemToDeleteHash
-		putCmdResponse = deleteKVS(sessionid, username, itemToDeleteHash);
 		std::deque < std::string > splt = split(respValue, "\n");
 		int lineNum = 0;
 		for (std::string line : splt) {
@@ -862,15 +911,66 @@ void deleteDirectory(struct http_request req, std::string containingDir,
 				if (lineNum != 0) {
 					// Delete Child Files or Directories
 					if (lineSplt[1].at(2) == '1') {
-						deleteFile(req, itemToDeleteHash, lineSplt[1]);
+						deleteKVS(sessionid, username, lineSplt[1]);
 					} else if (lineSplt[1].at(2) == '0') {
-						deleteDirectory(req, itemToDeleteHash, lineSplt[1]);
+						forceDeleteDirectory(req, lineSplt[1]);
 					}
 				}
 				lineNum++;
 			}
 		}
 	}
+	deleteKVS(sessionid, username, itemToDeleteHash);
+}
+
+int deleteDirectory(struct http_request req, std::string containingDir,
+		std::string itemToDeleteHash) {
+	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
+
+	int count = 0;
+	while (count < 10) {
+		resp_tuple getCmdResponse = getKVS(sessionid, username, containingDir);
+		resp_tuple cputCmdResponse;
+		std::string fileList = kvsResponseMsg(getCmdResponse);
+		std::stringstream ss(fileList);
+		std::string fileEntry;
+		std::string contents = "";
+		if (kvsResponseStatusCode(getCmdResponse) == 0) {
+			std::getline(ss, fileEntry, '\n');
+			contents += fileEntry + "\n";
+			bool found = false;
+			while (std::getline(ss, fileEntry, '\n')) {
+				if (!found) {
+					std::size_t foundPos = fileEntry.find_last_of(",");
+					std::string currHash = fileEntry.substr(foundPos + 1);
+					if (currHash != itemToDeleteHash) {
+						contents += fileEntry + "\n";
+					} else {
+						found = true;
+					}
+				} else {
+					contents += fileEntry + "\n";
+				}
+			}
+			if (!found) {
+				return -1;
+			}
+
+			// CPUT length,row,col,value for MODIFIED FILE LIST
+			cputCmdResponse = cputKVS(sessionid, username, containingDir,
+					fileList, contents);
+			int respStatus = kvsResponseStatusCode(cputCmdResponse);
+			if (respStatus == 0) {
+				forceDeleteDirectory(req, itemToDeleteHash);
+				return 0;
+			}
+			count++;
+		} else {
+			return -2;
+		}
+	}
+	return -2;
 }
 
 std::string getParentDirLink(std::string fileHash) {
@@ -882,11 +982,11 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 		std::string containingDirectory) {
 	std::string link;
 	if (fileHash.substr(0, 3).compare("ss0") == 0) {
-		// Directory
+// Directory
 		link = "<li>" + fileName + "<a href=/files/" + fileHash
 				+ ">Open Directory</a>";
 	} else {
-		// File
+// File
 		link = "<li>" + fileName + "<a download=\"" + fileName
 				+ "\" href=/files/" + fileHash + ">Download</a>";
 	}
@@ -940,42 +1040,81 @@ std::string getFileList(struct http_request req, std::string filepath) {
 }
 
 bool isFileRouteDirectory(std::string filepath) {
-	// All directories should end with a '/'
+// All directories should end with a '/'
 	return (filepath.length() > 4 && filepath.substr(0, 4).compare("ss0_") == 0);
 }
 
-void createDirectory(struct http_request req, std::string filepath,
+int createDirectory(struct http_request req, std::string filepath,
 		std::string dirName) {
 	std::string username = req.cookies["username"];
 	std::string sessionid = req.cookies["sessionid"];
 
-	// Construct filepath of new directory
-	std::string dirNameHash = generateStringHash(username + filepath + dirName);
+// Construct filepath of new directory
+	time_t rawtime;
+	struct tm *timeinfo;
+	time(&rawtime);
+	timeinfo = gmtime(&rawtime);
+	std::string temp = asctime(timeinfo);
+	std::string dirNameHash = generateStringHash(
+			username + filepath + dirName + temp);
 	std::string kvsCol = "ss0_" + dirNameHash;
+	std::string newEntry = dirName + "," + kvsCol + "\n";
+
 	// Reading in response to GET --> list of files at filepath
-	resp_tuple getCmdResponse = getKVS(sessionid, username, filepath);
-	resp_tuple putCmdResponse;
-	if (kvsResponseStatusCode(getCmdResponse) == 0) {
+	int count = 0;
+	while (count < 10) {
+		resp_tuple getCmdResponse = getKVS(sessionid, username, filepath);
+		resp_tuple cputCmdResponse;
 		std::string fileList = kvsResponseMsg(getCmdResponse);
-		// Adding new directory to existing file list (IF new dir!)
-		std::string newEntry = dirName + "," + kvsCol + "\n";
-		// Adding new file to existing file list
-		// disallow creation of duplicate named directories
-		if (fileList.find(newEntry) == std::string::npos) {
-			fileList += newEntry;
-			// PUT length,row,col,value for MODIFIED FILE LIST
-			putCmdResponse = putKVS(sessionid, username, filepath, fileList);
-			// PUT new column for new directory
-			putCmdResponse = putKVS(sessionid, username, kvsCol,
-					"PARENT_DIR," + filepath + "\n");
+		std::stringstream ss(fileList);
+		std::string fileEntry;
+		std::string contents = "";
+		if (kvsResponseStatusCode(getCmdResponse) == 0) {
+			std::getline(ss, fileEntry, '\n');
+			contents += fileEntry + "\n";
+			bool found = false;
+			while (std::getline(ss, fileEntry, '\n')) {
+				if (!found) {
+					std::size_t foundPos = fileEntry.find_last_of(",");
+					std::string currName = fileEntry.substr(0, foundPos);
+					if (currName == dirName) {
+						return -1;
+					} else if (currName.compare(dirName) < 0) {
+						contents += fileEntry + "\n";
+					} else {
+						contents += newEntry;
+						contents += fileEntry + "\n";
+						found = true;
+					}
+				} else {
+					contents += fileEntry + "\n";
+				}
+			}
+			if (!found) {
+				contents += newEntry;
+			}
+
+			// CPUT length,row,col,value for MODIFIED FILE LIST
+			cputCmdResponse = cputKVS(sessionid, username, filepath, fileList,
+					contents);
+			int respStatus = kvsResponseStatusCode(cputCmdResponse);
+			if (respStatus == 0) {
+				putKVS(sessionid, username, kvsCol,
+						"PARENT_DIR," + filepath + "\n");
+				return 0;
+			}
+			count++;
+		} else {
+			return -2;
 		}
 	}
+	return -2;
 }
 
 void createRootDirForNewUser(struct http_request req, std::string sessionid) {
 	std::string username = req.formData["username"];
 	std::string dirNameHash = generateStringHash(username + "/");
-	// PUT new column for root directory
+// PUT new column for root directory
 	putKVS(sessionid, username, "ss0_" + dirNameHash, "ROOT,ROOT\n");
 }
 
@@ -1164,7 +1303,7 @@ struct http_request parseRequest(int *client_fd) {
 	}
 	processCookies(req);
 
-	// Remove used header from lines
+// Remove used header from lines
 	int content_length = 0;
 	if (req.headers.find("content-length") != req.headers.end()) {
 		req.content = lines;
@@ -1190,7 +1329,7 @@ struct http_request parseRequest(int *client_fd) {
 
 	log("Actual content size: " + std::to_string(req.content.size()));
 
-	// Process form or file if necessary
+// Process form or file if necessary
 	if (req.headers.find("content-type") != req.headers.end()) {
 		if (req.headers["content-type"].find("multipart/form-data")
 				!= std::string::npos)
@@ -1394,7 +1533,7 @@ struct http_response processRequest(struct http_request &req) {
 	}
 
 	if (req.formData["dir_name"].size() > 0) {
-		// File present to upload
+// File present to upload
 		if (req.filepath.substr(0, 7).compare("/files/") == 0
 				&& req.filepath.length() > 7) {
 			std::string filepath = req.filepath.substr(7);
@@ -1403,7 +1542,7 @@ struct http_response processRequest(struct http_request &req) {
 	}
 
 	if (req.formData["file"].size() > 0) {
-		// File present to upload
+// File present to upload
 		if (req.filepath.substr(0, 7).compare("/files/") == 0
 				&& req.filepath.length() > 7) {
 			std::string filepath = req.filepath.substr(7);
@@ -2327,7 +2466,6 @@ struct http_response processRequest(struct http_request &req) {
 						+ "</p><br/>";
 				resp.cookies.erase("error");
 			}
-			printf("HERHEHREHRHERHE\n");
 			resp.content =
 					"<head><meta charset=\"UTF-8\"></head>"
 							"<html><body "
@@ -2374,7 +2512,7 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/change-password";
 				resp.cookies["error"] = "New passwords do not match.";
 			} else {
-				resp_tuple getResp = getKVS(req.cookies["username"],
+				resp_tuple getResp = getKVS(req.cookies["sessionid"],
 						req.cookies["username"], "password");
 				std::string getRespMsg = kvsResponseMsg(getResp);
 				int getRespStatusCode = kvsResponseStatusCode(getResp);
@@ -2385,7 +2523,7 @@ struct http_response processRequest(struct http_request &req) {
 					resp.headers["Location"] = "/change-password";
 					resp.cookies["error"] = "Current password is not correct.";
 				} else {
-					resp_tuple resp2 = cputKVS(req.cookies["username"],
+					resp_tuple resp2 = cputKVS(req.cookies["sessionid"],
 							req.cookies["username"], "password",
 							req.formData["old"], req.formData["new"]);
 					int respStatus2 = kvsResponseStatusCode(resp2);
@@ -2581,7 +2719,7 @@ void* handle_smtp_connections(void *arg) {
 		else
 			start = 0;
 		checked = true;
-		// Check for complete command in unchecked or newly read buffer.
+// Check for complete command in unchecked or newly read buffer.
 		for (int i = start; i < len - 1; i++) {
 			if (buf[i] == '\r' && buf[i + 1] == '\n') {
 				if (vflag)
@@ -3018,7 +3156,7 @@ int initialize_socket(int port_no, bool datagram) {
 
 int main(int argc, char *argv[]) {
 	/* Set signal handler */
-	//signal(SIGINT, sigint_handler);
+//signal(SIGINT, sigint_handler);
 	/* Initialize mutexes */
 	if (pthread_mutex_init(&fd_mutex, NULL) != 0)
 		log("Couldn't initialize mutex for fd set");
@@ -3124,7 +3262,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	// Requesting list of all backend servers to build mapping (clusterNum) -> (list of servers)
+// Requesting list of all backend servers to build mapping (clusterNum) -> (list of servers)
 	buildClusterToBackendServerMapping();
 
 	/* Add the list of all frontend servers to queue for load balancing if this node is load balancer */
@@ -3172,7 +3310,7 @@ int main(int argc, char *argv[]) {
 		}
 		fclose(f);
 
-		// Start heartbeat thread if not load balancer
+// Start heartbeat thread if not load balancer
 		if (!load_balancer) {
 			log("Starting hearbeat");
 			pthread_t pthread_id;
