@@ -780,14 +780,14 @@ std::deque<std::string> getAllColsForRowKVS(std::string addr, std::string row) {
 	return resp;
 }
 
-std::tuple<int, std::string> getFirstNBytesKVS(std::string addr, std::string row, std::string col, int n) {
+std::tuple<int, int, std::string> getFirstNBytesKVS(std::string addr, std::string row, std::string col, int n) {
 	int portNo = getPortNoFromString(addr);
 	std::string servAddress = getAddrFromString(kvMaster_addr);
 	rpc::client nodeRPCClient(servAddress, portNo);
-	std::tuple<int, std::string> resp;
+	std::tuple<int, int, std::string> resp;
 	try {
 		log("NODE getFirstNBytesKVS");
-		resp = nodeRPCClient.call("getFirstNBytes", row, col, n).as<std::tuple<int, std::string>>();
+		resp = nodeRPCClient.call("getFirstNBytes", row, col, n).as<std::tuple<int, int, std::string>>();
 		return resp;
 	} catch (rpc::rpc_error &e) {
 		std::cout << std::endl << e.what() << std::endl;
@@ -3054,8 +3054,14 @@ struct http_response processRequest(struct http_request &req) {
 					for (std::string col: std::get<1>(entry)){
 						auto first50BytesRaw = getFirstNBytesKVS(target, row, col, 50);
 						if (std::get<0> (first50BytesRaw) != 0) continue;
-						message += "<li> Col: " + col + "<br> First 50 Bytes: <br>";
-						message.append(std::get<1>(first50BytesRaw), 50);
+						int total_size = std::get<1> (first50BytesRaw);
+						std::string raw_bytes = std::get<2> (first50BytesRaw);
+						log("ERROR CODE GETNBYTES" + std::get<0> (first50BytesRaw));
+						log("SIZE GETNBYTES" + total_size);
+						log("RAW BYTES GETNBYTES" + raw_bytes);
+						message += "<li> Col: " + col;
+						message += (total_size <= 50) ? "<br> Entire entry: <br>" : "<br> First 50 Bytes: <br>";
+						message.append(raw_bytes);
 						message += "<br></li>";
 					}
 					message += "</ul><hr>";
