@@ -1015,6 +1015,16 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
             debugDetailed("Current Node %s is NOT primary for %s Request. Forwarding to primary: %s\n", myAddrPortForFrontend.c_str(), kvsFunc.c_str(), myClusterLeader.c_str());
             // send put Req to primary
             bool continueTrying = checkIfNodeIsAlive(myClusterLeader);
+            if(!continueTrying) {
+                debugDetailed("Primary Node %s is dead! Adding node to set of dead nodes.\n", myClusterLeader.c_str());
+                // Add node to set of dead nodes (nodes to skip)
+                clusterNodesToSkip.insert(myClusterLeader);
+                // Get new cluster leader and try again
+                rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
+                resp_tuple newLeaderResp = masterNodeRPCClient.call("getNewClusterLeader", myClusterLeader).as<resp_tuple>();
+                myClusterLeader = std::get<1>(newLeaderResp);
+                continueTrying = true;
+            }
             uint64_t timeout = TIMEOUT_MILLISEC;
             while(continueTrying) {
                 debugDetailed("Starting new rpc::client to primary %s\n", myClusterLeader.c_str());
@@ -1047,7 +1057,6 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
                         // Add node to set of dead nodes (nodes to skip)
                         clusterNodesToSkip.insert(myClusterLeader);
                         // Get new cluster leader and try again
-                        // TODO Make sure this syntax is right
                         rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
                         resp_tuple newLeaderResp = masterNodeRPCClient.call("getNewClusterLeader", myClusterLeader).as<resp_tuple>();
                         myClusterLeader = std::get<1>(newLeaderResp);
@@ -1273,7 +1282,10 @@ void getLoggingUpdates() {
    	int primaryLogNum = 0;
     do {
     	myLastLogNum = getCurrCheckpointCnt();
-    	debugDetailed("------GETLOGGINGUPDATES: myLastLogNum: %d\n", myLastLogNum);
+    	debugDetailed("myLastLogNum: %d\n", myLastLogNum);
+    	debugDetailed("primaryLogNum: %d\n", primaryLogNum);
+    	debugDetailed("myClusterLeader: %s\n", myClusterLeader.c_str());
+    	debugDetailed("%s\n", "-----------");
     	resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); 
     	primaryLogNum = std::get<0>(resp);
     	std::string primaryLog = std::get<1>(resp);
