@@ -28,6 +28,8 @@ int main() {
     rpc::client c2("localhost", 10002);
     rpc::client c3("localhost", 10004);
 
+    rpc::client c4("localhost", 10006);
+
     try {
         std::string rowString("lianap");
         std::string randomNameString("idiot@gmail");
@@ -41,7 +43,7 @@ int main() {
 
         // consistnecy tests
         std::cout << "ON SERV(p=10001): put(lianap, name, Lee) = ";
-        resp = c2.call("put", "lianap", "name", "Lee").as<resp_tuple>();
+        resp = c4.call("put", "lianap", "name", "Lee").as<resp_tuple>();
         std::cout << std::get<1>(resp) << std::endl;
         isCorrect("OK", std::get<1>(resp));
 
