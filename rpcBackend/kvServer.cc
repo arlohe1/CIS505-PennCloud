@@ -1135,7 +1135,7 @@ std::tuple<int, int, std::string> getFirstNBytes(std::string row, std::string co
     if(std::get<0>(resp) == 0) {
         return std::make_tuple(0, origValLength, val);
     }
-    return std::make_tuple(0, 0, "Error! Row+Col does not exist");
+    return std::make_tuple(std::get<0>(resp), 0, "Error! Row+Col does not exist");
 }
 
 
