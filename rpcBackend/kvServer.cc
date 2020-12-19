@@ -601,13 +601,15 @@ int loadKvStoreFromDisk() {
 	chdirToCheckpoint();
 	DIR* dir = opendir(".");
 	struct dirent* nextRowDir;
-	nextRowDir = readdir(dir); // skip "."
-	nextRowDir = readdir(dir); // skip ".."
 	
 	FILE* colFilePtr; 
 	char headerBuf[MAX_LEN_LOG_HEADER];
 	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
 	while((nextRowDir = readdir(dir)) != NULL) {
+        if(strcmp(nextRowDir->d_name, ".") == 0 || strcmp(nextRowDir->d_name, "..") == 0) {
+            // Skip "." and ".." entries
+            continue;
+        }
 		// cd into next row directory
 		if (chdirToRow(nextRowDir->d_name) < 0) {
 			debugDetailed("error opening row directory %s\n", nextRowDir->d_name);
@@ -616,20 +618,25 @@ int loadKvStoreFromDisk() {
 		// loop over column files
 		DIR* colDir = opendir(".");
 		struct dirent* nextColFile;
-		nextColFile = readdir(colDir); // skip "."
-		nextColFile = readdir(colDir); // skip ".."
 		while((nextColFile = readdir(colDir)) != NULL) {
+            if(strcmp(nextColFile->d_name, ".") == 0 || strcmp(nextColFile->d_name, "..") == 0) {
+                // Skip "." and ".." entries
+                continue;
+            }
 			//open the column file
 			if ((colFilePtr = fopen(nextColFile->d_name, "r")) == NULL) {
 				debugDetailed("fopen failed when opening %s\n", nextColFile->d_name);
 				perror("invalid fopen of a checkpoint col file: ");			
 				debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk WITH ERROR");
-				return -1;
+				// return -1;
+                exit(-1);
 			}
 			// read from column file the formatted length
+            debugDetailed("Current DIR TO TRY FGETS ON dir: %s\n", nextColFile->d_name);
 			if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
 				perror("invalid fgets when trying to read col file reader: ");	
-				return -1;
+				// return -1;
+                exit(-1);
 			}
 			headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
 			int valLen = (atoi(headerBuf));
@@ -648,9 +655,7 @@ int loadKvStoreFromDisk() {
 	closedir(dir);
 	
 	debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk");
-
 	return 0;	
-
 }
 
 
