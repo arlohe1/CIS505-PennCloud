@@ -24,6 +24,7 @@ serverfiles:
 	rm -r server_3/
 	mkdir server_1 server_2 server_3
 	mkdir server_1/checkpoint server_2/checkpoint server_3/checkpoint
+	mkdir server_1/logArchive server_2/logArchive server_3/logArchive
 	touch server_1/log.txt server_2/log.txt server_3/log.txt
 	
 clean:
