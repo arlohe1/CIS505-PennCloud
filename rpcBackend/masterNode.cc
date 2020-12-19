@@ -47,6 +47,16 @@ void log(std::string str) {
 	if (debugFlag)
         stderr_msg(str);
 }
+//
+// Returns addr from given string of format addr:port
+std::string getIPAddr(std::string addrPort) {
+    return addrPort.substr(0, addrPort.find(":"));
+}
+
+// Returns port from given string of format addr:port
+int getIPPort(std::string addrPort) {
+    return stoi(addrPort.substr(addrPort.find(":")+1));
+}
 
 // Returns the cluster # that contains the row based on first letter of row
 // Returns -1 on error
@@ -134,6 +144,7 @@ std::tuple<int, std::string> getNewClusterLeader(std::string oldLeader) {
             errno = s;
             perror("Error with pthread_join");
         }
+        i++;
     }
     free(tinfo);
     return std::make_tuple(0, newLeader);
@@ -152,6 +163,13 @@ std::tuple<int, std::string> registerWithMaster(std::string serverAddr) {
         // First node for that cluster has been registered. Set it as cluster leader.
         clusterToLeaderMap[cluster] = serverAddr;
         log("New node "+serverAddr+" set as leader of cluster "+std::to_string(cluster));
+    }
+    std::string clusterLeader = clusterToLeaderMap[cluster];
+    if(serverAddr.compare(clusterLeader) != 0) {
+        rpc::client leaderClient(getIPAddr(clusterLeader), getIPPort(clusterLeader));
+        log("Notifying "+clusterLeader+" of new node "+serverAddr);
+        int result = leaderClient.call("notifyOfNewNode", serverAddr).as<int>();
+        log("Done notifying "+clusterLeader+" of new node "+serverAddr);
     }
     return std::make_tuple(0, clusterToLeaderMap[cluster]);
 }
@@ -175,6 +193,23 @@ std::deque<server_addr_tuple> getNodesFromMap(std::map<int, std::deque<std::stri
     return result;
 }
 
+std::deque<server_addr_tuple> getNodesFromDeque(int clusterNum, std::deque<std::string> serverList) {
+    std::deque<server_addr_tuple> result;
+
+    if(testMode) {
+        result.push_back(std::make_tuple(0, true, "127.0.0.1:10000", "127.0.0.1:10001"));
+        return result;
+    }
+
+    for (std::string server : serverList) {
+        bool isClusterLeader = ((clusterToLeaderMap[clusterNum]).compare(server) == 0);
+        std::string addrPortForAdmin = frontendAddrPortToAdminAddrPort[server];
+        server_addr_tuple serverInfo = std::make_tuple(clusterNum, isClusterLeader, server, addrPortForAdmin);
+        result.push_back(serverInfo);
+    }
+    return result;
+}
+
 // Returns a deque of server_addr_tuples for all active backend nodes
 std::deque<server_addr_tuple> getActiveNodes() {
     log("getActiveNodes requested.");
@@ -185,6 +220,14 @@ std::deque<server_addr_tuple> getActiveNodes() {
 std::deque<server_addr_tuple> getAllNodes() {
     log("getAllNodes requested.");
     return getNodesFromMap(clusterToServersMap);
+}
+
+// Returns a deque of server_addr_tuples for all nodes in the given server's cluster
+std::deque<server_addr_tuple> getClusterNodes(std::string server) {
+    log("getClusterNodes requested from server: "+server);
+    int clusterNum = serverToClusterMap[server];
+    std::deque<std::string> serverList = clusterToServersMap[clusterNum];
+    return getNodesFromDeque(clusterNum, serverList);
 }
 
 int main(int argc, char *argv[]) {	
@@ -213,7 +256,7 @@ int main(int argc, char *argv[]) {
 				break;
 		}
 	}
-
+    
     if(optind < argc) {
         serverListFile = argv[optind];
     }
@@ -267,6 +310,8 @@ int main(int argc, char *argv[]) {
 	srv.bind("getActiveNodes", &getActiveNodes);
 	srv.bind("getAllNodes", &getAllNodes);
 	srv.bind("registerWithMaster", &registerWithMaster);
+	srv.bind("getClusterNodes", &getClusterNodes);
+    srv.bind("getNewClusterLeader", &getNewClusterLeader);
 
 	srv.run();
 

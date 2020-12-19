@@ -3,11 +3,14 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
-#include <rpc/server.h>
-#include <rpc/client.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <pthread.h>
+
+#include <rpc/server.h>
+#include "rpc/client.h"
+#include "rpc/rpc_error.h"
+#include "rpc/this_server.h"
 
 #include <errno.h>
 #include <sys/socket.h>
@@ -19,6 +22,7 @@
 #include <time.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 
 #include <map>
 #include <iostream>
@@ -28,29 +32,42 @@
 #include <ctime>
 #include <tuple>
 #include <string>
+#include <fstream>
+#include <streambuf>
 
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
-#define COM_PER_CHECKPOINT 10
-enum Command {GET, PUT, CPUT, DELETE};
+#define COM_PER_CHECKPOINT 2
+#define TIMEOUT_MILLISEC 10000
+#define CHECKPOINT_CNT_FILE "checkpointNum.txt"
 
+enum Command {GET, PUT, CPUT, DELETE};
+enum EvictCause {MEM, COMM};
 
 int debugFlag;
 int err = -1;
 int detailed = 0;
 int replay = 0;
-int numCommandsSinceLastCheckpoint = 0;
 
-
-int serverIdx = 1;
+int serverIdx;
 int maxCache;
 int startCacheThresh;
-int cacheSize = 0;
+
+// shared read/write data structures for threads
+volatile int numCommandsSinceLastCheckpoint = 0;
+volatile int cacheSize = 0;
 std::map<std::string, std::map<std::string, std::string>> kvMap; // row -> col -> value
 std::map<std::string, std::map<std::string, int>> kvLoc; // row -> col -> val (-1 for val deleted, 0 for val on disk, 1 for val in kvMap)
-FILE* logfile = NULL;
-FILE* logfileRead = NULL;
+
+// semphores
+pthread_mutex_t checkpointSemaphore;
+pthread_mutex_t cacheSizeSemaphore;
+pthread_mutex_t primarySemaphore;
+pthread_mutex_t numCommandsSinceLastCheckpointSemaphore;
+pthread_mutex_t logfileSemaphore;
+std::map<std::string, pthread_mutex_t> rwSemaphores; // row -> rw semaphore
+
 std::string myAddrPortForFrontend;
 std::string myAddrPortForAdmin;
 int kvsPortForFrontend = 0;
@@ -59,32 +76,43 @@ std::string masterNodeAddrPort;
 std::string myClusterLeader;
 pthread_t kvServerWithFrontendThreadId;
 
+std::deque<std::string> clusterMembers;
+std::map<std::string, std::string> serverKVSPortToAdminPortMap;
+std::set<std::string> clusterNodesToSkip;
+
+// Cluster Number, isClusterLeader, Addr:Port for comm w/ Frontend, Addr:Port for comm w/ Admin
+using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
+using resp_tuple = std::tuple<int, std::string>;
+
+
+
+// Returns addr from given string of format addr:port
+std::string getIPAddr(std::string addrPort) {
+    return addrPort.substr(0, addrPort.find(":"));
+}
+
+// Returns port from given string of format addr:port
+int getIPPort(std::string addrPort) {
+    return stoi(addrPort.substr(addrPort.find(":")+1));
+}
+
+// Returns true if this node is the cluster leader (false o/w)
+bool isPrimary() {
+    return (myAddrPortForFrontend.compare(myClusterLeader) == 0);
+}
+
 void debugTime() {
 	if (debugFlag) {
-		std::chrono::time_point<std::chrono::system_clock> now = std::chrono::system_clock::now();
-		auto duration = now.time_since_epoch();
-
-		typedef std::chrono::duration<int, std::ratio_multiply<std::chrono::hours::period, std::ratio<8>
-		>::type> Days; 
-
-		Days days = std::chrono::duration_cast<Days>(duration);
-		    duration -= days;
-		auto hours = std::chrono::duration_cast<std::chrono::hours>(duration);
-		    duration -= hours;
-		auto minutes = std::chrono::duration_cast<std::chrono::minutes>(duration);
-		    duration -= minutes;
-		auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration);
-		    duration -= seconds;
-		auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(duration);
-		    duration -= microseconds;
-
-		std::cout << hours.count() << ":"
-		          << minutes.count() << ":"
-		          << seconds.count() << "."
-		          << microseconds.count() << " S"
-		          << serverIdx << " " << std::flush;
-	}
-	
+        struct timeval tval;
+        gettimeofday(&tval, NULL);
+        struct tm *tm_info = localtime(&tval.tv_sec);
+        char timeBuff[25] = "";
+        strftime(timeBuff, 25, "%H:%M:%S", tm_info);
+        char timeBuffWithMilli[50] = "";
+        sprintf(timeBuffWithMilli, "%s.%06ld ", timeBuff, tval.tv_usec);
+        std::string timestamp(timeBuffWithMilli);
+		std::cout << timestamp << std::flush;
+    }
 }
 
 //needs atleast 2 args always
@@ -105,6 +133,105 @@ void volatileMemset(volatile int* start, char c, int len) {
 	}
 	
 }
+
+int lockAllRowsExcept(std::string row) {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (x.first != row) {
+			if (pthread_mutex_lock(&rwSemaphores[x.first]) != 0) {
+				debugDetailed("%s\n", "error obtaining mutex lock in lockAllRowsExcept()");
+				return -1;
+			}
+		}
+    	
+	}
+	debugDetailed("-----lockAllRowsExcept------: %s %s\n", "completed locks except on row: ", row.c_str());
+	return 0;
+	// unlock map
+}
+
+int unlockAllRowsExcept(std::string row) {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (x.first != row) {
+			if (pthread_mutex_unlock(&rwSemaphores[x.first]) != 0) {
+				debugDetailed("%s\n", "error unlocking mutex in lockAllRowsExcept()");
+				return -1;
+			}
+		}
+    	
+	}
+	debugDetailed("-----unlockAllRowsExcept------: %s %s\n", "completed all unlocks except on row: ", row.c_str());
+	return 0;
+	// unlock map
+}
+
+int lockAllRows() {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (pthread_mutex_lock(&rwSemaphores[x.first]) != 0) {
+			debugDetailed("%s\n", "error obtaining mutex lock in lockAllRowsExcept()");
+			return -1;
+		}	
+	}
+	debugDetailed("-----lockAllRowsExcept------: %s\n", "completed locks except on row: ");
+	return 0;
+	// unlock map
+}
+
+int unlockAllRows() {
+	// lock map
+	// loop over semaphore map and lock row
+	for (const auto& x : rwSemaphores) {
+		//x.first is row, x.second is semaphore
+		if (pthread_mutex_unlock(&rwSemaphores[x.first]) != 0) {
+			debugDetailed("%s\n", "error unlocking mutex in lockAllRowsExcept()");
+			return -1;
+		}
+	}
+	debugDetailed("-----unlockAllRowsExcept------: %s\n", "completed all unlocks except on row: ");
+	return 0;
+	// unlock map
+}
+
+
+int lockRow(std::string row) {
+	if (rwSemaphores.count(row) == 0) {
+		// initalize semaphore for this row
+		if (pthread_mutex_init(&rwSemaphores[row], NULL) != 0) {
+			perror("invalid pthread_mutex_init:");
+			return -1;
+		}
+		debugDetailed("-----LOCK ROW------: %s, row: %s\n", "new lock created", row.c_str());
+	}
+	if (pthread_mutex_lock(&rwSemaphores[row]) != 0) {
+		debugDetailed("%s\n", "error obtaining mutex lock");
+		return -1;
+	}
+	debugDetailed("-----LOCK ROW------: %s, row:%s\n", "lock obtained, returning", row.c_str());
+	return 0;
+}
+
+int unlockRow(std::string row) {
+	if (rwSemaphores.count(row) == 0) {
+		// initalize semaphore for this row
+		debugDetailed("ERROR IN UNLOCK ROW: %s", "unlock called on nonexistent mutex");
+		exit(-1);
+	}
+	if (pthread_mutex_unlock(&rwSemaphores[row]) != 0) {
+		debug("%s\n", "error unlocking mutex");
+		return -1;
+	}
+	debugDetailed("-----UNLOCK ROW------: %s, row:%s\n", "completed unlock, returning", row.c_str());
+	return 0;
+}
+
 
 
 void printKvMap() {
@@ -136,7 +263,6 @@ void printKvLoc() {
 	    }
 	    std::cout << std::flush;
 	}
-	
 }
 
 // TODO - eviction: global count of values put into mem, map of r, c, 0/1 in mem or disk, 
@@ -154,11 +280,7 @@ void chdirToCheckpoint() {
  		}
  		exit(-1);
  	}
-
-
 }
-
-
 
 // makes dirName directory if doesnt already exist, and cds gto the directory //returns 0 if dir exists, else -1
 int chdirToRow(const char* dirName) {
@@ -169,8 +291,8 @@ int chdirToRow(const char* dirName) {
  	} else {
  		int mkdirRet = mkdir(dirName, 0777);
  		if (mkdirRet < 0) {
- 			debugDetailed("failed to create new row dir: %s", dirName);
- 			if (write(STDERR_FILENO, "failed to create a checkpointing row directory", strlen( "failed to create a checkpointing row directory")) < 0) {
+            debugDetailed("failed to create new row dir: %s\n", dirName);
+            if (write(STDERR_FILENO, "failed to create a checkpointing row directory\n", strlen( "failed to create a checkpointing row directory\n")) < 0) {
 	 			perror("invalid write: ");
 	 		}
 	 		exit (-1); //TODO - handle this better
@@ -179,8 +301,8 @@ int chdirToRow(const char* dirName) {
 	 	if (chdirRet == 0) {
 	 		debugDetailed("cd into row dir (just created): %s\n", dirName);	
 	 	} else {
-	 		debugDetailed("failed to cd into newly created row dir: %s", dirName);
-	 		if (write(STDERR_FILENO, "failed to cd into newly created row directory", strlen("failed to cd into newly created row directory")) < 0) {
+            debugDetailed("failed to cd into newly created row dir: %s\n", dirName);
+            if (write(STDERR_FILENO, "failed to cd into newly created row directory\n", strlen("failed to cd into newly created row directory\n")) < 0) {
 	 			perror("invalid write: ");
 	 		}
 	 		exit(-1);
@@ -190,168 +312,78 @@ int chdirToRow(const char* dirName) {
 
 }
 
-// // todo add threshold arg, write calloc wrapper that runs checkpoint if calloc fails
-// // returns -1 if row, col doesnt exist, -2 if cannot calloc, -3 for other error
-// int moveFromDiskToLocal(char* row, char* col) {
-// // 	// check that this row,col exists and is not in kv cache already
-// 	if (kvLoc.count(row) > 0) {
-// 		if (kvLoc.count(col) > 0) {
-// 			// check that kvLoc val is 0 (on disk) and not 1 or -1
-// 			if (kvLoc[row][col] == 1) {
-// 				debugDetailed("row (%s) col (%s) already in local cache\n", row, col);
-// 			} else if (kvLoc[row][col] == -1) {
-// 				debugDetailed("row (%s) col (%s) was deleted, nothing to move to local from disk\n", row, col);
-// 			} else {
-// 				// need to retrieve from disk
-// 				chdirToCheckpoint();
-// 				chdirToRow((const char*) row);
-// 				FILE* colFilePtr;
-// 				if ((colFilePtr = fopen(col.c_str(), "r")) == NULL) {
-// 					debugDetailed("fopen failed when opening %s\n", nextColFile->d_name);
-// 					perror("invalid fopen of a checkpoint col file: ");			
-// 					debugDetailed("%s\n", "---------Finished  moveFromDiskToLocal WITH ERROR");
-// 					return -3;
-// 				}
-// 				// read from column file the formatted length
-// 				char headerBuf[MAX_LEN_LOG_HEADER];
-// 				memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
-// 				if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
-// 					perror("invalid fgets when trying to read col file reader: ");	
-// 					return -3;
-// 				}
-// 				headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
-// 				int valLen = (atoi(headerBuf));
-// 				debugDetailed("buf read from checkpoint file (%s) is: %s, valLen:%d\n", nextColFile->d_name, headerBuf, valLen);
-// 				char* val = (char*) calloc(valLen, sizeof(char)); //TODO check if calloc fails and check if length will be too long
-// 				if (val != NULL) {
-// 					fread(val, sizeof(char), valLen, colFilePtr);
-// 				} else {
-// 					perror("cannot calloc value in moveFromDiskToLocal()");
-// 					return -2;
-// 				}
-// 				// enter into kvMap
-// 				std::string rowString(row);
-// 				std::string colString(col);
-// 				std::string valString(val, valLen);
-// 				kvMap[rowString][colString] = valString;
-// 				//free calloc, close file
-// 				free(val);
-// 				fclose(colFilePtr);
-// 			}
-// 			return 0;
-// 		}
-// 	}
 
-// 	debugDetailed("---row, col, val not in kvLoc - row: %s, column: %s\n", row.c_str(), col.c_str());
-// 	return -1;	 
-// }
-
-
-// TODO - make sure deleted rows are handled correclty
-void runCheckpoint() {
-	int valLen;
-	debugDetailed("%s,\n", "--------RUNNING CHECKPOINT--------");
-	printKvMap();
-	printKvLoc();
-	// cd into checkpoint directory
-	chdirToCheckpoint();
-	// loop over rows in create folder for each
-	FILE* colFilePtr;
-	for (const auto& x: kvLoc) {
-		std::string row = x.first;
-		chdirToRow(row.c_str());
-		//loop over columns, create new or truncate file for each and write value to file
-		for (auto it = x.second.cbegin(); it != x.second.cend();) {
-		//for (const auto& y: x.second) {	
-			//std::string col = y.first;
-			std::string col = (*it).first;
-			if (col.c_str() == NULL) {
-				printf("found nullllllllllllllllllllllll\n");
-			}
-			//std::string val = y.second;
-			//int loc = y.second;
-			int loc = (*it).second;
-			debugDetailed("loop for: %s, -> %d\n", col.c_str(), loc);
-			// case on kvLoc val -1 (deleted), 0 (on disk), or 1 (in local kvMap)
-			if (loc == -1) {
-				if(remove( col.c_str() ) != 0 ) {
-     				perror( "Error deleting file" );
-				} else {
-				 	debugDetailed("checkpoint deletes file: %s\n", col.c_str());
-				 	// NOTE - del has already been called and removed the val form kvMap and adjusted cache size
-				// 	//valLen = kvMap[row][col].length();
-				// 	kvMap[row].erase(col);
-				// 	printf("reached 0\n");
-				 	//kvLoc[row].erase(col);
-				 	it = kvLoc[row].erase(it);
-
-				// 	//cacheSize = cacheSize - valLen;
-				 	printKvMap();
-					printKvLoc();
-				// 	printf("reached 1\n");
-					
-				}
-				printf("TODO --- delete file\n");
-			} else if (loc == 1) {
-				debugDetailed("checkpoint writes file: %s\n", col.c_str());
-				colFilePtr = fopen((col).c_str(), "w");
-				// write all value to file with format valLen\nvalue
-				fprintf(colFilePtr, "%ld\n", kvMap[row][col].length());
-				fwrite(kvMap[row][col].c_str(), sizeof(char), kvMap[row][col].length(), colFilePtr);
-				fclose(colFilePtr);	
-				valLen = kvMap[row][col].length();
-				kvMap[row].erase(col);
-				kvLoc[row][col] = 0;
-				cacheSize = cacheSize - valLen;		
-				printKvMap();
-				++it;
-			} else {
-				++it;
-			}
-			printf("reached 2\n");		
-		}
-		printf("reached 3\n");
-		
-		chdir("..");
-		printf("reached 4\n");
+int lockPrimary() {
+	if (pthread_mutex_lock(&primarySemaphore) != 0) {
+		debugDetailed("%s\n", "error obtaining numComm. mutex lock");
+		return -1;
 	}
-	// cd back out to server directory
-	chdir("..");
-	printf("reached 5\n");
-
-	// clear logfile if not currently replaying log
-	if (replay == 0) {
-		printf("reached 6\n");
-		FILE* logFilePtr;
-		logFilePtr = fopen("log.txt", "w");
-		fclose(logFilePtr);
-		debugDetailed("%s,\n", "--------cleared log file and return--------");
-	}
-	numCommandsSinceLastCheckpoint = 0;
-	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
-	printKvMap();
-	printKvLoc();
-	debugDetailed("%s,\n", "--------checkpoint finished and return--------");
-	return;
-	
-
-	// need to add new function - loadKvStore - parses all row files and enters the appropriate column, value into map
-
+	debugDetailed("LOCK primarySemaphore: %s\n", "lock obtained, returning");
+	return 0;
 }
 
-FILE * openValFile(char* row, char* col, const char* mode) {
-	std::string filePath("checkpoint");
-	std::string rowString(row);
-	std::string colString(col);
-	filePath = filePath + "/" + rowString + "/" + colString;
-	FILE* ret = fopen(filePath.c_str(), mode);
-	if (ret == NULL) {
-		perror("error in fopen in openValFile: ");
-		debugDetailed("openValFile error in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
+int unlockPrimary() {
+	if (pthread_mutex_unlock(&primarySemaphore) != 0) {
+		debug("%s\n", "error unlocking numComm mutex");
+		return -1;
 	}
-	debugDetailed("openValFile finished in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
-	return ret;
+	debugDetailed("UNLOCK primarySemaphore: %s\n", "completed unlock, returning");
+	return 0;
+}
 
+int lockNumComm() {
+	if (pthread_mutex_lock(&numCommandsSinceLastCheckpointSemaphore) != 0) {
+		debugDetailed("%s\n", "error obtaining numComm. mutex lock");
+		return -1;
+	}
+	debugDetailed("LOCK numCommandsSinceLastCheckpointSemaphore: %s\n", "lock obtained, returning");
+	return 0;
+}
+
+int unlockNumComm() {
+	if (pthread_mutex_unlock(&numCommandsSinceLastCheckpointSemaphore) != 0) {
+		debug("%s\n", "error unlocking numComm mutex");
+		return -1;
+	}
+	debugDetailed("UNLOCK numComm: %s\n", "completed unlock, returning");
+	return 0;
+}
+
+int lockLogFile() {
+	if (pthread_mutex_lock(&logfileSemaphore) != 0) {
+		debugDetailed("%s\n", "error obtaining logfile mutex lock");
+		return -1;
+	}
+	debugDetailed("LOCK LOGFILE: %s\n", "lock obtained, returning");
+	return 0;
+}
+
+int unlockLogFile() {
+	if (pthread_mutex_unlock(&logfileSemaphore) != 0) {
+		debug("%s\n", "error unlocking logfile mutex");
+		return -1;
+	}
+	debugDetailed("UNLOCK LOGFILE: %s\n", "completed unlock, returning");
+	return 0;
+}
+
+
+int lockCheckpoint() {
+	if (pthread_mutex_lock(&checkpointSemaphore) != 0) {
+		debugDetailed("%s\n", "error obtaining checkpoint mutex lock");
+		return -1;
+	}
+	debugDetailed("LOCK CHECKPOINT: %s\n", "lock obtained, returning");
+	return 0;
+}
+
+int unlockCheckpoint() {
+	if (pthread_mutex_unlock(&checkpointSemaphore) != 0) {
+		debug("%s\n", "error unlocking checkpoint mutex");
+		return -1;
+	}
+	debugDetailed("UNLOCK CHECKPOINT: %s\n", "completed unlock, returning");
+	return 0;
 }
 
 // gets header from a newly opened row file in checkpoint folder
@@ -370,17 +402,172 @@ int getValSize(FILE* colFilePtr) {
 	
 }
 
+int getCurrCheckpointCnt() {
+	int lastCnt;
+	FILE* cntFile;
+	if ((cntFile = fopen(CHECKPOINT_CNT_FILE, "r")) == NULL) {
+		lastCnt = 0;
+	} else {
+		lastCnt = getValSize(cntFile);
+		fclose(cntFile);
+	}
+	return lastCnt;
+}
+
+void updateCheckpointCount() {
+	// try to open file - if failed (numCheckpoint is 1), else read and update
+	FILE* cntFile;
+	int lastCnt = getCurrCheckpointCnt();	
+	if ((cntFile = fopen(CHECKPOINT_CNT_FILE, "w")) == NULL) {
+		perror("error crating checkpoint cnt file: ");
+	}
+	fprintf(cntFile, "%d\n", lastCnt+1);
+	fclose(cntFile);
+}
+
+std::string readFileToString(char* filePath) {
+	std::ifstream logFile(filePath);
+	std::string str((std::istreambuf_iterator<char>(logFile)), std::istreambuf_iterator<char>());
+	return str;
+}
+
+resp_tuple sendUpdates(int lastLogNum) {
+	// lock primary semaphore - if this node is a primary, prevent it from performing new requests
+	lockPrimary();
+	int myLastLogNum = getCurrCheckpointCnt();
+	std::string logText;
+	if (lastLogNum == myLastLogNum) {
+		// send as string log.txt content
+		logText = readFileToString((char*) "log.txt");
+	} else {
+		std::string nextLog("logArchive/log");
+		nextLog = nextLog + std::to_string((lastLogNum + 1));
+		logText = readFileToString((char*) nextLog.c_str());
+		// send log{lastLogNum + 1} from archive folder
+	}
+	debugDetailed("----sendUpdates: sndr's lastLogNum: %d, myLastLogNum: %d, text response: %s\n", lastLogNum, myLastLogNum, logText.c_str());
+	unlockPrimary();
+	resp_tuple resp = std::make_tuple(myLastLogNum, logText);
+	return resp;
+}
+
+// TODO - make sure deleted rows are handled correclty
+void runCheckpoint(int evictCause) {
+	int valLen;
+	debugDetailed("%s\n", "RUNNING CHECKPOINT");
+	lockAllRows();
+	printKvMap();
+	printKvLoc();
+	
+	// cd into checkpoint directory
+	chdirToCheckpoint(); 
+
+	// move updates to disk - loop over rows in create folder for each item in kvMap
+	FILE* colFilePtr;
+	for (const auto& x: kvLoc) {
+		std::string row = x.first;
+		chdirToRow(row.c_str());
+		//loop over columns, create new or truncate file for each and write value to file
+		for (auto it = x.second.cbegin(); it != x.second.cend();) {
+		//for (const auto& y: x.second) {	
+			//std::string col = y.first;
+			std::string col = (*it).first;
+			if (col.c_str() == NULL) {
+				//printf("found nullllllllllllllllllllllll\n");
+			}
+			int loc = (*it).second;
+			debugDetailed("loop for: %s, -> %d\n", col.c_str(), loc);
+			// case on kvLoc val -1 (deleted), 0 (on disk), or 1 (in local kvMap)
+			if (loc == -1) {
+				if(remove( col.c_str() ) != 0 ) {
+                    debugDetailed("File did not exist for col %s. Skipping!\n", col.c_str());
+				} else {
+                    debugDetailed("Deleting file for col %s\n", col.c_str());
+				}
+                // NOTE - del has already been called and removed the val form kvMap and adjusted cache size
+                it = kvLoc[row].erase(it);
+                printKvLoc();
+			} else if (loc == 1) {
+				debugDetailed("checkpoint writes file: %s\n", col.c_str());
+				colFilePtr = fopen((col).c_str(), "w");
+                // write all value to file with format valLen\nvalue
+                fprintf(colFilePtr, "%ld\n", kvMap[row][col].length());
+				fwrite(kvMap[row][col].c_str(), sizeof(char), kvMap[row][col].length(), colFilePtr);
+				fclose(colFilePtr);	
+				valLen = kvMap[row][col].length();
+				kvMap[row].erase(col);
+				kvLoc[row][col] = 0;
+				cacheSize = cacheSize - valLen;		
+				printKvMap();
+				++it;
+			} else {
+				++it;
+			}
+		}
+		chdir("..");
+	}
+	// cd back out to server directory
+	chdir("..");
+	
+	// handle logging updates if eviction occurs due to nummCommandsSinceLastCheckpoint, 
+	//if eviction due to space just move things out of local memory to disk above 
+	if (evictCause == COMM) {
+		updateCheckpointCount();
+		// archive current log, and clear log.txt
+		int lastCnt = getCurrCheckpointCnt();
+		std::string archiveLog("logArchive/log");
+		archiveLog = archiveLog + std::to_string(lastCnt);
+		debugDetailed("----------checkpoint archive log: %s\n", archiveLog.c_str());
+		rename("log.txt", archiveLog.c_str());
+		FILE* logFilePtr = fopen("log.txt", "w");
+		fclose(logFilePtr);
+		debugDetailed("%s,\n", "--------moved old logfile to archive and created new--------");
+		numCommandsSinceLastCheckpoint = 0;
+	}
+	
+	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
+	printKvMap();
+	printKvLoc();
+	debugDetailed("%s,\n", "--------checkpoint finished and return--------");
+	unlockAllRows();
+	return;
+	// need to add new function - loadKvStore - parses all row files and enters the appropriate column, value into map
+}
+
+FILE * openValFile(char* row, char* col, const char* mode) {
+	if (lockCheckpoint() < 0) {
+		exit(-1);
+	}
+	std::string filePath("checkpoint");
+	std::string rowString(row);
+	std::string colString(col);
+	filePath = filePath + "/" + rowString + "/" + colString;
+	FILE* ret = fopen(filePath.c_str(), mode);
+	if (ret == NULL) {
+		perror("error in fopen in openValFile: ");
+		debugDetailed("openValFile error in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
+	}
+	debugDetailed("openValFile finished in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
+	if (unlockCheckpoint() < 0) {
+		exit(-1);
+	}
+	return ret;
+
+}
+
 
 // returns 0 if there was space, and -1 if not
 int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, char* col) {
 	// check if space
+	lockRow(row);
 	if (cacheSize + valLen <= cacheThresh) {
 		// read in val 
 		char* val = (char*) calloc(valLen, sizeof(char));
 		if (val != NULL) {
 			fread(val, sizeof(char), valLen, fptr);
 		} else {
-			perror("cannot calloc value in loadKvStoreFromDisk()");
+			perror("cannot calloc value in readAndLoadValIfSpace()");
+			unlockRow(row);
 			return -1;
 		}
 		//update kvMap and kvLoc
@@ -391,29 +578,35 @@ int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, ch
 		cacheSize = cacheSize + valLen;
 		kvLoc[rowString][colString] = 1;
 		free(val);
+		unlockRow(row);
 		return 0;
 	} else {
 		// update kvLoc
 		std::string rowString(row);
 		std::string colString(col);
 		kvLoc[rowString][colString] = 0;
+		unlockRow(row);
 		return -1;
 	}
 }
 
+
+// call on server start
 int loadKvStoreFromDisk() {
 	// loop over all files in checkpoint dir and read each row file
 	debugDetailed("%s\n", "---------Entered loadKvStoreFromDisk");
 	chdirToCheckpoint();
 	DIR* dir = opendir(".");
 	struct dirent* nextRowDir;
-	nextRowDir = readdir(dir); // skip "."
-	nextRowDir = readdir(dir); // skip ".."
 	
 	FILE* colFilePtr; 
 	char headerBuf[MAX_LEN_LOG_HEADER];
 	memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
 	while((nextRowDir = readdir(dir)) != NULL) {
+        if(strcmp(nextRowDir->d_name, ".") == 0 || strcmp(nextRowDir->d_name, "..") == 0) {
+            // Skip "." and ".." entries
+            continue;
+        }
 		// cd into next row directory
 		if (chdirToRow(nextRowDir->d_name) < 0) {
 			debugDetailed("error opening row directory %s\n", nextRowDir->d_name);
@@ -422,20 +615,25 @@ int loadKvStoreFromDisk() {
 		// loop over column files
 		DIR* colDir = opendir(".");
 		struct dirent* nextColFile;
-		nextColFile = readdir(colDir); // skip "."
-		nextColFile = readdir(colDir); // skip ".."
 		while((nextColFile = readdir(colDir)) != NULL) {
+            if(strcmp(nextColFile->d_name, ".") == 0 || strcmp(nextColFile->d_name, "..") == 0) {
+                // Skip "." and ".." entries
+                continue;
+            }
 			//open the column file
 			if ((colFilePtr = fopen(nextColFile->d_name, "r")) == NULL) {
 				debugDetailed("fopen failed when opening %s\n", nextColFile->d_name);
 				perror("invalid fopen of a checkpoint col file: ");			
 				debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk WITH ERROR");
-				return -1;
+				// return -1;
+                exit(-1);
 			}
 			// read from column file the formatted length
+            debugDetailed("Current DIR TO TRY FGETS ON dir: %s\n", nextColFile->d_name);
 			if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
 				perror("invalid fgets when trying to read col file reader: ");	
-				return -1;
+				// return -1;
+                exit(-1);
 			}
 			headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
 			int valLen = (atoi(headerBuf));
@@ -447,37 +645,52 @@ int loadKvStoreFromDisk() {
 			memset(headerBuf, 0, sizeof(char) * MAX_LEN_LOG_HEADER);
 			fclose(colFilePtr);
 		}
+		closedir(colDir);
 		chdir("..");
 	}
 	chdir("..");
+	closedir(dir);
 	
 	debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk");
-
 	return 0;	
-
 }
 
 
 
 // increments command count since last checkpoint and deals with checkpointing
 void checkIfCheckPoint() {
+	// claim semaphore on numCommandsSinceLastCheckpoint
+	if (lockNumComm() < 0) {
+		perror("lock failure: ");
+		return;
+	}
 	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
 	debugDetailed("NUM completed commands: %d\n", numCommandsSinceLastCheckpoint);
 	if (numCommandsSinceLastCheckpoint >= COM_PER_CHECKPOINT) {
 		debugDetailed("%s\n", "triggering checkpoint");
-		runCheckpoint();
+		runCheckpoint(COMM); // Note this function accesses and writes to numCommandsSinceLastCheckpoint
+	} 
+	// release semaphore on numCommandsSinceLast Checkpoint
+	if (unlockNumComm() < 0) {
+		perror("lock failure: ");
+		return;
 	}
-
+	
 }
 
-// write to log.txt if new command came in and handle checkpointing
+// write to log.txt if new command came in and handle checkpointing, arg1 is row, arg2 is col
 int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg2, std::string arg3, std::string arg4) {
 	// check what command is 
+	FILE* logfile;
 	if (replay == 0) {
 		debugDetailed("%s\n", "logging command, replay flag off");
+		if (lockLogFile() < 0) {
+			return -1;
+		}
 		if ((logfile = fopen("log.txt", "a")) == NULL) {
 			debugDetailed("could not open log.txt for server %d\n", serverIdx);
 			perror("invalid fopen of log file: ");
+			unlockLogFile();
 			return -1;
 		}
 		// write header line command arg {GET, PUT, CPUT, DELETE}
@@ -519,72 +732,99 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 		fwrite("\n", sizeof(char), strlen("\n"), logfile);
 
 		fclose(logfile);
-		logfile = NULL;
+		//logfile = NULL;
+		if (unlockLogFile() < 0) {
+			return -1;
+		}
 
-		checkIfCheckPoint();
+		//checkIfCheckPoint();
 	} else {
 		debugDetailed("%s\n", "did not re-log, replay flag is 1");
 	}
-	
-
 	return 0;
 }
 
 
-// // returns 0 if there was space, and -1 if not
-// int putIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, char* col) {
-// 	// check if space
-// 	if (cacheSize + valLen < cacheThresh) {
-// 		// read in val 
-// 		char* val = (char*) calloc(valLen, sizeof(char));
-// 		if (val != NULL) {
-// 			fread(val, sizeof(char), valLen, fptr);
-// 		} else {
-// 			perror("cannot calloc value in loadKvStoreFromDisk()");
-// 			return -1;
-// 		}
-// 		//update kvMap and kvLoc
-// 		std::string rowString(row);
-// 		std::string colString(col);
-// 		std::string valString(val, valLen);
-// 		kvMap[rowString][colString] = valString;
-// 		cacheSize = cacheSize + valLen;
-// 		kvLoc[rowString][colString] = 1;
-// 		free(val);
-// 		return 0;
-// 	} else {
-// 		// update kvLoc
-// 		std::string rowString(row);
-// 		std::string colString(col);
-// 		kvLoc[rowString][colString] = 0;
-// 		return -1;
-// 	}
-// }
+// get val if known to exist
+std::string getValDiskorLocal(std::string row, std::string col) {
+	std::string val;
+	lockRow(row);
+	if (kvLoc[row][col] == 0) { // TODO would need to claim semaphore here in this case on checkpoint where eviction happens
+		debugDetailed("%s\n", "row, col, val on disk, retrieiving..");
+		// try to load from disk, and run checkpoint if needed
+		FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
+		int valLen = getValSize(colFilePtr);
+		unlockRow(row);
+		int loadRes = readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
+		if (loadRes == -1) {
+			runCheckpoint(MEM);
+			readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
+		}	
+	}
+	unlockRow(row);
+	val = kvMap[row][col];
+	return val;
+}
+
+// helper to compare responses
+resp_tuple combineResps(std::map<std::string, resp_tuple> respSet) {
+	debugDetailed("---combineReps: %s\n", "entered");
+	resp_tuple firstVal = std::make_tuple(0, "");
+	resp_tuple resp = std::make_tuple(0, "");
+	for (const auto& x : respSet) {
+		//x.first is ip:port, x.second is resp_tuple
+		debugDetailed("---combineReps: %s\n", "respset iter");
+    	if (firstVal == std::make_tuple(0, "")) {
+    		firstVal = x.second;
+    		resp = x.second;
+    	} else {
+    		if (x.second != firstVal) {
+    			resp = std::make_tuple(3, "Error with consistency");
+    			return (resp_tuple) resp;
+    		}
+    	}	
+	}
+	debugDetailed("---combineReps: %s\n", "completed loop over respSet");
+	if (firstVal == std::make_tuple(0, "")) {
+		debugDetailed("%s\n", "error in combine resps - empty respSet arg");
+		resp = std::make_tuple(-1, "Error: empty resp set");
+	}
+	debugDetailed("---combineReps: %s\n", "returned");
+	return resp;
+}
 
 
-std::tuple<int, std::string> put(std::string row, std::string col, std::string val) {
+
+resp_tuple put(std::string row, std::string col, std::string val) {
     debugDetailed("---PUT entered - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
     int oldLen = kvMap[row][col].length();
-    int ranCheckPoint = 0;
+    int ranCheckPoint = 0; // need this flag to properly update chacheSize
 
     // check if can store in local cache
     if (val.length() + cacheSize - oldLen > maxCache) {
     	debugDetailed("------PUT evicting on valLen: %ld, cacheSize: %d, maxCache: %d\n", val.length(), cacheSize, maxCache);
-    	runCheckpoint();
+    	runCheckpoint(MEM);
     	ranCheckPoint = 1;
     }
     if (val.length() + cacheSize - oldLen <= maxCache) {
     	// put into kvMap, upate cache size and set kvLoc = 1
-    	
+    	if (lockRow(row) < 0) {
+			return std::make_tuple(1, "ERR");
+		}
     	kvMap[row][col] = val;
     	kvLoc[row][col] = 1;
+    	
     	cacheSize = cacheSize + val.length();
     	if (ranCheckPoint == 0) {
     		cacheSize = cacheSize - oldLen;
     	}
     	debugDetailed("------PUT row: %s, column: %s, val: %s, cahceSize: %d\n", row.c_str(), col.c_str(), val.c_str(), cacheSize);
-    	printKvMap();
+        printKvMap();
     	logCommand(PUT, 3, row, col, val, row);
+    	if (unlockRow(row) < 0) {
+			return std::make_tuple(1, "ERR");
+		}
+		checkIfCheckPoint();
     	return std::make_tuple(0, "OK");
     } else {
     	// evict everything then rerun the function (but dont log the second time)
@@ -594,43 +834,294 @@ std::tuple<int, std::string> put(std::string row, std::string col, std::string v
     }
 }
 
+std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
+	debugDetailed("---CPUT entered - row: %s, column: %s, expVal: %s, newVal: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
 
-// get val if known to exist
-std::string getValDiskorLocal(std::string row, std::string col) {
-	std::string val;
-	if (kvLoc[row][col] == 0) {
-		debugDetailed("%s\n", "row, col, val on disk, retrieiving..");
-		// try to load from disk, and run checkpoint if needed
-		FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
-		int valLen = getValSize(colFilePtr);
-		int loadRes = readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
-		if (loadRes == -1) {
-			runCheckpoint();
-			readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
-		}	
+	lockRow(row);
+	if (kvLoc.count(row) > 0) {
+		if (kvLoc[row].count(col) > 0) {
+			if (kvLoc[row][col] != -1) {
+				unlockRow(row);
+				std::string val = getValDiskorLocal(row, col);	
+				debugDetailed("------CPUT correct val: %s\n", val.c_str());	
+				lockRow(row);
+				if (expVal.compare(kvMap[row][col]) == 0) {
+					unlockRow(row);
+					put(row, col, newVal);
+					debugDetailed("------CPUT called put and updated val - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+                    printKvMap();
+					return std::make_tuple(0, "OK");
+				} else {
+					unlockRow(row);
+					debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+                    printKvMap();
+					return std::make_tuple(2, "Incorrect expVal");
+				}
+			} else {
+				unlockRow(row);
+			}
+		} else {
+			unlockRow(row);
+		}
+	} else {
+		unlockRow(row);
 	}
-	val = kvMap[row][col];
-	return val;
+	
+	debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+    printKvMap();
+	return std::make_tuple(1, "No such row, column pair");
+}
+
+std::tuple<int, std::string> del(std::string row, std::string col) {
+	debugDetailed("%s\n", "del entered");
+    printKvMap();
+	printKvLoc();
+	lockRow(row);
+	if (kvLoc.count(row) > 0) {
+		if (kvLoc[row].count(col) > 0) {
+			if (kvLoc[row][col] != -1) {
+				if (kvLoc[row][col] == 1) {
+					cacheSize = cacheSize - kvMap[row][col].length();
+					
+				}
+				kvMap[row].erase(col);
+				kvLoc[row][col] = -1;	
+				debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());
+                printKvMap();	
+				unlockRow(row);
+				logCommand(DELETE, 2, row, col, row, row);
+				return std::make_tuple(0, "OK");
+			} else {
+				unlockRow(row);
+			}
+			
+		} else {
+			unlockRow(row);
+		}
+	} else {
+		unlockRow(row);
+	}
+	
+	debugDetailed("---DELETE val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
+	printKvMap();
+	//logCommand(DELETE, 2, row, col, row, row);
+	return std::make_tuple(1, "No such row, column pair");
+}
+
+
+bool checkIfNodeIsAlive(std::string otherServer) {
+    // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+    std::string otherServerHeartbeatIP = serverKVSPortToAdminPortMap[otherServer];
+    debugDetailed("Checking heartbeat for %s at heartbeat address: %s\n", otherServer.c_str(), otherServerHeartbeatIP.c_str());
+    int heartbeatPortNo = getIPPort(otherServerHeartbeatIP);
+    std::string heartbeatAddress = getIPAddr(otherServerHeartbeatIP);
+    rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
+    kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
+    try {
+        bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
+        debugDetailed("Heartbeat for %s returned true!\n", otherServer.c_str());
+        return isAlive;
+    } catch(rpc::timeout &t) {
+        debugDetailed("Heartbeat for %s failed to return. Node is dead.\n", otherServer.c_str());
+        return false;
+    }
+    return false;
+}
+
+// TODO (AMIT): 1) add timeout in primary and nonprimary case for calling put or put approved
+			// if timeout - call heartbeat method (which is on admit thread) with shorter timeout
+							// if timeout occurs, you know node is dead and can skip it
+							// else need to call put / put approved again with timeout
+
+// oldVal used for CPUT
+resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std::string val, std::string oldVal) {
+    while(true) {
+        debugDetailed("Beginning %s Request with (r, c): (%s, %s)\n", kvsFunc.c_str(), row.c_str(), col.c_str());
+        std::map<std::string, resp_tuple> respSet; // map from ip:port -> resp tuple
+        resp_tuple resp;
+        // handle whether of not receiving node is a primary
+        if (isPrimary()) {
+            debugDetailed("Current Node %s is primary for %s Request\n", myAddrPortForFrontend.c_str(), kvsFunc.c_str());
+            // If node is primary, perform local kvs operation and loop over memebers in cluster and call operation (synchronous w timeout) on them
+            lockPrimary();
+            if(kvsFunc.compare("PUT") == 0) {
+                respSet[myAddrPortForFrontend] = put(row, col, val);
+            } else if(kvsFunc.compare("CPUT") == 0) {
+                respSet[myAddrPortForFrontend] = cput(row, col, oldVal, val);
+            } else if(kvsFunc.compare("DEL") == 0) {
+                respSet[myAddrPortForFrontend] = del(row, col);
+            } else {
+                debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
+                return std::make_tuple(1, "ERR");
+            }
+            debugDetailed("Local %s completed on primary\n", kvsFunc.c_str());
+            for (std::string otherServer : clusterMembers) {
+                if(otherServer.compare(myAddrPortForFrontend) != 0 && clusterNodesToSkip.count(otherServer) <= 0) {
+                    bool continueTrying = checkIfNodeIsAlive(otherServer);
+                    if(!continueTrying) {
+                        debugDetailed("Node %s is dead! Adding node to set of dead nodes.\n", otherServer.c_str());
+                        // Add node to set of dead nodes (nodes to skip)
+                        clusterNodesToSkip.insert(otherServer);
+                    }
+                    uint64_t timeout = TIMEOUT_MILLISEC;
+                    while(continueTrying) {
+                        rpc::client client(getIPAddr(otherServer), getIPPort(otherServer));
+                        try { // TODO - on timeout, query connection state and retry if connected
+                            client.set_timeout(timeout);
+                            debugDetailed("Trying remote %s to: %s with timeout %ld\n", kvsFunc.c_str(), otherServer.c_str(), timeout);
+                            if(kvsFunc.compare("PUT") == 0) {
+                                resp = client.call("putApproved", row, col, val).as<resp_tuple>();
+                                debug("putApproved returned: %s\n", std::get<1>(resp).c_str());
+                            } else if(kvsFunc.compare("CPUT") == 0) {
+                                resp = client.call("cputApproved", row, col, oldVal, val).as<resp_tuple>();
+                            } else if(kvsFunc.compare("DEL") == 0) {
+                                resp = client.call("delApproved", row, col).as<resp_tuple>();
+                            } else {
+                                debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
+                                return std::make_tuple(1, "ERR");
+                            }
+                            continueTrying = false;
+                            respSet[otherServer] = resp;
+                        } catch (rpc::timeout &t) {
+                            debugDetailed("%s for (%s, %s) with server %s timed out!\n", kvsFunc.c_str(), row.c_str(), col.c_str(), otherServer.c_str());
+                            // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+                            bool nodeIsAlive = checkIfNodeIsAlive(otherServer);
+                            if(nodeIsAlive) {
+                                // Double timeout and try again if node is still alive
+                                timeout *= 2;
+                                // assuming that request is canceled on timeout
+                                debugDetailed("Node %s is still alive! Doubling timeout to %ld and trying again.\n", otherServer.c_str(), timeout);
+                            } else {
+                                debugDetailed("Node %s is dead! Adding node to set of dead nodes.\n", otherServer.c_str());
+                                // Add node to set of dead nodes (nodes to skip)
+                                clusterNodesToSkip.insert(otherServer);
+                                continueTrying = false;
+                            }
+                        } catch (rpc::rpc_error &e) {
+                            printf("SOMETHING BAD HAPPENED\n");
+                            std::cout << std::endl << e.what() << std::endl;
+                            std::cout << "in function " << e.get_function_name() << ": ";
+                            using err_t = std::tuple<int, std::string>;
+                            auto err = e.get_error().as<err_t>();
+                            std::cout << "[error " << std::get<0>(err) << "]: " << std::get<1>(err)
+                                      << std::endl;
+                            unlockPrimary();
+                            return std::make_tuple(1, "ERR");
+                        }
+                    }
+                }
+            }
+            // release semaphor on row
+            unlockPrimary();
+            debugDetailed("%s: Primary calling combineResps\n", kvsFunc.c_str());
+            // return resp tuple
+            resp = combineResps(respSet);
+            printKvLoc();
+            return resp;
+        } else {
+            debugDetailed("Current Node %s is NOT primary for %s Request. Forwarding to primary: %s\n", myAddrPortForFrontend.c_str(), kvsFunc.c_str(), myClusterLeader.c_str());
+            // send put Req to primary
+            bool continueTrying = checkIfNodeIsAlive(myClusterLeader);
+            if(!continueTrying) {
+                debugDetailed("Primary Node %s is dead! Adding node to set of dead nodes.\n", myClusterLeader.c_str());
+                // Add node to set of dead nodes (nodes to skip)
+                clusterNodesToSkip.insert(myClusterLeader);
+                // Get new cluster leader and try again
+                rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
+                resp_tuple newLeaderResp = masterNodeRPCClient.call("getNewClusterLeader", myClusterLeader).as<resp_tuple>();
+                myClusterLeader = std::get<1>(newLeaderResp);
+                continueTrying = true;
+            }
+            uint64_t timeout = TIMEOUT_MILLISEC;
+            while(continueTrying) {
+                debugDetailed("Starting new rpc::client to primary %s\n", myClusterLeader.c_str());
+                rpc::client clusterLeaderClient(getIPAddr(myClusterLeader), getIPPort(myClusterLeader));
+                debugDetailed("Trying to forward %s to: primary with timeout %ld\n", kvsFunc.c_str(), timeout);
+                try {
+                    clusterLeaderClient.set_timeout(timeout);
+                    if(kvsFunc.compare("PUT") == 0) {
+                        resp = clusterLeaderClient.call("put", row, col, val).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
+                    } else if(kvsFunc.compare("CPUT") == 0) {
+                        resp = clusterLeaderClient.call("cput", row, col, oldVal, val).as<resp_tuple>();
+                    } else if(kvsFunc.compare("DEL") == 0) {
+                        resp = clusterLeaderClient.call("del", row, col).as<resp_tuple>();
+                    } else {
+                        debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
+                        return std::make_tuple(1, "ERR");
+                    }
+                    printKvLoc();
+                    return resp;
+                } catch (rpc::timeout &t) {
+                    debugDetailed("Attempt to forward %s to primary %s timed out!\n", kvsFunc.c_str(), myClusterLeader.c_str());
+                    // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+                    bool nodeIsAlive = checkIfNodeIsAlive(myClusterLeader);
+                    if(nodeIsAlive) {
+                        // Double timeout and try again if node is still alive
+                        timeout *= 2;
+                        debugDetailed("Primary Node %s is still alive! Doubling timeout to %ld and trying again.\n", myClusterLeader.c_str(), timeout);
+                    } else {
+                        debugDetailed("Primary Node %s is dead! Adding node to set of dead nodes.\n", myClusterLeader.c_str());
+                        // Add node to set of dead nodes (nodes to skip)
+                        clusterNodesToSkip.insert(myClusterLeader);
+                        // Get new cluster leader and try again
+                        rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
+                        resp_tuple newLeaderResp = masterNodeRPCClient.call("getNewClusterLeader", myClusterLeader).as<resp_tuple>();
+                        myClusterLeader = std::get<1>(newLeaderResp);
+                        continueTrying = false;
+                    }
+                }
+            }
+        }
+    }
+    return std::make_tuple(-1, "ERR");
+}
+
+resp_tuple putReq(std::string row, std::string col, std::string val) {
+    return kvsFuncReq("PUT", row, col, val, "");
+}
+
+resp_tuple cputReq(std::string row, std::string col, std::string oldVal, std::string newVal) {
+    return kvsFuncReq("CPUT", row, col, newVal, oldVal);
+}
+
+resp_tuple delReq(std::string row, std::string col) {
+    return kvsFuncReq("DEL", row, col, "", "");
 }
 
 
 std::tuple<int, std::string> get(std::string row, std::string col) {
 	// check that row, col exists in tablet, and not deleted
 	debugDetailed("---GET entered - row: %s, column: %s\n", row.c_str(), col.c_str());
+	if (lockRow(row) < 0) {
+		return std::make_tuple(1, "ERR");
+	}
 	if (kvLoc.count(row) > 0) {
 		if (kvLoc[row].count(col) > 0) {
 			if (kvLoc[row][col] != -1) {
+				if (unlockRow(row) < 0) {
+					return std::make_tuple(1, "ERR");
+				}
 				std::string val = getValDiskorLocal(row, col);			
 				debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
 				printKvMap();
 				//logCommand(GET, 2, row, col, row, row);
 				return std::make_tuple(0, val);
+			} else {
+				unlockRow(row);
 			}
+		} else {
+			unlockRow(row);
 		}
-	} 
+	} else {
+		unlockRow(row);
+	}
+	
 	debugDetailed("---GET val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
 	printKvMap();
+	// release semaphor on row
+	
 	//logCommand(GET, 2, row, col, row, row);
+	debugDetailed("---GET :%s\n", "returning");
 	return std::make_tuple(1, "No such row, column pair");	
 }
 
@@ -642,82 +1133,8 @@ std::tuple<int, std::string> getFirstNBytes(std::string row, std::string col, in
     return resp;
 }
 
-std::tuple<int, std::string> exists(std::string row, std::string col) {
-    if (kvLoc.count(row) > 0) {
-		if (kvLoc[row].count(col) > 0) {
-			debugDetailed("---EXISTS succeeded - row: %s, column: %s\n", row.c_str(), col.c_str());
-			printKvMap();
-			return std::make_tuple(0, "OK");
-		}
-	} 
-
-	debugDetailed("---EXISTS val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
-	printKvMap();
-	return std::make_tuple(1, "No such row, column pair");
-}
-
-std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
-	debugDetailed("---CPUT entered - row: %s, column: %s, expVal: %s, newVal: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-
-	if (kvLoc.count(row) > 0) {
-		if (kvLoc[row].count(col) > 0) {
-			if (kvLoc[row][col] != -1) {
-				std::string val = getValDiskorLocal(row, col);	
-				debugDetailed("------CPUT correct val: %s\n", val.c_str());	
-				if (expVal.compare(kvMap[row][col]) == 0) {
-					put(row, col, newVal);
-					debugDetailed("------CPUT called put and updated val - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					//debugDetailed("------CPUT updated - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					printKvMap();
-					//logCommand(CPUT, 4, row, col, expVal, newVal);
-					return std::make_tuple(0, "OK");
-				} else {
-					debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-					printKvMap();
-					//logCommand(CPUT, 4, row, col, expVal, newVal);
-					return std::make_tuple(2, "Incorrect expVal");
-				}
-			}
-			
-		}
-	} 
-
-	debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
-	printKvMap();
-	//logCommand(CPUT, 4, row, col, expVal, newVal);
-	return std::make_tuple(1, "No such row, column pair");
-}
-
-std::tuple<int, std::string> del(std::string row, std::string col) {
-	debugDetailed("%s\n", "del entered");
-	printKvMap();
-	printKvLoc();
-	if (kvLoc.count(row) > 0) {
-		if (kvLoc[row].count(col) > 0) {
-			if (kvLoc[row][col] != -1) {
-				if (kvLoc[row][col] == 1) {
-					cacheSize = cacheSize - kvMap[row][col].length();
-					
-				}
-				kvMap[row].erase(col);
-				kvLoc[row][col] = -1;	
-				debugDetailed("---DELETE deleted row: %s, column: %s\n", row.c_str(), col.c_str());	
-				printKvMap();	
-				logCommand(DELETE, 2, row, col, row, row);
-				return std::make_tuple(0, "OK");
-			}
-			
-		}
-	}
-	debugDetailed("---DELETE val not found - row: %s, column: %s\n", row.c_str(), col.c_str());
-	printKvMap();
-	//logCommand(DELETE, 2, row, col, row, row);
-	return std::make_tuple(1, "No such row, column pair");
-}
-
 
 void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, int len1, int len2, int len3, int len4) {
-	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
 	if (strncmp(comm, "PUT", 3) == 0) {
 		std::string rowString(arg1, len1);
 		std::string colString(arg2, len2);
@@ -748,6 +1165,7 @@ void callFunction(char* comm, char* arg1, char* arg2, char* arg3, char* arg4, in
 // NOTE: will segfault if bad formatted file eg) if len numbers are wrong - TODO make atoi wrapper/check strtok ret's
 int replayLog() {
 	replay = 1;
+	FILE* logfile;
 	if ((logfile = fopen("log.txt", "r")) == NULL) {
 		debugDetailed("could not open log.txt for server %d\n", serverIdx);
 		perror("invalid fopen of log file: ");
@@ -767,20 +1185,30 @@ int replayLog() {
 			break;
 		}
 		headerBuf[strlen(headerBuf)] = '\0'; //set newline to null
-		debugDetailed("buf read from log file is: %s\n", headerBuf);
-		comm = strtok(headerBuf, ",");
+		//debugDetailed("buf read from log file is: %s\n", headerBuf);
+		comm = strtok(headerBuf, ","); // this should never be null if headerBuf is well formatted
 		for (i = 0; i < MAX_COMM_ARGS; i++) {
 			lens[i] = atoi(strtok(NULL, ","));
+			//debugDetailed("---replayLog: lens[%d] = %d\n", i, lens[i]);
 		}
 		for (i = 0; i < MAX_COMM_ARGS; i++) {
-			args[i] = (char*) calloc(lens[i], sizeof(char));
+			if (lens[i] != 0) {
+				//debugDetailed("---replayLog: calloc'd args[%d] for lens[%d] = %d\n", i, i, lens[i]);
+				args[i] = (char*) calloc(lens[i], sizeof(char));
+			} else {
+				//debugDetailed("---replayLog: calloc'd args[%d] is NULL\n", i);
+				args[i] = NULL;
+			}
 			if (args[i] != NULL) {
+				//debugDetailed("---replayLog: reading into args[%d], lens[%d] = %d\n", i, i, lens[i]);
 				fread(args[i], sizeof(char), lens[i], logfile);
 			}
 		}
 
-		debugDetailed("header args - comm: %s, len1: %d, len2: %d, len3: %d, len4: %d\n", comm, lens[0], lens[1], lens[2], lens[3]);
-		debugDetailed("parsed args - arg1: %s, arg2: %s, arg3: %s, arg4: %s\n", args[0], args[1], args[2], args[3]);
+		// NOTE: uncomment lines below for debug statements, but this will casue 3 memory erros from one context when run in valgrind
+		//debugDetailed("header args - comm: %s, len1: %d, len2: %d, len3: %d, len4: %d\n", comm, lens[0], lens[1], lens[2], lens[3]);
+		//debugDetailed("parsed args - arg1: %s, arg2: %s, arg3: %s, arg4: %s\n", args[0], args[1], args[2], args[3]);
+		debugDetailed("---replayLog: %s\n", "calling function");
 		callFunction(comm, args[0], args[1], args[2], args[3], lens[0], lens[1], lens[2], lens[3]);
 
 
@@ -805,15 +1233,37 @@ int notifyOfNewLeader(std::string newLeader) {
     return 0;
 }
 
+int notifyOfNewNode(std::string newNode) {
+    debug("New node %s in cluster!\n", newNode.c_str());
+    if(clusterNodesToSkip.count(newNode) > 0) {
+        debug("Node %s in cluster was previously dead. Removing from set of dead nodes!\n", newNode.c_str());
+        clusterNodesToSkip.erase(newNode);
+    }
+    return 0;
+}
+
 void registerWithMasterNode() {
     debug("Registering with masterNode at %s\n", masterNodeAddrPort.c_str());
-    int masterNodePort = stoi(masterNodeAddrPort.substr(masterNodeAddrPort.find(":")+1));
-	std::string masterNodeAddr = masterNodeAddrPort.substr(0, masterNodeAddrPort.find(":"));
-	rpc::client masterNodeRPCClient(masterNodeAddr, masterNodePort);
+	rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
     std::tuple<int, std::string> resp = masterNodeRPCClient.call("registerWithMaster", myAddrPortForFrontend).as<std::tuple<int, std::string>>();
     myClusterLeader = std::get<1>(resp);
     debug("%s\n", "Finished registering with masterNode");
     debug("Cluster leader set to %s\n", myClusterLeader.c_str());
+}
+
+void getClusterNodes() {
+    debug("getClusterNodes: Requesting cluster nodes from masterNode at %s\n", masterNodeAddrPort.c_str());
+	rpc::client masterNodeRPCClient(getIPAddr(masterNodeAddrPort), getIPPort(masterNodeAddrPort));
+    std::deque<server_addr_tuple> resp = masterNodeRPCClient.call("getClusterNodes", myAddrPortForFrontend).as<std::deque<server_addr_tuple>>();
+
+    for(server_addr_tuple serverInfo : resp) {
+        std::string serverKVSAddrPort = std::get<2>(serverInfo);
+        std::string serverAdminAddrPort = std::get<3>(serverInfo);
+        debug("Adding cluster member: (%s, %s)\n", serverKVSAddrPort.c_str(), serverAdminAddrPort.c_str());
+        clusterMembers.push_back(serverKVSAddrPort);
+        serverKVSPortToAdminPortMap[serverKVSAddrPort] = serverAdminAddrPort;
+    }
+    debug("%s\n", "Finished retrieving all cluster members from masterNode");
 }
 
 void sigTermHandler(int signum) {
@@ -822,19 +1272,100 @@ void sigTermHandler(int signum) {
     }
 }
 
+void getLoggingUpdates() {
+	//int myLastLogNum = getCurrCheckpointCnt();
+	// TODO need to add primary choosing here
+	debugDetailed("---getLoggingUpdates: %s\n", "entered");
+	if (isPrimary()) {
+		debugDetailed("---getLoggingUpdates: %s\n", "returned - primary");
+		return;
+	}
+
+	rpc::client client(getIPAddr(myClusterLeader), getIPPort(myClusterLeader));
+    
+    //resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); // TODO - add the time out and possible re-leader election here
+    //int primaryLogNum = std::get<0>(resp);
+    // while (primaryLogNum != myLastLogNum) {
+    // 	// write log to file, replayLog, runCheckpnt
+    // 	FILE* nextLogFile = fopen("log.txt", "w");
+    // 	fwrite(std::get<1>(resp_tuple).c_str(), sizeof(char), std::get<1>(resp_tuple).length(), nextLogFile);
+    // 	fclose(nextLogFile);
+    // 	replayLog(); // this will trigger a checkpoint
+    // }
+    int myLastLogNum = getCurrCheckpointCnt();
+   	int primaryLogNum = 0;
+    do {
+    	myLastLogNum = getCurrCheckpointCnt();
+    	debugDetailed("myLastLogNum: %d\n", myLastLogNum);
+    	debugDetailed("primaryLogNum: %d\n", primaryLogNum);
+    	debugDetailed("myClusterLeader: %s\n", myClusterLeader.c_str());
+    	debugDetailed("%s\n", "-----------");
+    	resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); 
+    	primaryLogNum = std::get<0>(resp);
+    	std::string primaryLog = std::get<1>(resp);
+    	
+    	FILE* logFile = fopen((char*) "log.txt", "w");
+    	fwrite(primaryLog.c_str(), sizeof(char), primaryLog.length(), logFile);
+    	fclose(logFile);
+    	replayLog(); // this will trigger a checkpoint	
+    } while (myLastLogNum != primaryLogNum);
+    debugDetailed("---getLoggingUpdates: %s\n", "returned - non-primary");
+    return;
+
+}
+
+
+// Requests latest log files from primary node via getLoggingUpdates(). Should be run on boot to ensure data is
+// up-to-date.
+void loadLatestKVMapOnBoot() {
+ 	debug("%s\n", "kvMap before log replay or checkpoint: ");
+ 	printKvMap();
+ 	loadKvStoreFromDisk();
+ 	debug("%s\n", "kvMap before log replay: ");
+ 	printKvMap();
+ 	// get updates and most recent logfile from leader -- TODO: need to add function to get leader
+ 	getLoggingUpdates(); // this function will get logging updates and replay them as needed
+ 	debug("%s\n", "kvMap after log replay: ");
+ 	printKvMap();
+ 	printKvLoc();
+ 	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
+}
+
 void *kvServerThreadFunc(void *arg) {
     signal(SIGTERM, sigTermHandler);
+    pthread_detach(pthread_self());
+
+    registerWithMasterNode();
+    getClusterNodes();
+    loadLatestKVMapOnBoot();
+
+    // Hardcoding admin login info on boot
+	std::string adminRow("admin");
+	std::string adminCol("password");
+	std::string adminVal("password");
+	put(adminRow, adminCol, adminVal);
+
+
     debug("Server thread %lu started to communicate with frontend servers on port: %d\n", kvServerWithFrontendThreadId, kvsPortForFrontend);
 	rpc::server srv(kvsPortForFrontend);
-	srv.bind("put", &put);
+
+	srv.bind("putApproved", &put); 
+	srv.bind("put", &putReq);
+	srv.bind("sendUpdates", &sendUpdates);
+	srv.bind("cputApproved", &cput); 
+	srv.bind("cput", &cputReq);
+	srv.bind("delApproved", &del);
+	srv.bind("del", &delReq);
 	srv.bind("get", &get);
-	srv.bind("cput", &cput);
-	srv.bind("del", &del);
 	srv.bind("notifyOfNewLeader", &notifyOfNewLeader);
+	srv.bind("notifyOfNewNode", &notifyOfNewNode);
 
-	srv.run();
+	srv.async_run(30);
 
-    pthread_detach(pthread_self());
+	while(1) {
+		sleep(10);
+	}
+
     pthread_exit(0);
 }
 
@@ -858,10 +1389,28 @@ void adminReviveServer() {
     }
 }
 
-// Returns true. Used to check if server is alive.
+// Returns true if the kv thread is running. Used to check if server is alive.
 bool heartbeat() {
     debug("%s\n", "Heartbeat requested! Returning true.");
-    return true;
+    return (kvServerWithFrontendThreadId != 0);
+}
+
+void signalHandler(int sig) {
+	debugDetailed("%s\n", "signal caught by server");	
+	
+	// TODO - notify master that I'm dead
+	if (sig == SIGINT) {
+		// quit server
+		rpc::this_server().stop();
+		exit(0);
+	}
+}
+
+/* sets up signal handler given @signum and @handler and prints error if necessary */
+void makeSignal(int signum, sighandler_t handler) {
+	if (signal(signum, handler) == SIG_ERR) {
+		perror("invalid: ");
+	}
 }
 
 std::deque<std::string> getAllRows() {
@@ -888,6 +1437,7 @@ std::deque<std::string> getAllColsForRow(std::string row) {
 int main(int argc, char *argv[]) {	
 	int opt;
 	debugFlag = 0;
+	makeSignal(SIGINT, signalHandler);
 
 	// parse arguments -a for full name printed, -v for debug output
 	while ((opt = getopt(argc, argv, "av")) != -1) {
@@ -906,14 +1456,17 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	// set memory cache size
 	struct rlimit *rlim = (struct rlimit*) calloc(1, sizeof(struct rlimit));
 	getrlimit(RLIMIT_MEMLOCK, rlim);
-	maxCache = rlim->rlim_cur/3;
+	maxCache = rlim->rlim_cur/2;
+	// maxCache = 12;
 	fprintf(stderr, "total mem limit: %ld\n", rlim->rlim_cur);
 	fprintf(stderr, "cache mem limit: %d\n", maxCache);
 	startCacheThresh = maxCache / 2;
 	free(rlim);
 
+	// open config file
     char *serverListFile = NULL;
     if(optind + 1 < argc) {
         serverListFile = argv[optind];
@@ -937,6 +1490,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Provide a valid list of backend servers\n");
         exit(-1);
     }
+
+    // parse config file
     int serverNum = 0;
     char buffer[300];
     while(fgets(buffer, 300, f)){
@@ -949,8 +1504,8 @@ int main(int argc, char *argv[]) {
             myAddrPortForFrontend = line.substr(0, line.find(","));
             myAddrPortForAdmin = line.substr(line.find(",")+1);
             try {
-                kvsPortForFrontend = stoi(myAddrPortForFrontend.substr(myAddrPortForFrontend.find(":")+1));
-                kvsPortForAdmin = stoi(myAddrPortForAdmin.substr(myAddrPortForAdmin.find(":")+1));
+                kvsPortForFrontend = getIPPort(myAddrPortForFrontend);
+                kvsPortForAdmin = getIPPort(myAddrPortForAdmin);
                 if(kvsPortForFrontend <= 0 || kvsPortForAdmin <= 0) {
                     fprintf(stderr, "Invalid port provided! Exiting\n");
                     exit(-1);
@@ -966,6 +1521,24 @@ int main(int argc, char *argv[]) {
     }
     fclose(f);
 
+    //initialize semaphores
+    if (pthread_mutex_init(&checkpointSemaphore, NULL) != 0) {
+    	perror("invalid pthread_mutex_init for checkpointSemaphore:");
+		return -1;
+    }
+    if (pthread_mutex_init(&cacheSizeSemaphore, NULL) != 0) {
+    	perror("invalid pthread_mutex_init for cacheSizeSemaphore:");
+		return -1;
+    }
+    if (pthread_mutex_init(&numCommandsSinceLastCheckpointSemaphore, NULL) != 0) {
+    	perror("invalid pthread_mutex_init for numCommandsSinceLastCheckpointSemaphore:");
+		return -1;
+    }
+    if (pthread_mutex_init(&logfileSemaphore, NULL) != 0) {
+    	perror("invalid pthread_mutex_init for logfile:");
+		return -1;
+    }
+
 	// change dir to server's designated folder with checkpoint and logfile
 	char serverDir[MAX_LEN_SERVER_DIR];
 	sprintf(serverDir, "server_%d", serverIdx);
@@ -979,23 +1552,6 @@ int main(int argc, char *argv[]) {
  		}
  		exit(-1);
  	}
-
-	std::string adminRow("admin");
-	std::string adminCol("password");
-	std::string adminVal("password");
-	put(adminRow, adminCol, adminVal);
- 	debug("%s\n", "kvMap before log replay or checkpoint: ");
- 	printKvMap();
- 	loadKvStoreFromDisk();
- 	debug("%s\n", "kvMap before log replay: ");
- 	printKvMap();
- 	replayLog();
- 	debug("%s\n", "kvMap after log replay: ");
- 	printKvMap();
- 	printKvLoc();
- 	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
-
-    registerWithMasterNode();
 
     pthread_create(&kvServerWithFrontendThreadId, NULL, &kvServerThreadFunc, NULL);
 
