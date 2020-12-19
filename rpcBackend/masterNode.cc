@@ -61,7 +61,7 @@ int getIPPort(std::string addrPort) {
 // Returns the cluster # that contains the row based on first letter of row
 // Returns -1 on error
 int where(std::string row, std::string session_id) {
-    log("Received WHERE: Row " + row+" for Session "+session_id);
+    log("Received WHERE: row" + row+", for Session: "+session_id);
     if(row.length() <= 0 || !isalnum(row.at(0))) {
         // Error
         return -1;
@@ -74,12 +74,16 @@ int where(std::string row, std::string session_id) {
     char firstChar = toupper(row.at(0));
     std::deque<std::string> clusterToChooseFrom;
     if(firstChar >= '0' && firstChar <= '9') {
+        log("WHERE returned: " + std::to_string(0 % numClusters));
         return 0 % numClusters;
     } else if(firstChar >= 'A' && firstChar <= 'I') {
+        log("WHERE returned: " + std::to_string(1 % numClusters));
         return 1 % numClusters;
     } else if(firstChar >= 'J' && firstChar <= 'R') {
+        log("WHERE returned: " + std::to_string(2 % numClusters));
         return 2 % numClusters;
     } else if(firstChar >= 'S' && firstChar <= 'Z') {
+        log("WHERE returned: " + std::to_string(3 % numClusters));
         return 3 % numClusters;
     }
     return -1;
