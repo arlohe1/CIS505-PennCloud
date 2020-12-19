@@ -61,7 +61,7 @@ int getIPPort(std::string addrPort) {
 // Returns the cluster # that contains the row based on first letter of row
 // Returns -1 on error
 int where(std::string row, std::string session_id) {
-    log("Received WHERE: " + row+" for Session "+session_id);
+    log("Received WHERE: Row " + row+" for Session "+session_id);
     if(row.length() <= 0 || !isalnum(row.at(0))) {
         // Error
         return -1;
@@ -90,6 +90,7 @@ void *notifyOfNewLeaderThreadFunc(void *arg) {
     std::string serverToNotify(tinfo->serverToNotify);
     std::string newLeader(tinfo->newLeader);
     int cluster = tinfo->cluster;
+    log("Beginning notifyOfNewLeader pthread with serverToNotify: " + serverToNotify);
     // notify server of new primary
     int serverToNotifyPortNo = stoi(serverToNotify.substr(serverToNotify.find(":")+1));
 	std::string serverToNotifyAddr = serverToNotify.substr(0, serverToNotify.find(":"));
@@ -98,6 +99,7 @@ void *notifyOfNewLeaderThreadFunc(void *arg) {
 				int>();
     log("Cluster "+std::to_string(cluster)+": Notifying server "+serverToNotify+" of new leader ("+newLeader+").");
     // freeing and exiting
+    log("Exiting notifyOfNewLeader pthread with serverToNotify: " + serverToNotify);
     free(tinfo->serverToNotify);
     free(tinfo->newLeader);
     pthread_exit(0);
@@ -112,6 +114,11 @@ std::tuple<int, std::string> getNewClusterLeader(std::string oldLeader) {
     int currCluster = serverToClusterMap[oldLeader];
     log("Node "+oldLeader+" from cluster "+std::to_string(currCluster)+" detected as being down. Assigning new leader.");
     std::deque<std::string> serverList = clusterToActiveNodesMap[currCluster];
+    log("Server list before removing of old leader is:");
+    for(std::string server : serverList) {
+        log("-"+server);
+    }
+    log("End current server list");
     // Removing old leader from list of active nodes for that cluster
     for (auto it = serverList.begin(); it != serverList.end(); it++) {
         std::string currServer = *it;
@@ -120,6 +127,12 @@ std::tuple<int, std::string> getNewClusterLeader(std::string oldLeader) {
             break;
         }
     }
+    clusterToActiveNodesMap[currCluster] = serverList;
+    log("Server list after removing of old leader is:");
+    for(std::string server : serverList) {
+        log("-"+server);
+    }
+    log("End current server list");
     // assigning new leader from list of active nodes for that cluster
     std::string newLeader = serverList.front();
     clusterToLeaderMap[currCluster] = newLeader;
@@ -147,6 +160,7 @@ std::tuple<int, std::string> getNewClusterLeader(std::string oldLeader) {
         i++;
     }
     free(tinfo);
+    log("End notifyOfNewLeader");
     return std::make_tuple(0, newLeader);
 }
 
