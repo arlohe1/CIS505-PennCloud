@@ -73,8 +73,8 @@ struct admin_console_cache my_admin_console_cache;
 
 // maps session IDs to a specific backend server as specified by whereKVS
 using server_tuple = std::tuple<std::string, std::string>;
-std::map<std::string, server_tuple> sessionToServerMap;
-std::map<std::string, int> sessionToServerIdx;
+std::map<std::string, server_tuple> rowSessionIdToServerMap;
+std::map<std::string, int> rowSessionIdToServerIdx;
 std::map<std::string, int> rowToClusterNum;
 std::map<int, std::deque<server_tuple>> clusterToServerListMap;
 
@@ -551,13 +551,14 @@ bool checkIfNodeIsAlive(server_tuple serverInfo) {
 }
 
 std::string whereKVS(std::string session_id, std::string row) {
+    std::string rowSessionId = row+session_id;
 	int masterPortNo = getPortNoFromString(kvMaster_addr);
 	std::string masterServAddress = getAddrFromString(kvMaster_addr);
 	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
 	try {
 		if (rowToClusterNum.count(row) <= 0) {
 			log(
-					"MASTERNODE WHERE: (" + row + ") for session (" + session_id
+					"MASTERNODE WHERE: row (" + row + ") for session (" + session_id
 							+ ")");
 			// Returns cluster # for the row
 			int resp =
@@ -571,31 +572,34 @@ std::string whereKVS(std::string session_id, std::string row) {
 		int clusterNum = rowToClusterNum[row];
 
 		std::deque<server_tuple> serverList = clusterToServerListMap[clusterNum];
-
+        log("whereKVS: Servers to choose from in cluster "+std::to_string(clusterNum)+" are:") ;
+        for(server_tuple serverInfo : serverList) {
+            log("--"+std::get<0>(serverInfo));
+        }
 		int serverIdx = 0;
-		if (sessionToServerIdx.count(session_id) <= 0) {
+		if (rowSessionIdToServerIdx.count(rowSessionId) <= 0) {
 			// Randomly generate index to pick server in cluster
 			serverIdx = rand() % serverList.size();
 			log(
-					"whereKVS: New session " + session_id + " for row " + row
-							+ "! Randomly picking server "
+					"whereKVS: New session (" + session_id + ") for row (" + row
+							+ ")! Randomly picking server "
 							+ std::to_string(serverIdx));
 		} else {
 			// Incrementing serverIdx to next server in list
-			serverIdx = sessionToServerIdx[session_id];
+			serverIdx = rowSessionIdToServerIdx[rowSessionId];
 			serverIdx++;
 			log(
-					"whereKVS: Existing session " + session_id + "for row "
+					"whereKVS: Existing session (" + session_id + ") for row "
 							+ row + "! Incrementing server to "
 							+ std::to_string(serverIdx));
 		}
 		serverIdx = serverIdx % serverList.size();
-		sessionToServerIdx[session_id] = serverIdx;
+		rowSessionIdToServerIdx[rowSessionId] = serverIdx;
 
 		server_tuple chosenServerAddrs = serverList[serverIdx];
-		sessionToServerMap[session_id] = chosenServerAddrs;
+		rowSessionIdToServerMap[rowSessionId] = chosenServerAddrs;
 		log(
-				"whereKVS: session_id " + session_id + " given server "
+				"whereKVS: session_id (" + session_id + ") given server "
 						+ std::get < 0
 						> (chosenServerAddrs) + " for cluster "
 								+ std::to_string(clusterNum));
@@ -611,24 +615,25 @@ std::string whereKVS(std::string session_id, std::string row) {
 }
 
 resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string row, std::string column, std::string value, std::string old_value) {
-    if(sessionToServerMap.count(session_id) <= 0) {
-        log(kvsFuncType +": No server for session "+ session_id+". Calling whereKVS.");
+    std::string rowSessionId = row+session_id;
+    if(rowSessionIdToServerMap.count(rowSessionId) <= 0) {
+        log(kvsFuncType +": No server for session ("+ session_id+"). Calling whereKVS.");
         std::string newlyChosenServerAddr = whereKVS(session_id, row);
-        log(kvsFuncType +": Server "+ newlyChosenServerAddr+" chosen for session "+ session_id+".");
+        log(kvsFuncType +": Server "+ newlyChosenServerAddr+" chosen for session ("+ session_id+").");
     }
     uint64_t timeout = 5000; // 5000 milliseconds
     bool nodeIsAlive = true;
-    int origServerIdx = sessionToServerIdx[session_id];
+    int origServerIdx = rowSessionIdToServerIdx[rowSessionId];
     int currServerIdx = -2; 
     // Continue trying RPC call until you've tried all backend servers
     while(origServerIdx != currServerIdx) {
-        server_tuple serverInfo = sessionToServerMap[session_id];
+        server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
         std::string targetServer = std::get<0>(serverInfo);
         if(!checkIfNodeIsAlive(serverInfo)) {
             // Resetting timeout for new server
             timeout = 2500; // 2500 milliseconds
             std::string newlyChosenServerAddr = whereKVS(session_id, row);
-            currServerIdx = sessionToServerIdx[session_id];
+            currServerIdx = rowSessionIdToServerIdx[rowSessionId];
             log("Node "+targetServer+" is dead! Trying new node "+ newlyChosenServerAddr);
             continue;
         }
@@ -666,7 +671,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string 
                 // Resetting timeout for new server
                 timeout = 5000; // 5000 milliseconds
                 std::string newlyChosenServerAddr = whereKVS(session_id, row);
-                currServerIdx = sessionToServerIdx[session_id];
+                currServerIdx = rowSessionIdToServerIdx[rowSessionId];
                 log("Node "+targetServer+" is dead! Trying new node "+ newlyChosenServerAddr);
             }
         } catch (rpc::rpc_error &e) {

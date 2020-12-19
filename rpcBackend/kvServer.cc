@@ -1323,6 +1323,17 @@ void getLoggingUpdates() {
 // Requests latest log files from primary node via getLoggingUpdates(). Should be run on boot to ensure data is
 // up-to-date.
 void loadLatestKVMapOnBoot() {
+	// Hardcoding admin login info on boot
+    if (isPrimary()) {
+    	resp_tuple resp = get("admin", "password");
+    	if (std::get<0>(resp) == 1) {
+    		// if admin not already in backend add it
+    		std::string adminRow("admin");
+			std::string adminCol("password");
+			std::string adminVal("password");
+			put(adminRow, adminCol, adminVal);
+    	}
+    }
  	debug("%s\n", "kvMap before log replay or checkpoint: ");
  	printKvMap();
  	loadKvStoreFromDisk();
@@ -1344,11 +1355,7 @@ void *kvServerThreadFunc(void *arg) {
     getClusterNodes();
     loadLatestKVMapOnBoot();
 
-    // Hardcoding admin login info on boot
-	std::string adminRow("admin");
-	std::string adminCol("password");
-	std::string adminVal("password");
-	put(adminRow, adminCol, adminVal);
+	
 
 
     debug("Server thread %lu started to communicate with frontend servers on port: %d\n", kvServerWithFrontendThreadId, kvsPortForFrontend);
