@@ -54,10 +54,10 @@ int main() {
 
         
 
-        // std::cout << "ON SERV(p=10002) put(lianap, file, homework 2) = ";
-        // resp = c.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
-        // std::cout << std::get<1>(resp) << std::endl;
-        // isCorrect("OK", std::get<1>(resp));
+        std::cout << "ON SERV(p=10002) put(lianap, file, homework 2) = ";
+        resp = c.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
+        std::cout << std::get<1>(resp) << std::endl;
+        isCorrect("OK", std::get<1>(resp));
 
         // // // multiple puts (for log and checkpoint testing - will need to check log and checkpoint files for correct output)
         // std::cout << "put(lianap, name, Lee) = ";

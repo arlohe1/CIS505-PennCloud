@@ -38,11 +38,12 @@
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
-#define COM_PER_CHECKPOINT 10
+#define COM_PER_CHECKPOINT 2
 #define TIMEOUT_MILLISEC 10000
 #define CHECKPOINT_CNT_FILE "checkpointNum.txt"
 
 enum Command {GET, PUT, CPUT, DELETE};
+enum EvictCause {MEM, COMM};
 
 int debugFlag;
 int err = -1;
@@ -451,7 +452,7 @@ resp_tuple sendUpdates(int lastLogNum) {
 }
 
 // TODO - make sure deleted rows are handled correclty
-void runCheckpoint() {
+void runCheckpoint(int evictCause) {
 	int valLen;
 	debugDetailed("%s\n", "RUNNING CHECKPOINT");
 	lockAllRows();
@@ -461,7 +462,7 @@ void runCheckpoint() {
 	// cd into checkpoint directory
 	chdirToCheckpoint(); 
 
-	// loop over rows in create folder for each
+	// move updates to disk - loop over rows in create folder for each item in kvMap
 	FILE* colFilePtr;
 	for (const auto& x: kvLoc) {
 		std::string row = x.first;
@@ -507,10 +508,12 @@ void runCheckpoint() {
 	}
 	// cd back out to server directory
 	chdir("..");
-	updateCheckpointCount();
-	// clear logfile if not currently replaying log
-	//if (replay == 0) { // TODO - change this case to be based on whether we are evicting due to numComm or space limit
-		// if not a replay, archive current log - else (a checkpoint might happen due to eviction when replaying log - do not want to clear log file in this case)
+	
+	// handle logging updates if eviction occurs due to nummCommandsSinceLastCheckpoint, 
+	//if eviction due to space just move things out of local memory to disk above 
+	if (evictCause == COMM) {
+		updateCheckpointCount();
+		// archive current log, and clear log.txt
 		int lastCnt = getCurrCheckpointCnt();
 		std::string archiveLog("logArchive/log");
 		archiveLog = archiveLog + std::to_string(lastCnt);
@@ -519,15 +522,9 @@ void runCheckpoint() {
 		FILE* logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
 		debugDetailed("%s,\n", "--------moved old logfile to archive and created new--------");
-
-
-		// // if not a replay, clear file on checkpoint
-		// FILE* logFilePtr;
-		// logFilePtr = fopen("log.txt", "w");
-		// fclose(logFilePtr);
-		// debugDetailed("%s,\n", "--------cleared log file and return--------");
-	//}
-	numCommandsSinceLastCheckpoint = 0;
+		numCommandsSinceLastCheckpoint = 0;
+	}
+	
 	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
 	printKvMap();
 	printKvLoc();
@@ -666,7 +663,7 @@ void checkIfCheckPoint() {
 	debugDetailed("NUM completed commands: %d\n", numCommandsSinceLastCheckpoint);
 	if (numCommandsSinceLastCheckpoint >= COM_PER_CHECKPOINT) {
 		debugDetailed("%s\n", "triggering checkpoint");
-		runCheckpoint(); // Note this function accesses and writes to numCommandsSinceLastCheckpoint
+		runCheckpoint(COMM); // Note this function accesses and writes to numCommandsSinceLastCheckpoint
 	} 
 	// release semaphore on numCommandsSinceLast Checkpoint
 	if (unlockNumComm() < 0) {
@@ -755,7 +752,7 @@ std::string getValDiskorLocal(std::string row, std::string col) {
 		unlockRow(row);
 		int loadRes = readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
 		if (loadRes == -1) {
-			runCheckpoint();
+			runCheckpoint(MEM);
 			readAndLoadValIfSpace(colFilePtr, valLen, maxCache, (char*) row.c_str(), (char*) col.c_str());
 		}	
 	}
@@ -801,7 +798,7 @@ resp_tuple put(std::string row, std::string col, std::string val) {
     // check if can store in local cache
     if (val.length() + cacheSize - oldLen > maxCache) {
     	debugDetailed("------PUT evicting on valLen: %ld, cacheSize: %d, maxCache: %d\n", val.length(), cacheSize, maxCache);
-    	runCheckpoint();
+    	runCheckpoint(MEM);
     	ranCheckPoint = 1;
     }
     if (val.length() + cacheSize - oldLen <= maxCache) {
@@ -1406,6 +1403,7 @@ int main(int argc, char *argv[]) {
 	struct rlimit *rlim = (struct rlimit*) calloc(1, sizeof(struct rlimit));
 	getrlimit(RLIMIT_MEMLOCK, rlim);
 	maxCache = rlim->rlim_cur/2;
+	maxCache = 12;
 	fprintf(stderr, "total mem limit: %ld\n", rlim->rlim_cur);
 	fprintf(stderr, "cache mem limit: %d\n", maxCache);
 	startCacheThresh = maxCache / 2;
