@@ -559,7 +559,10 @@ std::string whereKVS(std::string session_id, std::string row) {
 		int clusterNum = rowToClusterNum[row];
 
 		std::deque<server_tuple> serverList = clusterToServerListMap[clusterNum];
-
+        log("whereKVS: Servers to choose from in cluster "+std::to_string(clusterNum)+" are:") ;
+        for(server_tuple serverInfo : serverList) {
+            log("--"+std::get<0>(serverInfo));
+        }
 		int serverIdx = 0;
 		if (sessionToServerIdx.count(session_id) <= 0) {
 			// Randomly generate index to pick server in cluster
