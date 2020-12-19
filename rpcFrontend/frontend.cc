@@ -2140,37 +2140,54 @@ struct http_response processRequest(struct http_request &req) {
 						} else {
 							local = false;
 						}
+						printf("Here1\n");
 						if (!local) {
 							std::size_t found = token.find("@");
 							if (found != std::string::npos) {
+								usleep(1000000);
 								int sd = getSocketExternalMail(
 										token.substr(found + 1).c_str());
+								printf("Here6\n");
+								printf("%i\n", sd);
 								if (sd > 0) {
+									printf("Here2\n");
 									char helo[] = "HELO penncloud.com\r\n";
 									do_write(sd, helo, sizeof(helo) - 1);
+									printf("here5\n");
 									char buf[1000];
+									buf[20] = '\0';
 									read(sd, &buf[0], 1000);
+									printf("here6\n");
+									printf("%s\n", buf);
+									printf("here7\n");
 									std::string mailStr = "MAIL FROM:<" + sender
 											+ ">\r\n";
 									send(sd, mailStr.c_str(), mailStr.length(),
 											0);
 									read(sd, &buf[0], 1000);
+									printf("%s\n", buf);
 									std::string rcptStr = "RCPT TO:<" + token
 											+ ">\r\n";
 									send(sd, rcptStr.c_str(), rcptStr.length(),
 											0);
 									read(sd, &buf[0], 1000);
+									printf("%s\n", buf);
 									char data[] = "DATA\r\n";
 									do_write(sd, data, sizeof(data) - 1);
 									read(sd, &buf[0], 1000);
+									printf("%s\n", buf);
 									send(sd, tempNotLocal.c_str(),
 											tempNotLocal.length(), 0);
 									char ending[] = ".\r\n";
 									do_write(sd, ending, sizeof(ending) - 1);
 									read(sd, &buf[0], 1000);
+									printf("%s\n", buf);
 									char quit[] = "QUIT\r\n";
 									do_write(sd, quit, sizeof(quit) - 1);
 									read(sd, &buf[0], 1000);
+									close(sd);
+									printf("%s\n", buf);
+									printf("Here\n");
 								}
 							}
 						} else {
@@ -2482,6 +2499,7 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 /***************************** End http util functions ************************/
 
 void* handleClient(void *arg) {
+	signal(SIGPIPE, SIG_IGN);
 	incrementThreadCounter(HTTP_THREAD);
 
 	/* Initialize buffer and client fd */
