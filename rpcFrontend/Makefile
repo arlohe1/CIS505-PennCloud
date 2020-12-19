@@ -8,7 +8,7 @@ TARGETS = frontend smtp
 all: $(TARGETS)
 
 frontend: frontend.cc
-	g++ $^ -I/usr/local/opt/openssl/include -L/usr/local/opt/openssl/lib -lcrypto -lpthread $(INCLUDES) -L $(RPC_DIR)/output/lib $(LIBS) -g -o $@
+	g++ $^ -I/usr/local/opt/openssl/include -L/usr/local/opt/openssl/lib -lcrypto -lresolv -lpthread $(INCLUDES) -L $(RPC_DIR)/output/lib $(LIBS) -g -o $@
 
 smtp: smtp.cc
 	g++ $< -lpthread -g -o $@
