@@ -792,6 +792,7 @@ int uploadFile(struct http_request req, std::string filepath) {
 			username + filepath + filename + temp);
 	std::string kvsCol = "ss1_" + filenameHash;
 	std::string newEntry = filename + "," + kvsCol + "\n";
+
 	// Reading in response to GET --> list of files at filepath
 	int count = 0;
 	while (count < 10) {
@@ -801,6 +802,9 @@ int uploadFile(struct http_request req, std::string filepath) {
 		std::stringstream ss(fileList);
 		std::string fileEntry;
 		std::string contents = "";
+		std::string fileNameLower = filename;
+		std::transform(fileNameLower.begin(), fileNameLower.end(),
+				fileNameLower.begin(), ::tolower);
 		if (kvsResponseStatusCode(getCmdResponse) == 0) {
 			std::getline(ss, fileEntry, '\n');
 			contents += fileEntry + "\n";
@@ -809,9 +813,11 @@ int uploadFile(struct http_request req, std::string filepath) {
 				if (!found) {
 					std::size_t foundPos = fileEntry.find_last_of(",");
 					std::string currName = fileEntry.substr(0, foundPos);
-					if (currName == filename) {
+					std::transform(currName.begin(), currName.end(),
+							currName.begin(), ::tolower);
+					if (currName == fileNameLower) {
 						return -1;
-					} else if (currName.compare(filename) < 0) {
+					} else if (currName.compare(fileNameLower) < 0) {
 						contents += fileEntry + "\n";
 					} else {
 						contents += newEntry;
@@ -1069,6 +1075,9 @@ int createDirectory(struct http_request req, std::string filepath,
 		std::stringstream ss(fileList);
 		std::string fileEntry;
 		std::string contents = "";
+		std::string dirNameLower = dirName;
+		std::transform(dirNameLower.begin(), dirNameLower.end(),
+				dirNameLower.begin(), ::tolower);
 		if (kvsResponseStatusCode(getCmdResponse) == 0) {
 			std::getline(ss, fileEntry, '\n');
 			contents += fileEntry + "\n";
@@ -1077,9 +1086,11 @@ int createDirectory(struct http_request req, std::string filepath,
 				if (!found) {
 					std::size_t foundPos = fileEntry.find_last_of(",");
 					std::string currName = fileEntry.substr(0, foundPos);
-					if (currName == dirName) {
+					std::transform(currName.begin(), currName.end(),
+							currName.begin(), ::tolower);
+					if (currName == dirNameLower) {
 						return -1;
-					} else if (currName.compare(dirName) < 0) {
+					} else if (currName.compare(dirNameLower) < 0) {
 						contents += fileEntry + "\n";
 					} else {
 						contents += newEntry;
