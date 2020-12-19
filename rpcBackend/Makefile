@@ -2,7 +2,7 @@
 	# Master node (1): ./masterNode -v configFile
 	# backend servers (6): ./kvServer -v configFile <server num in 1..6>
 	# frontend servers: ./frontend -v -p 5000 -k 127.0.0.1:8000
-	# open broswer on 127.0.0.1:5000
+	# open broswer on localhost:5000
 
 
 
