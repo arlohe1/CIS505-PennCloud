@@ -37,6 +37,7 @@ volatile int session_id_counter = rand();
 sockaddr_in load_balancer_addr;
 
 /********************** Internal message stuff ******************/
+using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
 std::string INTERNAL_THREAD = "i", SMTP_THREAD = "s", HTTP_THREAD = "h";
 pthread_mutex_t modify_server_state, crashing, access_state_map;
 struct server_state {
@@ -58,6 +59,18 @@ struct internal_message {
 } internal_message;
 
 std::vector<sockaddr_in> frontend_internal_list;
+
+struct admin_console_cache {
+	bool initialized = false;
+	time_t last_modified = time(NULL);
+	std::string last_modified_by, last_accessed_for;
+	std::vector<std::tuple<std::string, std::deque<std::string>>> rowToAllItsCols;
+	std::vector<std::string> stopped_servers, activeBackendServersList;
+	std::deque<server_addr_tuple> activeBackendServers, allBackendServers;
+	std::map<std::string, std::string> frontendToAdminComm;
+} admin_console_cache;
+struct admin_console_cache my_admin_console_cache;
+
 // maps session IDs to a specific backend server as specified by whereKVS
 using server_tuple = std::tuple<std::string, std::string>;
 std::map<std::string, server_tuple> rowSessionIdToServerMap;
@@ -66,7 +79,6 @@ std::map<std::string, int> rowToClusterNum;
 std::map<int, std::deque<server_tuple>> clusterToServerListMap;
 
 using resp_tuple = std::tuple<int, std::string>;
-using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
 
 /********************** HTTP data structures *********************/
 
@@ -771,6 +783,67 @@ std::deque<server_addr_tuple> getAllNodesKVS() {
 	return resp;
 }
 
+std::deque<std::string> getAllRowsKVS(std::string addr) {
+	int portNo = getPortNoFromString(addr);
+	std::string servAddress = getAddrFromString(kvMaster_addr);
+	rpc::client nodeRPCClient(servAddress, portNo);
+	log("ge all rows port no: " + std::to_string(portNo));
+	std::deque<std::string> resp;
+	try {
+		log("NODE getAllRowsKVS");
+		resp = nodeRPCClient.call("getAllRows").as<std::deque<std::string>>();
+		return resp;
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getAllRowsKVS TRY CATCH"); // TODO
+	}
+	log("Error in getAllRowsKVS");
+	return resp;
+}
+
+std::deque<std::string> getAllColsForRowKVS(std::string addr, std::string row) {
+	int portNo = getPortNoFromString(addr);
+	std::string servAddress = getAddrFromString(kvMaster_addr);
+	rpc::client nodeRPCClient(servAddress, portNo);
+	std::deque<std::string> resp;
+	try {
+		log("NODE getAllColsForRowKVS");
+		resp = nodeRPCClient.call("getAllColsForRow", row).as<std::deque<std::string>>();
+		return resp;
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getAllColsForRowKVS TRY CATCH"); // TODO
+	}
+	log("Error in getAllColsForRowKVS");
+	return resp;
+}
+
+std::tuple<int, int, std::string> getFirstNBytesKVS(std::string addr, std::string row, std::string col, int n) {
+	int portNo = getPortNoFromString(addr);
+	std::string servAddress = getAddrFromString(kvMaster_addr);
+	rpc::client nodeRPCClient(servAddress, portNo);
+	std::tuple<int, int, std::string> resp;
+	try {
+		log("NODE getFirstNBytesKVS");
+		resp = nodeRPCClient.call("getFirstNBytes", row, col, n).as<std::tuple<int, int, std::string>>();
+		return resp;
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getFirstNBytesKVS TRY CATCH"); // TODO
+	}
+	log("Error in getFirstNBytesKVS");
+	return resp;
+}
+
 void stopServerKVS(std::string target) {
 	int targetPortNo = getPortNoFromString(target);
 	std::string targetServAddress = getAddrFromString(target);
@@ -803,6 +876,47 @@ void reviveServerKVS(std::string target) {
 
 resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
 	return kvsFunc("getKVS", session_id, row, column, "", "");
+}
+
+/***************************** Admin stuff ****************************/
+
+bool isAdminCacheValidFor(std::string modified_by, std::string accessed_for, int timeout){
+	if ((time(NULL) - my_admin_console_cache.last_modified > timeout) ||
+			(modified_by.compare(my_admin_console_cache.last_modified_by) != 0) ||
+			(accessed_for.compare(my_admin_console_cache.last_accessed_for) != 0)) return false;
+	return true;
+}
+
+void populateAdminCache(){
+	my_admin_console_cache.allBackendServers = getAllNodesKVS();
+	for (auto node : my_admin_console_cache.allBackendServers){
+		my_admin_console_cache.frontendToAdminComm[trim(std::get<2>(node))] = trim(std::get<3>(node));
+		log("Frontend comm: " + trim(std::get<2>(node)) + " mapped to " +  trim(std::get<3>(node)));
+	}
+	my_admin_console_cache.activeBackendServers = getActiveNodesKVS();
+	for (auto node : my_admin_console_cache.activeBackendServers){
+		my_admin_console_cache.activeBackendServersList.push_back(std::get < 2 > (node));
+		my_admin_console_cache.frontendToAdminComm[trim(std::get<2>(node))] = trim(std::get<3>(node));
+		log("Active Frontend comm: " + trim(std::get<2>(node)) + " mapped to " +  trim(std::get<3>(node)));
+	}
+	my_admin_console_cache.initialized = true;
+}
+
+void registerCacheAccess(std::string modified_by, std::string accessed_for){
+	my_admin_console_cache.last_modified = time(NULL);
+	my_admin_console_cache.last_modified_by = modified_by;
+	my_admin_console_cache.last_accessed_for = accessed_for;
+}
+
+void getMoreInfoFor(std::string target){
+	std::string adminCommAddr = my_admin_console_cache.frontendToAdminComm[target];
+	log("Admin comm for " + target + " is " + adminCommAddr);
+	auto allRows = getAllRowsKVS(target); //TODO: ask amit
+	for (std::string row : allRows){
+		auto cols = getAllColsForRowKVS(target, row);
+		if (cols.size() < 1) continue;
+		my_admin_console_cache.rowToAllItsCols.push_back(std::tuple<std::string, std::deque<std::string>>(row, cols));
+	}
 }
 
 /***************************** Start storage service functions ************************/
@@ -2722,11 +2836,9 @@ struct http_response processRequest(struct http_request &req) {
 			time_t now = time(NULL);
 			log("now" + std::to_string(now));
 			requstStateFromAllServers();
-			auto allBackendNodes = getAllNodesKVS();
-			auto activeBackendNodes = getActiveNodesKVS();
-			std::deque < std::string > activeBackendNodesCollection;
-			for (auto node : activeBackendNodes)
-				activeBackendNodesCollection.push_back(std::get < 2 > (node));
+			populateAdminCache();
+			auto allBackendNodes = my_admin_console_cache.allBackendServers;
+			auto activeBackendNodesCollection = my_admin_console_cache.activeBackendServersList;
 			sleep(1);
 			std::string message =
 					"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
@@ -2766,7 +2878,7 @@ struct http_response processRequest(struct http_request &req) {
 				}
 				message += "</l1><hr>";
 			}
-			message += "</ul><h3>Backend servers:</h3><ul>";
+			message += "</ul><h3>Backend servers:</h3><br><ul>";
 			log("ADMIN all nodes");
 			for (auto node : allBackendNodes) {
 				log(std::get < 2 > (node));
@@ -2779,7 +2891,7 @@ struct http_response processRequest(struct http_request &req) {
 				message += "<l1>" + std::get < 2 > (node);
 				message += " Status: " + status;
 				message +=
-						"<form action=\"/serverinfo/b/" + std::get < 3
+						"<form action=\"/serverinfo/b/1/" + std::get < 3
 								> (node)
 										+ "\" method=\"POST\">"
 												"<input type = \"submit\" value=\"More Info\" /></form>";
@@ -2796,6 +2908,7 @@ struct http_response processRequest(struct http_request &req) {
 				message += "</l1><hr>";
 			}
 			message += "</ul></body></html>";
+			registerCacheAccess("admin", "all");
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
@@ -2908,6 +3021,8 @@ struct http_response processRequest(struct http_request &req) {
 			} else {
 				stopServerKVS(target);
 			}
+			my_admin_console_cache.stopped_servers.push_back(target);
+			registerCacheAccess("stopserver", target);
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/admin";
@@ -2928,9 +3043,101 @@ struct http_response processRequest(struct http_request &req) {
 			} else {
 				reviveServerKVS(target);
 			}
+			my_admin_console_cache.stopped_servers.erase(std::remove(my_admin_console_cache.stopped_servers.begin(),
+					my_admin_console_cache.stopped_servers.end(), target), my_admin_console_cache.stopped_servers.end());
+			registerCacheAccess("resumeserver", target);
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/admin";
+		}
+	} else if (req.filepath.compare(0, 12, "/serverinfo/") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()
+				&& req.cookies["username"].compare("admin") == 0) {
+			std::deque < std::string > tokens = split(req.filepath, "/");
+			std::string target = trim(tokens.back());
+			tokens.pop_back();
+			log("Server info for: " + target);
+			bool frontend_target = (trim(tokens.back()).compare("f") == 0);
+			std::string message = "<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+					"<input type = \"submit\" value=\"Logout\" /></form><form action=\"/admin\" method=\"POST\">"
+					"<input type = \"submit\" value=\"Back\" /></form><br>";
+			if (frontend_target) {
+				// Show front end state from frontend state map
+				log("Showing frontend info for : " + target);
+				struct server_state state = frontend_state_map[target];
+				message += "State of " + target + " <ul><li> Number of http connections: " + std::to_string(state.http_connections) + "</li>"
+						"<li> Number of smtp connections: " + std::to_string(state.smtp_connections) + "</li>"
+						"<li> Number of internal connections: " + std::to_string(state.internal_connections) + "</li>"
+						"<li> Number of active threads: " + std::to_string(state.num_threads) + "</li></ul>";
+			} else {
+				log("Target: " + target);
+				message += "<form action=\"/refreshadmincache\" method=\"POST\">"
+						"<input type = \"submit\" value=\"Refresh\" /></form><br>";
+
+				// TODO: Get all rows from backend
+				bool cache_valid = isAdminCacheValidFor("serverinfo", target, 10);
+				if(!cache_valid) {
+					if(!my_admin_console_cache.initialized) populateAdminCache();
+					getMoreInfoFor(target);
+				}
+				int page = 1;
+				try {
+					page = stoi(trim(tokens.back()));
+				} catch (const std::invalid_argument &ia){
+					page = 1;
+				}
+				if (page > 1 && my_admin_console_cache.rowToAllItsCols.size() <= (10 * (page - 1))) page = 1;
+				log("Page: " + std::to_string(page));
+				// TODO: display first n bytes (with link to new page ...)
+				message += "KVS Table for " + target + "<hr>";
+				int i;
+				for (i = (page - 1) * 10; i < std::min((int)my_admin_console_cache.rowToAllItsCols.size(), page * 10); i++){
+					std::tuple<std::string, std::deque<std::string>> entry = my_admin_console_cache.rowToAllItsCols.at(i);
+					std::string row = std::get<0>(entry);
+					message += "Row name: " + row + "<br><ul>";
+					for (std::string col: std::get<1>(entry)){
+						auto first50BytesRaw = getFirstNBytesKVS(target, row, col, 50);
+						if (std::get<0> (first50BytesRaw) != 0) continue;
+						int total_size = std::get<1> (first50BytesRaw);
+						std::string raw_bytes = std::get<2> (first50BytesRaw);
+						log("ERROR CODE GETNBYTES" + std::get<0> (first50BytesRaw));
+						log("SIZE GETNBYTES" + total_size);
+						log("RAW BYTES GETNBYTES" + raw_bytes);
+						message += "<li> Col: " + col;
+						message += (total_size <= 50) ? "<br> Entire entry: <br>" : "<br> First 50 Bytes: <br>";
+						message.append(raw_bytes);
+						message += "<br></li>";
+					}
+					message += "</ul><hr>";
+				}
+				if(page > 1){
+					message += "<form action=\"/serverinfo/" + std::to_string(page - 1) + "/" + target + "\" method=\"POST\">"
+							"<input type = \"submit\" value=\"Prev\" /></form><br>";
+				}
+				if(i < my_admin_console_cache.rowToAllItsCols.size()){
+					message += "<form action=\"/serverinfo/" + std::to_string(page + 1) + "/" + target + "\" method=\"POST\">"
+							"<input type = \"submit\" value=\"Next\" /></form><br>";
+				}
+				registerCacheAccess("serverinfo", target);
+			}
+			message += "</body></html>";
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+			resp.headers["Content-length"] = std::to_string(message.size());
+			resp.content = message;
+		}
+	} else if (req.filepath.compare("/refreshadmincache") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()
+				&& req.cookies["username"].compare("admin") == 0) {
+			std::string redirect = my_admin_console_cache.last_accessed_for;
+			my_admin_console_cache.rowToAllItsCols.clear();
+			my_admin_console_cache.last_modified = time(NULL);
+			my_admin_console_cache.last_modified_by = "refreshadmincache";
+			my_admin_console_cache.last_accessed_for = "none";
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/serverinfo/1/" + redirect;
 		}
 	} else {
 		if (req.cookies.find("username") != req.cookies.end()) {
