@@ -1125,12 +1125,17 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 	return std::make_tuple(1, "No such row, column pair");	
 }
 
-std::tuple<int, std::string> getFirstNBytes(std::string row, std::string col, int numBytes) {
-    std::tuple<int, std::string> resp = get(row, col);
-    if(std::get<0>(resp) == 0) {
-        std::make_tuple(0, std::get<1>(resp).substr(0, numBytes));
+std::tuple<int, int, std::string> getFirstNBytes(std::string row, std::string col, int numBytes) {
+    resp_tuple resp = get(row, col);
+    std::string val = std::get<1>(resp);
+    int origValLength = val.length();
+    if(val.length() > numBytes) {
+        val = val.substr(0, numBytes);
     }
-    return resp;
+    if(std::get<0>(resp) == 0) {
+        return std::make_tuple(0, origValLength, val);
+    }
+    return std::make_tuple(0, 0, "Error! Row+Col does not exist");
 }
 
 
