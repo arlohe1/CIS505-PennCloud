@@ -113,12 +113,14 @@ and notify all nodes in the cluster of the new leader
 std::tuple<int, std::string> getNewClusterLeader(std::string oldLeader) {
     int currCluster = serverToClusterMap[oldLeader];
     log("Node "+oldLeader+" from cluster "+std::to_string(currCluster)+" detected as being down. Assigning new leader.");
+
     std::deque<std::string> serverList = clusterToActiveNodesMap[currCluster];
     log("Server list before removing of old leader is:");
     for(std::string server : serverList) {
         log("-"+server);
     }
     log("End current server list");
+
     // Removing old leader from list of active nodes for that cluster
     for (auto it = serverList.begin(); it != serverList.end(); it++) {
         std::string currServer = *it;
@@ -128,11 +130,14 @@ std::tuple<int, std::string> getNewClusterLeader(std::string oldLeader) {
         }
     }
     clusterToActiveNodesMap[currCluster] = serverList;
+
+    serverList = clusterToActiveNodesMap[currCluster];
     log("Server list after removing of old leader is:");
     for(std::string server : serverList) {
         log("-"+server);
     }
     log("End current server list");
+
     // assigning new leader from list of active nodes for that cluster
     std::string newLeader = serverList.front();
     clusterToLeaderMap[currCluster] = newLeader;
@@ -171,8 +176,24 @@ std::tuple<int, std::string> registerWithMaster(std::string serverAddr) {
         return std::make_tuple(-1, "ERROR. Server not present in configFile");
     }
     int cluster = serverToClusterMap[serverAddr];
+
+    std::deque<std::string> serverList = clusterToActiveNodesMap[cluster];
+    log("Server list before adding of new node:");
+    for(std::string server : serverList) {
+        log("-"+server);
+    }
+    log("End current server list");
+
     clusterToActiveNodesMap[cluster].push_back(serverAddr);
     log("New node "+serverAddr+" registered with masterNode");
+
+    serverList = clusterToActiveNodesMap[cluster];
+    log("Server list after adding of new node:");
+    for(std::string server : serverList) {
+        log("-"+server);
+    }
+    log("End current server list");
+
     if(clusterToActiveNodesMap[cluster].size() == 1) {
         // First node for that cluster has been registered. Set it as cluster leader.
         clusterToLeaderMap[cluster] = serverAddr;
