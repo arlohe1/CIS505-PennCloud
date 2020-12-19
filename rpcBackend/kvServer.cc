@@ -958,6 +958,11 @@ resp_tuple kvsFuncReq(std::string kvsFunc, std::string row, std::string col, std
             for (std::string otherServer : clusterMembers) {
                 if(otherServer.compare(myAddrPortForFrontend) != 0 && clusterNodesToSkip.count(otherServer) <= 0) {
                     bool continueTrying = checkIfNodeIsAlive(otherServer);
+                    if(!continueTrying) {
+                        debugDetailed("Node %s is dead! Adding node to set of dead nodes.\n", otherServer.c_str());
+                        // Add node to set of dead nodes (nodes to skip)
+                        clusterNodesToSkip.insert(otherServer);
+                    }
                     uint64_t timeout = TIMEOUT_MILLISEC;
                     while(continueTrying) {
                         rpc::client client(getIPAddr(otherServer), getIPPort(otherServer));
@@ -1420,7 +1425,7 @@ int main(int argc, char *argv[]) {
 	struct rlimit *rlim = (struct rlimit*) calloc(1, sizeof(struct rlimit));
 	getrlimit(RLIMIT_MEMLOCK, rlim);
 	maxCache = rlim->rlim_cur/2;
-	maxCache = 12;
+	// maxCache = 12;
 	fprintf(stderr, "total mem limit: %ld\n", rlim->rlim_cur);
 	fprintf(stderr, "cache mem limit: %d\n", maxCache);
 	startCacheThresh = maxCache / 2;
