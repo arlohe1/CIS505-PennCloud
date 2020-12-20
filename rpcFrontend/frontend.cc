@@ -788,7 +788,7 @@ std::deque<std::string> getAllRowsKVS(std::string addr) {
 	std::string servAddress = getAddrFromString(kvMaster_addr);
 	rpc::client nodeRPCClient(servAddress, portNo);
 	log("ge all rows port no: " + std::to_string(portNo));
-	std::deque<std::string> resp;
+	std::deque < std::string > resp;
 	try {
 		log("NODE getAllRowsKVS");
 		resp = nodeRPCClient.call("getAllRows").as<std::deque<std::string>>();
@@ -808,10 +808,11 @@ std::deque<std::string> getAllColsForRowKVS(std::string addr, std::string row) {
 	int portNo = getPortNoFromString(addr);
 	std::string servAddress = getAddrFromString(kvMaster_addr);
 	rpc::client nodeRPCClient(servAddress, portNo);
-	std::deque<std::string> resp;
+	std::deque < std::string > resp;
 	try {
 		log("NODE getAllColsForRowKVS");
-		resp = nodeRPCClient.call("getAllColsForRow", row).as<std::deque<std::string>>();
+		resp = nodeRPCClient.call("getAllColsForRow", row).as<
+				std::deque<std::string>>();
 		return resp;
 	} catch (rpc::rpc_error &e) {
 		std::cout << std::endl << e.what() << std::endl;
@@ -824,14 +825,16 @@ std::deque<std::string> getAllColsForRowKVS(std::string addr, std::string row) {
 	return resp;
 }
 
-std::tuple<int, int, std::string> getFirstNBytesKVS(std::string addr, std::string row, std::string col, int n) {
+std::tuple<int, int, std::string> getFirstNBytesKVS(std::string addr,
+		std::string row, std::string col, int n) {
 	int portNo = getPortNoFromString(addr);
 	std::string servAddress = getAddrFromString(kvMaster_addr);
 	rpc::client nodeRPCClient(servAddress, portNo);
 	std::tuple<int, int, std::string> resp;
 	try {
 		log("NODE getFirstNBytesKVS");
-		resp = nodeRPCClient.call("getFirstNBytes", row, col, n).as<std::tuple<int, int, std::string>>();
+		resp = nodeRPCClient.call("getFirstNBytes", row, col, n).as<
+				std::tuple<int, int, std::string>>();
 		return resp;
 	} catch (rpc::rpc_error &e) {
 		std::cout << std::endl << e.what() << std::endl;
@@ -880,42 +883,56 @@ resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
 
 /***************************** Admin stuff ****************************/
 
-bool isAdminCacheValidFor(std::string modified_by, std::string accessed_for, int timeout){
-	if ((time(NULL) - my_admin_console_cache.last_modified > timeout) ||
-			(modified_by.compare(my_admin_console_cache.last_modified_by) != 0) ||
-			(accessed_for.compare(my_admin_console_cache.last_accessed_for) != 0)) return false;
+bool isAdminCacheValidFor(std::string modified_by, std::string accessed_for,
+		int timeout) {
+	if ((time(NULL) - my_admin_console_cache.last_modified > timeout)
+			|| (modified_by.compare(my_admin_console_cache.last_modified_by)
+					!= 0)
+			|| (accessed_for.compare(my_admin_console_cache.last_accessed_for)
+					!= 0))
+		return false;
 	return true;
 }
 
-void populateAdminCache(){
+void populateAdminCache() {
 	my_admin_console_cache.allBackendServers = getAllNodesKVS();
-	for (auto node : my_admin_console_cache.allBackendServers){
-		my_admin_console_cache.frontendToAdminComm[trim(std::get<2>(node))] = trim(std::get<3>(node));
-		log("Frontend comm: " + trim(std::get<2>(node)) + " mapped to " +  trim(std::get<3>(node)));
+	for (auto node : my_admin_console_cache.allBackendServers) {
+		my_admin_console_cache.frontendToAdminComm[trim(std::get < 2 > (node))] =
+				trim(std::get < 3 > (node));
+		log(
+				"Frontend comm: " + trim(std::get < 2 > (node)) + " mapped to "
+						+ trim(std::get < 3 > (node)));
 	}
 	my_admin_console_cache.activeBackendServers = getActiveNodesKVS();
-	for (auto node : my_admin_console_cache.activeBackendServers){
-		my_admin_console_cache.activeBackendServersList.push_back(std::get < 2 > (node));
-		my_admin_console_cache.frontendToAdminComm[trim(std::get<2>(node))] = trim(std::get<3>(node));
-		log("Active Frontend comm: " + trim(std::get<2>(node)) + " mapped to " +  trim(std::get<3>(node)));
+	for (auto node : my_admin_console_cache.activeBackendServers) {
+		my_admin_console_cache.activeBackendServersList.push_back(
+				std::get < 2 > (node));
+		my_admin_console_cache.frontendToAdminComm[trim(std::get < 2 > (node))] =
+				trim(std::get < 3 > (node));
+		log(
+				"Active Frontend comm: " + trim(std::get < 2 > (node))
+						+ " mapped to " + trim(std::get < 3 > (node)));
 	}
 	my_admin_console_cache.initialized = true;
 }
 
-void registerCacheAccess(std::string modified_by, std::string accessed_for){
+void registerCacheAccess(std::string modified_by, std::string accessed_for) {
 	my_admin_console_cache.last_modified = time(NULL);
 	my_admin_console_cache.last_modified_by = modified_by;
 	my_admin_console_cache.last_accessed_for = accessed_for;
 }
 
-void getMoreInfoFor(std::string target){
-	std::string adminCommAddr = my_admin_console_cache.frontendToAdminComm[target];
+void getMoreInfoFor(std::string target) {
+	std::string adminCommAddr =
+			my_admin_console_cache.frontendToAdminComm[target];
 	log("Admin comm for " + target + " is " + adminCommAddr);
 	auto allRows = getAllRowsKVS(target); //TODO: ask amit
-	for (std::string row : allRows){
+	for (std::string row : allRows) {
 		auto cols = getAllColsForRowKVS(target, row);
-		if (cols.size() < 1) continue;
-		my_admin_console_cache.rowToAllItsCols.push_back(std::tuple<std::string, std::deque<std::string>>(row, cols));
+		if (cols.size() < 1)
+			continue;
+		my_admin_console_cache.rowToAllItsCols.push_back(
+				std::tuple<std::string, std::deque<std::string>>(row, cols));
 	}
 }
 
@@ -1385,7 +1402,10 @@ int deleteDirectory(struct http_request req, std::string containingDir,
 }
 
 std::string getParentDirLink(std::string fileHash) {
-	std::string link = "<li>Go back<a href=/files/" + fileHash + ">Link</a>";
+	std::string link =
+			"<form style=\"padding-right:15px; margin-bottom:18px;\" method=\"POST\" action=\"/files/"
+					+ fileHash
+					+ "\"><input style=\"line-height: 24px;\" type=\"submit\" value=\"Parent Directory\" /></form>";
 	return link;
 }
 
@@ -1436,7 +1456,8 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 	return link;
 }
 
-std::string getFileList(struct http_request req, std::string filepath) {
+std::string getFileList(struct http_request req, std::string filepath,
+		std::string &parentDirLink) {
 	std::string username = req.cookies["username"];
 	std::string sessionid = req.cookies["sessionid"];
 	resp_tuple filesResp = getKVS(sessionid, username, filepath);
@@ -1456,7 +1477,7 @@ std::string getFileList(struct http_request req, std::string filepath) {
 					// Parent Directory Line
 					if (!(lineSplt[0].compare("ROOT") == 0
 							&& lineSplt[1].compare("ROOT") == 0)) {
-						result += getParentDirLink(lineSplt[1]);
+						parentDirLink = getParentDirLink(lineSplt[1]);
 					}
 				} else {
 					// Child Files or Directories
@@ -2098,28 +2119,28 @@ struct http_response processRequest(struct http_request &req) {
 							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
 							"center;\">" + test
-							+ "<form id=\"login\" style=\"display:"
-							+ (signuperr ? "none" : "block")
-							+ ";\" action=\"/login\" enctype=\"multipart/form-data\" method=\"POST\""
-									"<label for =\"username\">Username:</label><br/><input required name=\"username\" type=\"text\"/><br/>"
-									"<label for=\"password\">Password:</label><br/><input required name=\"password\" "
+							+ "<form id=\"login\" style=\"flex-direction: column; margin-bottom: 15px; display:"
+							+ (signuperr ? "none" : "flex")
+							+ ";\" action=\"/login\" enctype=\"multipart/form-data\" method=\"POST\">"
+									"<input style=\"margin-bottom: 15px;\" required placeholder=\"Username\" name=\"username\" type=\"text\"/><br/>"
+									"<input placeholder=\"Password\" style=\"margin-bottom: 15px;\" required name=\"password\" "
 									"type=\"password\"/><br/>"
-									"<br/><input type=\"submit\" name=\"submit\" value=\"Log In\"><br/>"
+									"<input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Log In\"><br/>"
 									"</form>"
-									"<form id=\"signup\" style=\"display:"
-							+ (signuperr ? "block" : "none")
+									"<form id=\"signup\" style=\"flex-direction: column; margin-bottom: 15px; display:"
+							+ (signuperr ? "flex" : "none")
 							+ ";\" action=\"/signup\" "
 									"enctype=\"multipart/form-data\" "
-									"method=\"POST\""
-									"<label for =\"username\">Username:</label><br/><input required name=\"username\" type=\"text\"/><br/>"
-									"<label for=\"password\">Password:</label><br/><input required name=\"password\" "
+									"method=\"POST\">"
+									"<input style=\"margin-bottom: 15px;\" placeholder=\"Username\"  required name=\"username\" type=\"text\"/><br/>"
+									"<input style=\"margin-bottom: 15px;\" placeholder=\"Password\"  required name=\"password\" "
 									"type=\"password\"/><br/>"
-									"<label for=\"confirm_password\">Confirm Password:</label><br/><input required "
+									"<input style=\"margin-bottom: 15px;\" placeholder=\"Confirm Password\" required "
 									"name=\"confirm_password\" "
-									"type=\"password\"/><br/>"
-									"<br/><input type=\"submit\" name=\"submit\" value=\"Sign Up\"><br/>"
+									"type=\"password\"/>"
+									"<br/><input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Sign Up\"><br/>"
 									"</form>"
-									"<br/><button id=\"switchButton\" type=\"button\">"
+									"<br/><button style=\"line-height: 24px;\" id=\"switchButton\" type=\"button\">"
 							+ (signuperr ?
 									"Have an account? Log in!" :
 									"Don't have an account? Sign up!")
@@ -2260,13 +2281,13 @@ struct http_response processRequest(struct http_request &req) {
 							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
 							"center;\">"
-							"<form action=\"/mailbox\" method=\"POST\"> <input type = \"submit\" value=\"Mailbox\" /></form>"
-							"<form action=\"/compose\" method=\"POST\"> <input type = \"submit\" value=\"Compose Email\" /></form>"
+							"<form action=\"/mailbox\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Mailbox\" /></form>"
+							"<form action=\"/compose\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Compose Email\" /></form>"
 							"<form action=\"/files/" + userRootDir
-							+ "\" method=\"POST\"> <input type = \"submit\" value=\"Storage Service\" /></form>"
-									"<form action=\"/change-password\" method=\"POST\"><input type = \"submit\" value=\"Change Password\" /></form>"
+							+ "\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Storage Service\" /></form>"
+									"<form action=\"/change-password\" method=\"POST\"><input style=\"line-height: 24px;\" type = \"submit\" value=\"Change Password\" /></form>"
 									"</body></html>"
-									"<form action=\"/logout\" method=\"POST\"><input type = \"submit\" value=\"Logout\" /></form>"
+									"<form action=\"/logout\" method=\"POST\"><input style=\"line-height: 24px;\"  type = \"submit\" value=\"Logout\" /></form>"
 									"</body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
@@ -2287,22 +2308,33 @@ struct http_response processRequest(struct http_request &req) {
 						resp.status_code = 200;
 						resp.status = "OK";
 						resp.headers["Content-type"] = "text/html";
-						std::string fileList = getFileList(req, filepath);
+						std::string parentDirLink = "";
+						std::string fileList = getFileList(req, filepath,
+								parentDirLink);
 						resp.content =
 								"<head><meta charset=\"UTF-8\"></head>"
-										"<html><body>"
-										"" + fileList + "<br/>"
-										"<form action=\"/files/" + filepath
-										+ "\" enctype=\"multipart/form-data\" method=\"POST\""
-												"<label for=\"file\">Upload a new File</label><br/><input required type=\"file\" name=\"file\"/><br/>"
-												"<input type=\"submit\" name=\"submit\" value=\"Upload\"><br/>"
+										"<html><body style ="
+										"\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height: 24px;\"  type = \"submit\" value=\"Dashboard\" /></form>"
+										+ parentDirLink
+										+ "<script> function getFile() {document.getElementById(\"upfile\").click();}</script>"
+										+ "<script> function sub(obj) {var file = obj.value; document.getElementById(\"yourBtn\").innerHTML = file.substring(12);document.myForm.submit(); event.preventDefault();}</script>"
+										+ "<form style=\"padding-left:45px; padding-right:45px; margin-bottom:18px;\" action=\"/files/"
+										+ filepath
+										+ "\" enctype=\"multipart/form-data\" method=\"POST\" name=\"myForm\">"
+										/*"<label for=\"file\" style=\"line-height: 30px;\"></label>"
+										 "<input style=\"width: 232px;\" required type =\"file\" name=\"file\"/>"*/
+												"<button style=\"line-height: 24px;\" id=\"yourBtn\" onclick=\"getFile()\">Upload File</button>"
+												"<div style=\"height: 0px; width: 0px; overflow:hidden;\"><input required id=\"upfile\" type=\"file\" value=\"upload\" name=\"file\" onchange=\"sub(this)\" /></div>"
+												/*"<input type=\"submit\" name=\"submit\" value=\"Upload File\">"*/
 												"</form>"
-												"<form action=\"/files/"
+												"<form style=\"padding-left: 15px; margin-bottom:18px;\" action=\"/files/"
 										+ filepath
 										+ "\" enctype=\"multipart/form-data\" method=\"POST\""
-												"<label for=\"dir_name\">New Directory Name</label><br/><input type=\"text\" name=\"dir_name\" placeholder=\"Create Directory\"/><br/>"
-												"<input type=\"submit\" name=\"submit\" value=\"Submit\"><br/>"
+												"<label for=\"dir_name\"></label><input required type=\"text\" name=\"dir_name\" />"
+												"<input type=\"submit\" name=\"submit\" style=\"margin-left: 15px; line-height: 24px;\" value=\"Create Directory\"><br/>"
 												"</form>"
+												"</div>" + fileList + "<br/>"
 												"</body></html>";
 					} else {
 						resp.status_code = 200;
@@ -2382,23 +2414,23 @@ struct http_response processRequest(struct http_request &req) {
 										+ escape(title1) + "</label>"
 										+ "<label for =\"submit\" style=\"margin-right: 20px; vertical-align: middle;\">"
 										+ escape(title2) + "</label>"
-										+ "<input type=\"submit\" name=\"submit\" value=\"View\" />"
+										+ "<input style=\"line-height:24px;\" type=\"submit\" name=\"submit\" value=\"View\" />"
 												"</form>"
 												"<form style=\"padding-left:15px; padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
 												"<input type=\"hidden\" name=\"type\" value=\"reply\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
 										+ "\" />"
-												"<input type = \"submit\" value=\"Reply\" /></form>"
+												"<input style=\"line-height:24px;\" type = \"submit\" value=\"Reply\" /></form>"
 												"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
 												"<input type=\"hidden\" name=\"type\" value=\"forward\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
-										+ "\" />" "<input type = \"submit\" value=\"Forward\" /></form>"
+										+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Forward\" /></form>"
 												"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
-										+ "\" />" "<input type = \"submit\" value=\"Delete\" /></form></div>";
+										+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Delete\" /></form></div>";
 						display += "</ul>";
 					}
 				}
@@ -2413,8 +2445,8 @@ struct http_response processRequest(struct http_request &req) {
 					"<head><meta charset=\"UTF-8\"></head>"
 							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input type = \"submit\" value=\"Dashboard\" /></form>"
-							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Compose Email\"/></form></div>" "<div style=\"padding-left: 15px;padding-bottom: 5px;padding-top: 10px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
+							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
+							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Compose Email\"/></form></div>" "<div style=\"padding-left: 15px;padding-bottom: 5px;padding-top: 10px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
 							"<label style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Subject</label>"
 							"<label style=\"margin-right: 20px; vertical-align:middle;\">Date</label>"
 							"</div>" + display + "</body></html>";
@@ -2504,16 +2536,18 @@ struct http_response processRequest(struct http_request &req) {
 					"<head><meta charset=\"UTF-8\"></head>"
 							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/mailbox\" method=\"POST\"> <input type = \"submit\" value=\"Discard\" /></form>"
+							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/mailbox\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Discard\" /></form>"
 							"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"subject\")[0].value = encodeURIComponent(document.getElementsByName(\"subject\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
-							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Send\" /></form></div>"
+							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\" /></form></div>"
 							"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
 							"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
-							"<label form=\"compose\" for=\"to\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">To:&nbsp;</label><input required form=\"compose\" style=\"flex:1;\" name=\"to\" type=\"text\" value=\""
+							/*"<label form=\"compose\" for=\"to\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">To:&nbsp;</label>"*/
+							"<input placeholder=\"Recipients\" required form=\"compose\" style=\"flex:1;\" name=\"to\" type=\"text\" value=\""
 							+ rec + "\"/></div>"
 							+ "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
 									"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
-									"<label form=\"compose\" for=\"subject\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">Subject:&nbsp;</label><input required form=\"compose\" style=\"flex:1;\" name=\"subject\" type=\"text\" value=\""
+									/*"<label form=\"compose\" for=\"subject\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">Subject:&nbsp;</label>"*/
+									"<input placeholder=\"Subject\" required form=\"compose\" style=\"flex:1;\" name=\"subject\" type=\"text\" value=\""
 							+ sub + "\"/></div>"
 							+ "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
 									"<div style=\"padding:15px\">"
@@ -2595,23 +2629,23 @@ struct http_response processRequest(struct http_request &req) {
 						"<head><meta charset=\"UTF-8\"></head>"
 								"<html><body "
 								"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-								"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input type = \"submit\" value=\"Dashboard\" /></form>"
-								"<form action=\"/mailbox\" method=\"POST\" style=\"padding-right: 15px; margin-bottom:18px;\"> <input type = \"submit\" value=\"Mailbox\" /></form>"
+								"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
+								"<form action=\"/mailbox\" method=\"POST\" style=\"padding-right: 15px; margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Mailbox\" /></form>"
 								"<form style=\"padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
 								"<input type=\"hidden\" name=\"type\" value=\"reply\">"
 								"<input type=\"hidden\" name=\"header\" value=\""
 								+ encodeURIComponent(header)
 								+ "\" />"
-										"<input type = \"submit\" value=\"Reply\" /></form>"
+										"<input style=\"line-height:24px;\" type = \"submit\" value=\"Reply\" /></form>"
 										"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
 										"<input type=\"hidden\" name=\"type\" value=\"forward\">"
 										"<input type=\"hidden\" name=\"header\" value=\""
 								+ encodeURIComponent(header)
-								+ "\" />" "<input type = \"submit\" value=\"Forward\" /></form>"
+								+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Forward\" /></form>"
 										"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
 										"<input type=\"hidden\" name=\"header\" value=\""
 								+ encodeURIComponent(header)
-								+ "\" />" "<input type = \"submit\" value=\"Delete\" /></form></div>"
+								+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Delete\" /></form></div>"
 										"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
 								+ display + "</body></html>";
 				resp.headers["Content-length"] = std::to_string(
@@ -2838,7 +2872,8 @@ struct http_response processRequest(struct http_request &req) {
 			requstStateFromAllServers();
 			populateAdminCache();
 			auto allBackendNodes = my_admin_console_cache.allBackendServers;
-			auto activeBackendNodesCollection = my_admin_console_cache.activeBackendServersList;
+			auto activeBackendNodesCollection =
+					my_admin_console_cache.activeBackendServersList;
 			sleep(1);
 			std::string message =
 					"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
@@ -2931,18 +2966,18 @@ struct http_response processRequest(struct http_request &req) {
 							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
 							"center;\">" + test
-							+ "<form id=\"change\" style=\"display: block;\""
+							+ "<form id=\"change\" style=\"display: flex; flex-direction: column; margin-bottom: 15px;\""
 							+ "action=\"/change\" "
 									"enctype=\"multipart/form-data\" "
 									"method=\"POST\""
-									"<label for =\"old\">Current Password:</label><br/><input required name=\"old\" type=\"password\"/><br/>"
-									"<label for=\"new\">New Password:</label><br/><input required name=\"new\" "
+									"<input style=\"margin-bottom: 15px;\" placeholder=\"Current Password\" required name=\"old\" type=\"password\"/><br/>"
+									"<input style=\"margin-bottom: 15px;\" placeholder=\"New Password\" required name=\"new\" "
 									"type=\"password\"/><br/>"
-									"<label for=\"confirm_new\">Confirm Password:</label><br/><input required "
+									"<input style=\"margin-bottom: 15px;\" placeholder=\"Confirm New Password\"  required "
 									"name=\"confirm_new\" "
 									"type=\"password\"/><br/>"
-									"<br/><input type=\"submit\" name=\"submit\" value=\"Change Password\"><br/>"
-									"</form>"
+									"<input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Change Password\"></form><br/><br/>"
+									"<form id=\"cancel\" style=\"\" action=\"/dashboard\" method=\"POST\"> <input style=\"width: 100%; line-height: 24px;\" type = \"submit\" value=\"Cancel\" /></form>"
 									"</body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
@@ -3043,8 +3078,11 @@ struct http_response processRequest(struct http_request &req) {
 			} else {
 				reviveServerKVS(target);
 			}
-			my_admin_console_cache.stopped_servers.erase(std::remove(my_admin_console_cache.stopped_servers.begin(),
-					my_admin_console_cache.stopped_servers.end(), target), my_admin_console_cache.stopped_servers.end());
+			my_admin_console_cache.stopped_servers.erase(
+					std::remove(my_admin_console_cache.stopped_servers.begin(),
+							my_admin_console_cache.stopped_servers.end(),
+							target),
+					my_admin_console_cache.stopped_servers.end());
 			registerCacheAccess("resumeserver", target);
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
@@ -3058,65 +3096,96 @@ struct http_response processRequest(struct http_request &req) {
 			tokens.pop_back();
 			log("Server info for: " + target);
 			bool frontend_target = (trim(tokens.back()).compare("f") == 0);
-			std::string message = "<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
-					"<input type = \"submit\" value=\"Logout\" /></form><form action=\"/admin\" method=\"POST\">"
-					"<input type = \"submit\" value=\"Back\" /></form><br>";
+			std::string message =
+					"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+							"<input type = \"submit\" value=\"Logout\" /></form><form action=\"/admin\" method=\"POST\">"
+							"<input type = \"submit\" value=\"Back\" /></form><br>";
 			if (frontend_target) {
 				// Show front end state from frontend state map
 				log("Showing frontend info for : " + target);
 				struct server_state state = frontend_state_map[target];
-				message += "State of " + target + " <ul><li> Number of http connections: " + std::to_string(state.http_connections) + "</li>"
-						"<li> Number of smtp connections: " + std::to_string(state.smtp_connections) + "</li>"
-						"<li> Number of internal connections: " + std::to_string(state.internal_connections) + "</li>"
-						"<li> Number of active threads: " + std::to_string(state.num_threads) + "</li></ul>";
+				message += "State of " + target
+						+ " <ul><li> Number of http connections: "
+						+ std::to_string(state.http_connections) + "</li>"
+								"<li> Number of smtp connections: "
+						+ std::to_string(state.smtp_connections) + "</li>"
+								"<li> Number of internal connections: "
+						+ std::to_string(state.internal_connections) + "</li>"
+								"<li> Number of active threads: "
+						+ std::to_string(state.num_threads) + "</li></ul>";
 			} else {
 				log("Target: " + target);
-				message += "<form action=\"/refreshadmincache\" method=\"POST\">"
-						"<input type = \"submit\" value=\"Refresh\" /></form><br>";
+				message +=
+						"<form action=\"/refreshadmincache\" method=\"POST\">"
+								"<input type = \"submit\" value=\"Refresh\" /></form><br>";
 
 				// TODO: Get all rows from backend
-				bool cache_valid = isAdminCacheValidFor("serverinfo", target, 10);
-				if(!cache_valid) {
-					if(!my_admin_console_cache.initialized) populateAdminCache();
+				bool cache_valid = isAdminCacheValidFor("serverinfo", target,
+						10);
+				if (!cache_valid) {
+					if (!my_admin_console_cache.initialized)
+						populateAdminCache();
 					getMoreInfoFor(target);
 				}
 				int page = 1;
 				try {
 					page = stoi(trim(tokens.back()));
-				} catch (const std::invalid_argument &ia){
+				} catch (const std::invalid_argument &ia) {
 					page = 1;
 				}
-				if (page > 1 && my_admin_console_cache.rowToAllItsCols.size() <= (10 * (page - 1))) page = 1;
+				if (page > 1
+						&& my_admin_console_cache.rowToAllItsCols.size()
+								<= (10 * (page - 1)))
+					page = 1;
 				log("Page: " + std::to_string(page));
 				// TODO: display first n bytes (with link to new page ...)
 				message += "KVS Table for " + target + "<hr>";
 				int i;
-				for (i = (page - 1) * 10; i < std::min((int)my_admin_console_cache.rowToAllItsCols.size(), page * 10); i++){
-					std::tuple<std::string, std::deque<std::string>> entry = my_admin_console_cache.rowToAllItsCols.at(i);
-					std::string row = std::get<0>(entry);
+				for (i = (page - 1) * 10;
+						i
+								< std::min(
+										(int) my_admin_console_cache.rowToAllItsCols.size(),
+										page * 10); i++) {
+					std::tuple<std::string, std::deque<std::string>> entry =
+							my_admin_console_cache.rowToAllItsCols.at(i);
+					std::string row = std::get < 0 > (entry);
 					message += "Row name: " + row + "<br><ul>";
-					for (std::string col: std::get<1>(entry)){
-						auto first50BytesRaw = getFirstNBytesKVS(target, row, col, 50);
-						if (std::get<0> (first50BytesRaw) != 0) continue;
-						int total_size = std::get<1> (first50BytesRaw);
-						std::string raw_bytes = std::get<2> (first50BytesRaw);
-						log("ERROR CODE GETNBYTES" + std::get<0> (first50BytesRaw));
+					for (std::string col : std::get < 1 > (entry)) {
+						auto first50BytesRaw = getFirstNBytesKVS(target, row,
+								col, 50);
+						if (std::get < 0 > (first50BytesRaw) != 0)
+							continue;
+						int total_size = std::get < 1 > (first50BytesRaw);
+						std::string raw_bytes = std::get < 2
+								> (first50BytesRaw);
+						log(
+								"ERROR CODE GETNBYTES" + std::get < 0
+										> (first50BytesRaw));
 						log("SIZE GETNBYTES" + total_size);
 						log("RAW BYTES GETNBYTES" + raw_bytes);
 						message += "<li> Col: " + col;
-						message += (total_size <= 50) ? "<br> Entire entry: <br>" : "<br> First 50 Bytes: <br>";
+						message +=
+								(total_size <= 50) ?
+										"<br> Entire entry: <br>" :
+										"<br> First 50 Bytes: <br>";
 						message.append(raw_bytes);
 						message += "<br></li>";
 					}
 					message += "</ul><hr>";
 				}
-				if(page > 1){
-					message += "<form action=\"/serverinfo/" + std::to_string(page - 1) + "/" + target + "\" method=\"POST\">"
-							"<input type = \"submit\" value=\"Prev\" /></form><br>";
+				if (page > 1) {
+					message +=
+							"<form action=\"/serverinfo/"
+									+ std::to_string(page - 1) + "/" + target
+									+ "\" method=\"POST\">"
+											"<input type = \"submit\" value=\"Prev\" /></form><br>";
 				}
-				if(i < my_admin_console_cache.rowToAllItsCols.size()){
-					message += "<form action=\"/serverinfo/" + std::to_string(page + 1) + "/" + target + "\" method=\"POST\">"
-							"<input type = \"submit\" value=\"Next\" /></form><br>";
+				if (i < my_admin_console_cache.rowToAllItsCols.size()) {
+					message +=
+							"<form action=\"/serverinfo/"
+									+ std::to_string(page + 1) + "/" + target
+									+ "\" method=\"POST\">"
+											"<input type = \"submit\" value=\"Next\" /></form><br>";
 				}
 				registerCacheAccess("serverinfo", target);
 			}
