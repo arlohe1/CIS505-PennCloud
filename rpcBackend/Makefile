@@ -4,8 +4,6 @@
 	# frontend servers: ./frontend -v -p 5000 -k 127.0.0.1:8000
 	# open broswer on localhost:5000
 
-
-
 GCC=g++
 RPC_DIR= ~/rpclib
 INCLUDES = -I $(RPC_DIR)/output/include -I $(RPC_DIR)/lib -I $(RPC_DIR)
@@ -19,6 +17,17 @@ test:
 kvs:
 	$(GCC) kvServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o kvServer $(LIBS)
 	$(GCC) testClient.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o testClient $(LIBS)
+
+paxos: 
+	$(GCC) paxosServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosServer $(LIBS)
+	$(GCC) paxosMaster.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosMaster $(LIBS)
+	for i in 1 2 3; do \
+		rm -r paxos_$$i; \
+		mkdir paxos_$$i; \
+		mkdir paxos_$$i/checkpoint; \
+		mkdir paxos_$$i/logArchive; \
+		touch paxos_$$i/log.txt; \
+	done
 
 testClient: 
 	$(GCC) testClient.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o testClient $(LIBS)
@@ -39,6 +48,8 @@ serverfiles:
 clean:
 	rm -f kvServer
 	rm -f masterNode
+	rm -f paxosServer
+	rm -f paxosMaster
 	for i in 1 2 3 4 5 6; do \
 		rm -f server_$$i/checkpointNum.txt; \
 		: > server_$$i/log.txt; \
