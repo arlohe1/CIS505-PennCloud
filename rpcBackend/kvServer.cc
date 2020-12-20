@@ -147,7 +147,6 @@ int lockAllRowsExcept(std::string row) {
 		}
     	
 	}
-	debugDetailed("-----lockAllRowsExcept------: %s %s\n", "completed locks except on row: ", row.c_str());
 	return 0;
 	// unlock map
 }
@@ -165,7 +164,6 @@ int unlockAllRowsExcept(std::string row) {
 		}
     	
 	}
-	debugDetailed("-----unlockAllRowsExcept------: %s %s\n", "completed all unlocks except on row: ", row.c_str());
 	return 0;
 	// unlock map
 }
@@ -180,7 +178,6 @@ int lockAllRows() {
 			return -1;
 		}	
 	}
-	debugDetailed("-----lockAllRowsExcept------: %s\n", "completed locks except on row: ");
 	return 0;
 	// unlock map
 }
@@ -195,7 +192,6 @@ int unlockAllRows() {
 			return -1;
 		}
 	}
-	debugDetailed("-----unlockAllRowsExcept------: %s\n", "completed all unlocks except on row: ");
 	return 0;
 	// unlock map
 }
@@ -214,7 +210,6 @@ int lockRow(std::string row) {
 		debugDetailed("%s\n", "error obtaining mutex lock");
 		return -1;
 	}
-	debugDetailed("-----LOCK ROW------: %s, row:%s\n", "lock obtained, returning", row.c_str());
 	return 0;
 }
 
@@ -228,13 +223,13 @@ int unlockRow(std::string row) {
 		debug("%s\n", "error unlocking mutex");
 		return -1;
 	}
-	debugDetailed("-----UNLOCK ROW------: %s, row:%s\n", "completed unlock, returning", row.c_str());
 	return 0;
 }
 
 
 
 void printKvMap() {
+    /*
 	if (debugFlag == 1) {
 		std::cout << "kvmap print (size: " << cacheSize << ") : \n";
 		for (const auto& x : kvMap) {
@@ -247,6 +242,7 @@ void printKvMap() {
 	    }
 	    std::cout << std::flush;
 	}
+    */
 	
 }
 
@@ -271,11 +267,9 @@ void printKvLoc() {
 
 void chdirToCheckpoint() {
 	int chdirRet = chdir("checkpoint");
- 	if (chdirRet == 0) {
- 		debugDetailed("%s\n", "cd into checkpoint dir complete");	
- 	} else {
+ 	if (chdirRet != 0) {
  		debugDetailed("%s\n", "no checkpoint dir to cd into");	
- 		if (write(STDERR_FILENO, "please create server's checkpoint directory", strlen("please create server's checkpoint directory")) < 0) {
+ 		if (write(STDERR_FILENO, "please create server's checkpoint directory\n", strlen("please create server's checkpoint directory\n")) < 0) {
  			perror("invalid write: ");
  		}
  		exit(-1);
@@ -286,12 +280,11 @@ void chdirToCheckpoint() {
 int chdirToRow(const char* dirName) {
 	int chdirRet = chdir(dirName);
  	if (chdirRet == 0) {
- 		debugDetailed("cd into row dir (already exists): %s\n", dirName);	
+ 		// debugDetailed("cd into row dir (already exists): %s\n", dirName);	
  		return 0;
  	} else {
  		int mkdirRet = mkdir(dirName, 0777);
  		if (mkdirRet < 0) {
-            debugDetailed("failed to create new row dir: %s\n", dirName);
             if (write(STDERR_FILENO, "failed to create a checkpointing row directory\n", strlen( "failed to create a checkpointing row directory\n")) < 0) {
 	 			perror("invalid write: ");
 	 		}
@@ -299,9 +292,9 @@ int chdirToRow(const char* dirName) {
  		}
  		int chdirRet = chdir(dirName);
 	 	if (chdirRet == 0) {
-	 		debugDetailed("cd into row dir (just created): %s\n", dirName);	
+	 		// debugDetailed("cd into row dir (just created): %s\n", dirName);	
 	 	} else {
-            debugDetailed("failed to cd into newly created row dir: %s\n", dirName);
+            // debugDetailed("failed to cd into newly created row dir: %s\n", dirName);
             if (write(STDERR_FILENO, "failed to cd into newly created row directory\n", strlen("failed to cd into newly created row directory\n")) < 0) {
 	 			perror("invalid write: ");
 	 		}
@@ -318,7 +311,6 @@ int lockPrimary() {
 		debugDetailed("%s\n", "error obtaining numComm. mutex lock");
 		return -1;
 	}
-	debugDetailed("LOCK primarySemaphore: %s\n", "lock obtained, returning");
 	return 0;
 }
 
@@ -327,7 +319,6 @@ int unlockPrimary() {
 		debug("%s\n", "error unlocking numComm mutex");
 		return -1;
 	}
-	debugDetailed("UNLOCK primarySemaphore: %s\n", "completed unlock, returning");
 	return 0;
 }
 
@@ -336,7 +327,7 @@ int lockNumComm() {
 		debugDetailed("%s\n", "error obtaining numComm. mutex lock");
 		return -1;
 	}
-	debugDetailed("LOCK numCommandsSinceLastCheckpointSemaphore: %s\n", "lock obtained, returning");
+	// debugDetailed("LOCK numCommandsSinceLastCheckpointSemaphore: %s\n", "lock obtained, returning");
 	return 0;
 }
 
@@ -345,7 +336,6 @@ int unlockNumComm() {
 		debug("%s\n", "error unlocking numComm mutex");
 		return -1;
 	}
-	debugDetailed("UNLOCK numComm: %s\n", "completed unlock, returning");
 	return 0;
 }
 
@@ -354,7 +344,7 @@ int lockLogFile() {
 		debugDetailed("%s\n", "error obtaining logfile mutex lock");
 		return -1;
 	}
-	debugDetailed("LOCK LOGFILE: %s\n", "lock obtained, returning");
+	// debugDetailed("LOCK LOGFILE: %s\n", "lock obtained, returning");
 	return 0;
 }
 
@@ -363,7 +353,7 @@ int unlockLogFile() {
 		debug("%s\n", "error unlocking logfile mutex");
 		return -1;
 	}
-	debugDetailed("UNLOCK LOGFILE: %s\n", "completed unlock, returning");
+	// debugDetailed("UNLOCK LOGFILE: %s\n", "completed unlock, returning");
 	return 0;
 }
 
@@ -373,7 +363,7 @@ int lockCheckpoint() {
 		debugDetailed("%s\n", "error obtaining checkpoint mutex lock");
 		return -1;
 	}
-	debugDetailed("LOCK CHECKPOINT: %s\n", "lock obtained, returning");
+	// debugDetailed("LOCK CHECKPOINT: %s\n", "lock obtained, returning");
 	return 0;
 }
 
@@ -382,7 +372,7 @@ int unlockCheckpoint() {
 		debug("%s\n", "error unlocking checkpoint mutex");
 		return -1;
 	}
-	debugDetailed("UNLOCK CHECKPOINT: %s\n", "completed unlock, returning");
+	// debugDetailed("UNLOCK CHECKPOINT: %s\n", "completed unlock, returning");
 	return 0;
 }
 
@@ -476,19 +466,19 @@ void runCheckpoint(int evictCause) {
 				//printf("found nullllllllllllllllllllllll\n");
 			}
 			int loc = (*it).second;
-			debugDetailed("loop for: %s, -> %d\n", col.c_str(), loc);
+			// debugDetailed("loop for: %s, -> %d\n", col.c_str(), loc);
 			// case on kvLoc val -1 (deleted), 0 (on disk), or 1 (in local kvMap)
 			if (loc == -1) {
 				if(remove( col.c_str() ) != 0 ) {
-                    debugDetailed("File did not exist for col %s. Skipping!\n", col.c_str());
+                    // debugDetailed("File did not exist for col %s. Skipping!\n", col.c_str());
 				} else {
-                    debugDetailed("Deleting file for col %s\n", col.c_str());
+                    // debugDetailed("Deleting file for col %s\n", col.c_str());
 				}
                 // NOTE - del has already been called and removed the val form kvMap and adjusted cache size
                 it = kvLoc[row].erase(it);
                 printKvLoc();
 			} else if (loc == 1) {
-				debugDetailed("checkpoint writes file: %s\n", col.c_str());
+				// debugDetailed("checkpoint writes file: %s\n", col.c_str());
 				colFilePtr = fopen((col).c_str(), "w");
                 // write all value to file with format valLen\nvalue
                 fprintf(colFilePtr, "%ld\n", kvMap[row][col].length());
@@ -517,15 +507,15 @@ void runCheckpoint(int evictCause) {
 		int lastCnt = getCurrCheckpointCnt();
 		std::string archiveLog("logArchive/log");
 		archiveLog = archiveLog + std::to_string(lastCnt);
-		debugDetailed("----------checkpoint archive log: %s\n", archiveLog.c_str());
+		// debugDetailed("----------checkpoint archive log: %s\n", archiveLog.c_str());
 		rename("log.txt", archiveLog.c_str());
 		FILE* logFilePtr = fopen("log.txt", "w");
 		fclose(logFilePtr);
-		debugDetailed("%s,\n", "--------moved old logfile to archive and created new--------");
+		// debugDetailed("%s,\n", "--------moved old logfile to archive and created new--------");
 		numCommandsSinceLastCheckpoint = 0;
 	}
 	
-	debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
+	// debugDetailed("--------cacheSize: %d, kvMap after checkpoint\n", cacheSize);
 	printKvMap();
 	printKvLoc();
 	debugDetailed("%s,\n", "--------checkpoint finished and return--------");
@@ -547,7 +537,6 @@ FILE * openValFile(char* row, char* col, const char* mode) {
 		perror("error in fopen in openValFile: ");
 		debugDetailed("openValFile error in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
 	}
-	debugDetailed("openValFile finished in fopen call for file path: %s, mode: %s\n", filePath.c_str(), mode);
 	if (unlockCheckpoint() < 0) {
 		exit(-1);
 	}
@@ -594,7 +583,6 @@ int readAndLoadValIfSpace(FILE* fptr, int valLen, int cacheThresh, char* row, ch
 // call on server start
 int loadKvStoreFromDisk() {
 	// loop over all files in checkpoint dir and read each row file
-	debugDetailed("%s\n", "---------Entered loadKvStoreFromDisk");
 	chdirToCheckpoint();
 	DIR* dir = opendir(".");
 	struct dirent* nextRowDir;
@@ -629,7 +617,6 @@ int loadKvStoreFromDisk() {
                 exit(-1);
 			}
 			// read from column file the formatted length
-            debugDetailed("Current DIR TO TRY FGETS ON dir: %s\n", nextColFile->d_name);
 			if ((fgets(headerBuf, MAX_LEN_LOG_HEADER, colFilePtr)) == NULL) {
 				perror("invalid fgets when trying to read col file reader: ");	
 				// return -1;
@@ -637,7 +624,6 @@ int loadKvStoreFromDisk() {
 			}
 			headerBuf[strlen(headerBuf)] = '\0'; // set newlien to null
 			int valLen = (atoi(headerBuf));
-			debugDetailed("buf read from checkpoint file (%s) is: %s, valLen:%d\n", nextColFile->d_name, headerBuf, valLen);
 			
 			// enter into kvMap - if space
 			readAndLoadValIfSpace(colFilePtr, valLen, startCacheThresh, nextRowDir->d_name, nextColFile->d_name);
@@ -650,8 +636,6 @@ int loadKvStoreFromDisk() {
 	}
 	chdir("..");
 	closedir(dir);
-	
-	debugDetailed("%s\n", "---------Finished loadKvStoreFromDisk");
 	return 0;	
 }
 
@@ -667,7 +651,7 @@ void checkIfCheckPoint() {
 	numCommandsSinceLastCheckpoint = numCommandsSinceLastCheckpoint + 1;
 	debugDetailed("NUM completed commands: %d\n", numCommandsSinceLastCheckpoint);
 	if (numCommandsSinceLastCheckpoint >= COM_PER_CHECKPOINT) {
-		debugDetailed("%s\n", "triggering checkpoint");
+		// debugDetailed("%s\n", "triggering checkpoint");
 		runCheckpoint(COMM); // Note this function accesses and writes to numCommandsSinceLastCheckpoint
 	} 
 	// release semaphore on numCommandsSinceLast Checkpoint
@@ -683,12 +667,12 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 	// check what command is 
 	FILE* logfile;
 	if (replay == 0) {
-		debugDetailed("%s\n", "logging command, replay flag off");
+		// debugDetailed("%s\n", "logging command, replay flag off");
 		if (lockLogFile() < 0) {
 			return -1;
 		}
 		if ((logfile = fopen("log.txt", "a")) == NULL) {
-			debugDetailed("could not open log.txt for server %d\n", serverIdx);
+			// debugDetailed("could not open log.txt for server %d\n", serverIdx);
 			perror("invalid fopen of log file: ");
 			unlockLogFile();
 			return -1;
@@ -725,21 +709,16 @@ int logCommand(enum Command comm, int numArgs, std::string arg1, std::string arg
 			fwrite(arg3.c_str(), sizeof(char), arg3.length(), logfile);
 			fwrite(arg4.c_str(), sizeof(char), arg4.length(), logfile);
 		} else {
-			debugDetailed("invalid number of args (%d) in logCommand\n", numArgs);
+			// debugDetailed("invalid number of args (%d) in logCommand\n", numArgs);
 			fprintf(stderr, "invalid paramaters in logCommand\n");
 		}
 
 		fwrite("\n", sizeof(char), strlen("\n"), logfile);
 
 		fclose(logfile);
-		//logfile = NULL;
 		if (unlockLogFile() < 0) {
 			return -1;
 		}
-
-		//checkIfCheckPoint();
-	} else {
-		debugDetailed("%s\n", "did not re-log, replay flag is 1");
 	}
 	return 0;
 }
@@ -750,7 +729,7 @@ std::string getValDiskorLocal(std::string row, std::string col) {
 	std::string val;
 	lockRow(row);
 	if (kvLoc[row][col] == 0) { // TODO would need to claim semaphore here in this case on checkpoint where eviction happens
-		debugDetailed("%s\n", "row, col, val on disk, retrieiving..");
+		// debugDetailed("%s\n", "row, col, val on disk, retrieiving..");
 		// try to load from disk, and run checkpoint if needed
 		FILE* colFilePtr = openValFile((char*) row.c_str(), (char*) col.c_str(), "r");
 		int valLen = getValSize(colFilePtr);
@@ -768,12 +747,12 @@ std::string getValDiskorLocal(std::string row, std::string col) {
 
 // helper to compare responses
 resp_tuple combineResps(std::map<std::string, resp_tuple> respSet) {
-	debugDetailed("---combineReps: %s\n", "entered");
+	// debugDetailed("---combineReps: %s\n", "entered");
 	resp_tuple firstVal = std::make_tuple(0, "");
 	resp_tuple resp = std::make_tuple(0, "");
 	for (const auto& x : respSet) {
 		//x.first is ip:port, x.second is resp_tuple
-		debugDetailed("---combineReps: %s\n", "respset iter");
+		// debugDetailed("---combineReps: %s\n", "respset iter");
     	if (firstVal == std::make_tuple(0, "")) {
     		firstVal = x.second;
     		resp = x.second;
@@ -784,19 +763,20 @@ resp_tuple combineResps(std::map<std::string, resp_tuple> respSet) {
     		}
     	}	
 	}
-	debugDetailed("---combineReps: %s\n", "completed loop over respSet");
+	// debugDetailed("---combineReps: %s\n", "completed loop over respSet");
 	if (firstVal == std::make_tuple(0, "")) {
 		debugDetailed("%s\n", "error in combine resps - empty respSet arg");
 		resp = std::make_tuple(-1, "Error: empty resp set");
 	}
-	debugDetailed("---combineReps: %s\n", "returned");
+	// debugDetailed("---combineReps: %s\n", "returned");
 	return resp;
 }
 
 
 
 resp_tuple put(std::string row, std::string col, std::string val) {
-    debugDetailed("---PUT entered - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+    // debugDetailed("---PUT entered - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+    debugDetailed("---PUT entered - row: %s, column: %s, val length: %ld\n", row.c_str(), col.c_str(), val.length());
     int oldLen = kvMap[row][col].length();
     int ranCheckPoint = 0; // need this flag to properly update chacheSize
 
@@ -818,7 +798,8 @@ resp_tuple put(std::string row, std::string col, std::string val) {
     	if (ranCheckPoint == 0) {
     		cacheSize = cacheSize - oldLen;
     	}
-    	debugDetailed("------PUT row: %s, column: %s, val: %s, cahceSize: %d\n", row.c_str(), col.c_str(), val.c_str(), cacheSize);
+    	// debugDetailed("------PUT row: %s, column: %s, val: %s, cahceSize: %d\n", row.c_str(), col.c_str(), val.c_str(), cacheSize);
+        debugDetailed("---PUT row - row: %s, column: %s, val length: %ld\n", row.c_str(), col.c_str(), val.length());
         printKvMap();
     	logCommand(PUT, 3, row, col, val, row);
     	if (unlockRow(row) < 0) {
@@ -828,14 +809,16 @@ resp_tuple put(std::string row, std::string col, std::string val) {
     	return std::make_tuple(0, "OK");
     } else {
     	// evict everything then rerun the function (but dont log the second time)
-    	debugDetailed("------PUT evicting FAILED row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+    	// debugDetailed("------PUT evicting FAILED row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+    	debugDetailed("------PUT evicting FAILED row: %s, column: %s, val length: %ld\n", row.c_str(), col.c_str(), val.length());
     	fprintf(stderr, "memCache overfilled\n");
     	exit(0);
     }
 }
 
 std::tuple<int, std::string> cput(std::string row, std::string col, std::string expVal, std::string newVal) {
-	debugDetailed("---CPUT entered - row: %s, column: %s, expVal: %s, newVal: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+	// debugDetailed("---CPUT entered - row: %s, column: %s, expVal: %s, newVal: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+	debugDetailed("---CPUT entered - row: %s, column: %s, expVal length: %ld, newVal length: %ld\n", row.c_str(), col.c_str(), expVal.length(), newVal.length());
 
 	lockRow(row);
 	if (kvLoc.count(row) > 0) {
@@ -843,17 +826,19 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 			if (kvLoc[row][col] != -1) {
 				unlockRow(row);
 				std::string val = getValDiskorLocal(row, col);	
-				debugDetailed("------CPUT correct val: %s\n", val.c_str());	
+				// debugDetailed("------CPUT correct val: %s\n", val.c_str());	
 				lockRow(row);
 				if (expVal.compare(kvMap[row][col]) == 0) {
 					unlockRow(row);
 					put(row, col, newVal);
-					debugDetailed("------CPUT called put and updated val - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+					// debugDetailed("------CPUT called put and updated val - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+                    debugDetailed("---CPUT called put and updated val - row: %s, column: %s, expVal length: %ld, newVal length: %ld\n", row.c_str(), col.c_str(), expVal.length(), newVal.length());
                     printKvMap();
 					return std::make_tuple(0, "OK");
 				} else {
 					unlockRow(row);
-					debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+					// debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+                    debugDetailed("---CPUT did not update - row: %s, column: %s, expVal length: %ld, newVal length: %ld\n", row.c_str(), col.c_str(), expVal.length(), newVal.length());
                     printKvMap();
 					return std::make_tuple(2, "Incorrect expVal");
 				}
@@ -867,7 +852,7 @@ std::tuple<int, std::string> cput(std::string row, std::string col, std::string 
 		unlockRow(row);
 	}
 	
-	debugDetailed("------CPUT did not update - row: %s, column: %s, old val: %s, new val: %s\n", row.c_str(), col.c_str(), expVal.c_str(), newVal.c_str());
+	debugDetailed("------CPUT did not update - row: %s, column: %s, old val length: %ld, new val length: %ld\n", row.c_str(), col.c_str(), expVal.length(), newVal.length());
     printKvMap();
 	return std::make_tuple(1, "No such row, column pair");
 }
@@ -1102,7 +1087,8 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 					return std::make_tuple(1, "ERR");
 				}
 				std::string val = getValDiskorLocal(row, col);			
-				debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+				// debugDetailed("---GET succeeded - row: %s, column: %s, val: %s\n", row.c_str(), col.c_str(), val.c_str());
+				debugDetailed("---GET succeeded - row: %s, column: %s, val length: %ld\n", row.c_str(), col.c_str(), val.length());
 				printKvMap();
 				//logCommand(GET, 2, row, col, row, row);
 				return std::make_tuple(0, val);
@@ -1213,7 +1199,7 @@ int replayLog() {
 		// NOTE: uncomment lines below for debug statements, but this will casue 3 memory erros from one context when run in valgrind
 		//debugDetailed("header args - comm: %s, len1: %d, len2: %d, len3: %d, len4: %d\n", comm, lens[0], lens[1], lens[2], lens[3]);
 		//debugDetailed("parsed args - arg1: %s, arg2: %s, arg3: %s, arg4: %s\n", args[0], args[1], args[2], args[3]);
-		debugDetailed("---replayLog: %s\n", "calling function");
+		// debugDetailed("---replayLog: %s\n", "calling function");
 		callFunction(comm, args[0], args[1], args[2], args[3], lens[0], lens[1], lens[2], lens[3]);
 
 
@@ -1280,9 +1266,9 @@ void sigTermHandler(int signum) {
 void getLoggingUpdates() {
 	//int myLastLogNum = getCurrCheckpointCnt();
 	// TODO need to add primary choosing here
-	debugDetailed("---getLoggingUpdates: %s\n", "entered");
+	// debugDetailed("---getLoggingUpdates: %s\n", "entered");
 	if (isPrimary()) {
-		debugDetailed("---getLoggingUpdates: %s\n", "returned - primary");
+		// debugDetailed("---getLoggingUpdates: %s\n", "returned - primary");
 		return;
 	}
 
@@ -1301,10 +1287,6 @@ void getLoggingUpdates() {
    	int primaryLogNum = 0;
     do {
     	myLastLogNum = getCurrCheckpointCnt();
-    	debugDetailed("myLastLogNum: %d\n", myLastLogNum);
-    	debugDetailed("primaryLogNum: %d\n", primaryLogNum);
-    	debugDetailed("myClusterLeader: %s\n", myClusterLeader.c_str());
-    	debugDetailed("%s\n", "-----------");
     	resp_tuple resp = client.call("sendUpdates", myLastLogNum).as<resp_tuple>(); 
     	primaryLogNum = std::get<0>(resp);
     	std::string primaryLog = std::get<1>(resp);
@@ -1314,7 +1296,7 @@ void getLoggingUpdates() {
     	fclose(logFile);
     	replayLog(); // this will trigger a checkpoint	
     } while (myLastLogNum != primaryLogNum);
-    debugDetailed("---getLoggingUpdates: %s\n", "returned - non-primary");
+    // debugDetailed("---getLoggingUpdates: %s\n", "returned - non-primary");
     return;
 
 }
@@ -1334,17 +1316,17 @@ void loadLatestKVMapOnBoot() {
 			put(adminRow, adminCol, adminVal);
     	}
     }
- 	debug("%s\n", "kvMap before log replay or checkpoint: ");
+ 	// debug("%s\n", "kvMap before log replay or checkpoint: ");
  	printKvMap();
  	loadKvStoreFromDisk();
- 	debug("%s\n", "kvMap before log replay: ");
+ 	// debug("%s\n", "kvMap before log replay: ");
  	printKvMap();
  	// get updates and most recent logfile from leader -- TODO: need to add function to get leader
  	getLoggingUpdates(); // this function will get logging updates and replay them as needed
- 	debug("%s\n", "kvMap after log replay: ");
+ 	// debug("%s\n", "kvMap after log replay: ");
  	printKvMap();
  	printKvLoc();
- 	debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
+ 	// debug("numCommandsSinceLastCheckpoint: %d\n", numCommandsSinceLastCheckpoint);
 }
 
 void *kvServerThreadFunc(void *arg) {
