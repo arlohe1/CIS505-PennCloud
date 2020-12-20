@@ -658,6 +658,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 		kvsRPCClient.set_timeout(timeout);
 		try {
 			if (kvsFuncType.compare("putKVS") == 0) {
+                log("KVS PUT VAL LENGTH:" + std::to_string(value.length()));
 				log(
 						"KVS PUT with kvServer " + targetServer + ": " + row
 								+ ", " + column + ", " + value);
@@ -686,6 +687,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 					kvsFuncType + " Response Status: "
 							+ std::to_string(kvsResponseStatusCode(resp)));
 			log(kvsFuncType + " Response Value: " + kvsResponseMsg(resp));
+            log(kvsFuncType +" Response Value Length: " + std::to_string(kvsResponseMsg(resp).length()));
 			return resp;
 		} catch (rpc::timeout &t) {
 			log(
@@ -725,6 +727,11 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 					+ "): All nodes in cluster down! ERROR.");
 	return std::make_tuple(-2, "All nodes in cluster down!");
 }
+
+resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
+	return kvsFunc("getKVS", session_id, row, column, "", "");
+}
+
 
 resp_tuple putKVS(std::string session_id, std::string row, std::string column,
 		std::string value) {
@@ -875,10 +882,6 @@ void reviveServerKVS(std::string target) {
 		auto err = e.get_error().as<err_t>();
 		log("UNHANDLED ERROR IN getAllNodesKVS TRY CATCH"); // TODO
 	}
-}
-
-resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
-	return kvsFunc("getKVS", session_id, row, column, "", "");
 }
 
 /***************************** Admin stuff ****************************/
@@ -1639,6 +1642,7 @@ void processMultiPart(struct http_request &req) {
 		}
 	}
 
+    /*
 	log("Results of multi-part processing: ");
 	log("Form data: ");
 	for (std::map<std::string, std::string>::iterator it = req.formData.begin();
@@ -1647,6 +1651,7 @@ void processMultiPart(struct http_request &req) {
 				"Key : " + it->first + " value : "
 						+ std::to_string((it->second).size()));
 	}
+    */
 }
 
 void processForm(struct http_request &req) {
@@ -1663,12 +1668,14 @@ void processForm(struct http_request &req) {
 		req.formData[key] = value;
 	}
 
+    /*
 	log("Form data: ");
 	for (std::map<std::string, std::string>::iterator it = req.formData.begin();
 			it != req.formData.end(); it++) {
 		log("Key: " + it->first + " Value: " + it->second);
 	}
 	log("End form data");
+    */
 }
 
 void processCookies(struct http_request &req) {
@@ -1752,7 +1759,7 @@ struct http_request parseRequest(int *client_fd) {
 			headers_done = true;
 			break;
 		}
-		log("Header: " + line);
+		// log("Header: " + line);
 		headr = split(trim(line), ":");
 		if (headr.size() == 0 || headr.at(0).compare(line) == 0) {
 			req.valid = false;
@@ -3254,7 +3261,7 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 		response += "\r\n" + resp.content;
 	}
 	writeNBytes(client_fd, response.size(), response.data());
-	log("Sent: " + response);
+	// log("Sent: " + response);
 }
 
 /***************************** End http util functions ************************/
