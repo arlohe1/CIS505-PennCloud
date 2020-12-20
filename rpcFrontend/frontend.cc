@@ -2366,15 +2366,15 @@ struct http_response processRequest(struct http_request &req) {
 										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height: 24px;\"  type = \"submit\" value=\"Dashboard\" /></form>"
 										+ parentDirLink
 										+ "<script> function getFile() {document.getElementById(\"upfile\").click();}</script>"
-										+ "<script> function sub(obj) {var file = obj.value; document.getElementById(\"yourBtn\").innerHTML = file.substring(12);document.myForm.submit(); event.preventDefault();}</script>"
+										+ "<script> function sub(obj) {var file = obj.value; document.getElementById(\"yourBtn\").innerHTML = file.substring(12); event.preventDefault();}</script>"
 										+ "<form style=\"padding-left:45px; padding-right:45px; margin-bottom:18px;\" action=\"/files/"
 										+ filepath
 										+ "\" enctype=\"multipart/form-data\" method=\"POST\" name=\"myForm\">"
 										/*"<label for=\"file\" style=\"line-height: 30px;\"></label>"
 										 "<input style=\"width: 232px;\" required type =\"file\" name=\"file\"/>"*/
-												"<button style=\"line-height: 24px;\" id=\"yourBtn\" onclick=\"getFile()\">Upload File</button>"
+												"<button style=\"line-height: 24px;\" id=\"yourBtn\" onclick=\"getFile()\">Select File</button>"
 												"<div style=\"height: 0px; width: 0px; overflow:hidden;\"><input required id=\"upfile\" type=\"file\" value=\"upload\" name=\"file\" onchange=\"sub(this)\" /></div>"
-												/*"<input type=\"submit\" name=\"submit\" value=\"Upload File\">"*/
+												"<input type=\"submit\" name=\"submit\" value=\"Upload\">"
 												"</form>"
 												"<form style=\"padding-left: 15px; margin-bottom:18px;\" action=\"/files/"
 										+ filepath
@@ -3209,9 +3209,9 @@ struct http_response processRequest(struct http_request &req) {
 						std::string raw_bytes = std::get < 2
 								> (first50BytesRaw);
 						log(
-								"ERROR CODE GETNBYTES" + std::get < 0
-										> (first50BytesRaw));
-						log("SIZE GETNBYTES" + total_size);
+								"ERROR CODE GETNBYTES: " + std::to_string(std::get < 0
+										> (first50BytesRaw)));
+						log("SIZE GETNBYTES: " + std::to_string(total_size));
 						log("RAW BYTES GETNBYTES" + raw_bytes);
 						message += "<li> Col: " + col;
 						message +=
@@ -3220,6 +3220,8 @@ struct http_response processRequest(struct http_request &req) {
 										"<br> First 50 Bytes: <br>";
 						message.append(raw_bytes);
 						message += "<br></li>";
+						if(total_size > 50) message += "<a href = \"/adminfiles/" + std::to_string(total_size) + "/" +
+								col + "/" + row + "/"+ target + "\" target=\"_blank\"> See More</a>";
 					}
 					message += "</ul><hr>";
 				}
@@ -3245,6 +3247,33 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Content-type"] = "text/html";
 			resp.headers["Content-length"] = std::to_string(message.size());
 			resp.content = message;
+		}
+	} else if (req.filepath.compare(0, 12, "/adminfiles/") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()
+						&& req.cookies["username"].compare("admin") == 0) {
+			std::deque < std::string > tokens = split(req.filepath, "/");
+			std::string target = trim(tokens.back());
+			tokens.pop_back();
+			std::string row = trim(tokens.back());
+			tokens.pop_back();
+			std::string col = trim(tokens.back());
+			tokens.pop_back();
+			int total_size = std::stoi(trim(tokens.back()));
+			auto raw_data_tuple = getFirstNBytesKVS(target, row, col, total_size);
+			if(std::get<0>(raw_data_tuple) != 0){
+				resp.status = "Not Found";
+				resp.status_code = 404;
+			} else {
+				std::string raw_data = std::get<2>(raw_data_tuple);
+				resp.status = "OK";
+				resp.status_code = 200;
+				resp.headers["Content-type"] = "text/html";
+				std::string message = "<html><body>";
+				message.append(raw_data);
+				message += "</body></html>";
+				resp.headers["Content-length"] = std::to_string(message.size());
+				resp.content = message;
+			}
 		}
 	} else if (req.filepath.compare("/refreshadmincache") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()

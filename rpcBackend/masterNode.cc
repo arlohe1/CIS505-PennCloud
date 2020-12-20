@@ -5,6 +5,7 @@
 #include <string.h>
 #include <rpc/server.h>
 #include <rpc/client.h>
+#include "rpc/rpc_error.h"
 #include <errno.h>
 #include <signal.h>
 #include <sys/file.h>
@@ -99,9 +100,14 @@ void *notifyOfNewLeaderThreadFunc(void *arg) {
     int serverToNotifyPortNo = stoi(serverToNotify.substr(serverToNotify.find(":")+1));
 	std::string serverToNotifyAddr = serverToNotify.substr(0, serverToNotify.find(":"));
 	rpc::client serverToNotifyRPCClient(serverToNotifyAddr, serverToNotifyPortNo);
-    int resp = serverToNotifyRPCClient.call("notifyOfNewLeader", newLeader).as<
-				int>();
-    log("Cluster "+std::to_string(cluster)+": Notifying server "+serverToNotify+" of new leader ("+newLeader+").");
+    serverToNotifyRPCClient.set_timeout(2000); // 2000 milliseconds
+    try {
+        log("Cluster "+std::to_string(cluster)+": Notifying server "+serverToNotify+" of new leader ("+newLeader+").");
+        int resp = serverToNotifyRPCClient.call("notifyOfNewLeader", newLeader).as<
+                    int>();
+    } catch(rpc::timeout &t) {
+        log("Attempt to notify server ("+serverToNotify+") in cluster "+std::to_string(cluster)+" of new leader ("+newLeader+") timed out!");
+    }
     // freeing and exiting
     log("Exiting notifyOfNewLeader pthread with serverToNotify: " + serverToNotify);
     free(tinfo->serverToNotify);
@@ -206,9 +212,14 @@ std::tuple<int, std::string> registerWithMaster(std::string serverAddr) {
     std::string clusterLeader = clusterToLeaderMap[cluster];
     if(serverAddr.compare(clusterLeader) != 0) {
         rpc::client leaderClient(getIPAddr(clusterLeader), getIPPort(clusterLeader));
-        log("Notifying "+clusterLeader+" of new node "+serverAddr);
-        int result = leaderClient.call("notifyOfNewNode", serverAddr).as<int>();
-        log("Done notifying "+clusterLeader+" of new node "+serverAddr);
+        leaderClient.set_timeout(2000); // 2000 milliseconds
+        try {
+            log("Notifying "+clusterLeader+" of new node "+serverAddr);
+            int result = leaderClient.call("notifyOfNewNode", serverAddr).as<int>();
+            log("Done notifying "+clusterLeader+" of new node "+serverAddr);
+        } catch(rpc::timeout &t) {
+            log("Attempt to notify leader ("+clusterLeader+") of new node ("+serverAddr+") timed out!");
+        }
     }
     return std::make_tuple(0, clusterToLeaderMap[cluster]);
 }
