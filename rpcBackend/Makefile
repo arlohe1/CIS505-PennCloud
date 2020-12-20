@@ -21,6 +21,7 @@ kvs:
 paxos: 
 	$(GCC) paxosServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosServer $(LIBS)
 	$(GCC) paxosMaster.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosMaster $(LIBS)
+	$(GCC) paxosTest.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosTest $(LIBS)
 	for i in 1 2 3; do \
 		rm -r paxos_$$i; \
 		mkdir paxos_$$i; \
