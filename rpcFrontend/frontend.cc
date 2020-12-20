@@ -80,6 +80,9 @@ std::map<int, std::deque<server_tuple>> clusterToServerListMap;
 
 using resp_tuple = std::tuple<int, std::string>;
 
+std::deque<std::string> paxosServers; 
+std::map<std::string, std::string> paxosServersHeartbeatMap;
+
 /********************** HTTP data structures *********************/
 
 struct http_session {
@@ -1588,17 +1591,41 @@ void createRootDirForNewUser(struct http_request req, std::string sessionid) {
 std::string displayAllMessages() {
     std::string htmlMsgs = "";
     std::string allMessages = "";
-    log("Getting messages for ledger from getPaxos");
-    // std::string allMessages = getPaxos("ledger", "samecolumn");
-    std::deque<std::string> messageDeque = split(allMessages, "\n");
-    log("Got "+std::to_string(messageDeque.size())+" messages from getPaxos");
-    for(std::string messageRaw : messageDeque) {
-        std::string sender = messageRaw.substr(0, messageRaw.find(":"));
-        std::string message = messageRaw.substr(messageRaw.find(":")+1);
-        htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
-    }
-    log("Returning formatted messages from getPaxos");
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("getPaxos: Getting messages for ledger from paxosServer: "+targetPaxosServer);
+        std::string allMessages = paxosServerClient.call("getPaxos", "ledger", "samecolumn").as<std::string>();
+        std::deque<std::string> messageDeque = split(allMessages, "\n");
+        log("getPaxos: Got "+std::to_string(messageDeque.size())+" messages from getPaxos");
+        for(std::string messageRaw : messageDeque) {
+            std::string sender = messageRaw.substr(0, messageRaw.find(":"));
+            std::string message = messageRaw.substr(messageRaw.find(":")+1);
+            htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
+        }
+        log("getPaxos: Returning formatted messages from getPaxos");
     return htmlMsgs;
+    } catch (rpc::timeout &t) {
+        log("getPaxos: getPaxos call timed out! Returning error message");
+        return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
+    }
+}
+
+void sendNewMessage(std::string message) {
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("putPaxos: Putting new message into ledger via paxosServer: "+targetPaxosServer);
+        resp_tuple resp = paxosServerClient.call("putPaxos", "ledger", "samecolumn", message).as<resp_tuple>();
+        log("putPaxos returned with Status Code: "+std::to_string(kvsResponseStatusCode(resp)));
+        log("putPaxos returned with Value: "+kvsResponseMsg(resp));
+        log("putPaxos returned with value length: "+std::to_string(kvsResponseMsg(resp).length()));
+    } catch (rpc::timeout &t) {
+        log("putPaxos: getPaxos call timed out!");
+    }
+    log("putPaxos: complete");
 }
 /***************************** End Discussion forum functions ************************/
 /*********************** Http Util function **********************************/
@@ -2122,7 +2149,7 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.cookies["username"].size() > 0 && req.formData["newMessage"].size() > 0) {
             std::string message = req.cookies["username"] +":"+message; 
             log("Sending new message via putPaxos: "+message);
-            // putPaxos("ledger", "samecolumn", message);
+            sendNewMessage(message);
     }
 
 	if (req.filepath.compare("/") == 0) {
@@ -3983,6 +4010,14 @@ int main(int argc, char *argv[]) {
 		server_index = 0;
 		log("Successfully initialized load balancer!");
 	}
+
+    // Hardcoding Paxos server addresses
+    paxosServers.push_back("127.0.0.1:10030");
+    paxosServers.push_back("127.0.0.1:10032");
+    paxosServers.push_back("127.0.0.1:10034");
+    paxosServersHeartbeatMap["127.0.0.1:10030"] = "127.0.0.1:10031";
+    paxosServersHeartbeatMap["127.0.0.1:10032"] = "127.0.0.1:10033";
+    paxosServersHeartbeatMap["127.0.0.1:10034"] = "127.0.0.1:10035";
 
 	if (list_of_frontend.length() > 0) {
 		FILE *f = fopen(list_of_frontend.c_str(), "r");
