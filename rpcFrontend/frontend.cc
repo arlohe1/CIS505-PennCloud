@@ -2325,15 +2325,15 @@ struct http_response processRequest(struct http_request &req) {
 										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height: 24px;\"  type = \"submit\" value=\"Dashboard\" /></form>"
 										+ parentDirLink
 										+ "<script> function getFile() {document.getElementById(\"upfile\").click();}</script>"
-										+ "<script> function sub(obj) {var file = obj.value; document.getElementById(\"yourBtn\").innerHTML = file.substring(12);document.myForm.submit(); event.preventDefault();}</script>"
+										+ "<script> function sub(obj) {var file = obj.value; document.getElementById(\"yourBtn\").innerHTML = file.substring(12); event.preventDefault();}</script>"
 										+ "<form style=\"padding-left:45px; padding-right:45px; margin-bottom:18px;\" action=\"/files/"
 										+ filepath
 										+ "\" enctype=\"multipart/form-data\" method=\"POST\" name=\"myForm\">"
 										/*"<label for=\"file\" style=\"line-height: 30px;\"></label>"
 										 "<input style=\"width: 232px;\" required type =\"file\" name=\"file\"/>"*/
-												"<button style=\"line-height: 24px;\" id=\"yourBtn\" onclick=\"getFile()\">Upload File</button>"
+												"<button style=\"line-height: 24px;\" id=\"yourBtn\" onclick=\"getFile()\">Select File</button>"
 												"<div style=\"height: 0px; width: 0px; overflow:hidden;\"><input required id=\"upfile\" type=\"file\" value=\"upload\" name=\"file\" onchange=\"sub(this)\" /></div>"
-												/*"<input type=\"submit\" name=\"submit\" value=\"Upload File\">"*/
+												"<input type=\"submit\" name=\"submit\" value=\"Upload\">"
 												"</form>"
 												"<form style=\"padding-left: 15px; margin-bottom:18px;\" action=\"/files/"
 										+ filepath
