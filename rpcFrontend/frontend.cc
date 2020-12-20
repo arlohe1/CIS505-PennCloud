@@ -1584,7 +1584,23 @@ void createRootDirForNewUser(struct http_request req, std::string sessionid) {
 }
 
 /***************************** End storage service functions ************************/
-
+/***************************** Start Discussion forum functions ************************/
+std::string displayAllMessages() {
+    std::string htmlMsgs = "";
+    std::string allMessages = "";
+    log("Getting messages for ledger from getPaxos");
+    // std::string allMessages = getPaxos("ledger", "samecolumn");
+    std::deque<std::string> messageDeque = split(allMessages, "\n");
+    log("Got "+std::to_string(messageDeque.size())+" messages from getPaxos");
+    for(std::string messageRaw : messageDeque) {
+        std::string sender = messageRaw.substr(0, messageRaw.find(":"));
+        std::string message = messageRaw.substr(messageRaw.find(":")+1);
+        htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
+    }
+    log("Returning formatted messages from getPaxos");
+    return htmlMsgs;
+}
+/***************************** End Discussion forum functions ************************/
 /*********************** Http Util function **********************************/
 std::string generateSessionID() {
 	return generateStringHash(
@@ -2102,8 +2118,12 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/files/" + target;
 				return resp;
 			}
-		}
-	}
+        }
+	} else if (req.cookies["username"].size() > 0 && req.formData["newMessage"].size() > 0) {
+            std::string message = req.cookies["username"] +":"+message; 
+            log("Sending new message via putPaxos: "+message);
+            // putPaxos("ledger", "samecolumn", message);
+    }
 
 	if (req.filepath.compare("/") == 0) {
 		if (req.cookies.find("username") == req.cookies.end()) {
@@ -3243,6 +3263,40 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/serverinfo/1/" + redirect;
+		}
+	} else if (req.filepath.compare("/discuss") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+				resp.status = "OK";
+				resp.status_code = 200;
+				resp.headers["Content-type"] = "text/html";
+
+				std::string message = "<html><body>";
+                message+=
+                "<script>function encodeMessage() {document.getElementsByName(\"newMessage\")[0].value = encodeURIComponent(document.getElementsByName(\"newMessage\")[0].value); return true;}</script>"
+                "<div style=\"width:50%;margin:auto\">"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                        "<h3>PennCloud Discussion Forum</h3>"
+                    "</div>"
+                    "<div style=\"height:75%;overflow-y:auto;\">";
+                message += displayAllMessages();
+                message +=
+                    "</div>"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                    "<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss\" method=\"post\">"
+                        "<div style=\"display: flex; flex-direction: row;\">"
+							"<label for=\"newMessage\">New Message</label><input required type=\"text\" name=\"newMessage\" placeholder=\"Send a message\">"
+                            "<input type=\"submit\" name=\"submit\" value=\"Send\" />"
+                        "</div>"
+                    "</form>"
+                    "</div>"
+                "</div>";
+				message += "</body></html>";
+				resp.headers["Content-length"] = std::to_string(message.size());
+				resp.content = message;
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
 		}
 	} else {
 		if (req.cookies.find("username") != req.cookies.end()) {
