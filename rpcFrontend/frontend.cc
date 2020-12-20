@@ -2325,18 +2325,22 @@ struct http_response processRequest(struct http_request &req) {
 			std::string userRootDir = "ss0_"
 					+ generateStringHash(req.cookies["username"] + "/");
 			resp.content =
-					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1yp7bV2amcRJTWoW6GpcXZ_D95Lg9_WNU\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
-							"center;\">"
-							"<form action=\"/mailbox\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Mailbox\" /></form>"
-							"<form action=\"/compose\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Compose Email\" /></form>"
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1yp7bV2amcRJTWoW6GpcXZ_D95Lg9_WNU\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+							"<html><body><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/change-password\" method=\"POST\"><button style=\"line-height: 24px;\" type = \"submit\" >Change Password</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button style=\"line-height: 24px;\"  type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
+							"<div class=\"main-content\">"
+							"<form action=\"/mailbox\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-mail-bulk\"></i><div class=\"button-text\">PennMail</div></div></button></form>"
+							//"<form action=\"/compose\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Compose Email\" /></form>"
 							"<form action=\"/files/" + userRootDir
-							+ "\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Storage Service\" /></form>"
-									"<form action=\"/change-password\" method=\"POST\"><input style=\"line-height: 24px;\" type = \"submit\" value=\"Change Password\" /></form>"
-									"</body></html>"
-									"<form action=\"/logout\" method=\"POST\"><input style=\"line-height: 24px;\"  type = \"submit\" value=\"Logout\" /></form>"
-									"</body></html>";
+							+ "\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-box-open\"></i><div class=\"button-text\">PennDrive</div></div></button></form>"
+									"</div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -2452,35 +2456,35 @@ struct http_response processRequest(struct http_request &req) {
 						title1 = subject.substr(9);
 						title2 = to.substr(last + 2);
 						display +=
-								"<ul style=\"border-top: 1px solid black; padding:15px; margin: 0;\">";
+								"<ul style=\"border-bottom: 1px solid black; padding:15px; margin: 0; width: 95%;\">";
 						display +=
 								"<div style=\"display:flex; flex-direction: row;\">"
 										"<form action=\"/email\" method=\"post\" style=\"margin: 0;\">"
 										"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to) + "\" />"
-										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
 										+ escape(title) + "</label>"
-										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
 										+ escape(title1) + "</label>"
-										+ "<label for =\"submit\" style=\"margin-right: 20px; vertical-align: middle;\">"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;\">"
 										+ escape(title2) + "</label>"
-										+ "<input style=\"line-height:24px;\" type=\"submit\" name=\"submit\" value=\"View\" />"
+										+ "<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-eye\"></i></button>"
 												"</form>"
 												"<form style=\"padding-left:15px; padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
 												"<input type=\"hidden\" name=\"type\" value=\"reply\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
 										+ "\" />"
-												"<input style=\"line-height:24px;\" type = \"submit\" value=\"Reply\" /></form>"
+												"<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-reply\"></i></button></form>"
 												"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
 												"<input type=\"hidden\" name=\"type\" value=\"forward\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
-										+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Forward\" /></form>"
+										+ "\" />" "<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-share\"></i></button></form>"
 												"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
-										+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Delete\" /></form></div>";
+										+ "\" />" "<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-trash-alt\"></i></button></form></div>";
 						display += "</ul>";
 					}
 				}
@@ -2492,14 +2496,28 @@ struct http_response processRequest(struct http_request &req) {
 			display +=
 					"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>";
 			resp.content =
-					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
-							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Compose Email\"/></form></div>" "<div style=\"padding-left: 15px;padding-bottom: 5px;padding-top: 10px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
-							"<label style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Subject</label>"
-							"<label style=\"margin-right: 20px; vertical-align:middle;\">Date</label>"
-							"</div>" + display + "</body></html>";
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1aO2UaTSAoXOhadVi5HXHN8RCLbE4O_Qt\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+							"<html><body ><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/change-password\" method=\"POST\"><button  type = \"submit\" >Change Password</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button   type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
+							"<div class=\"main-content\">"
+							"<div class=\"sidebar\">"
+							"<form action=\"/compose\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-edit\"></i>&nbsp;&nbsp;Compose</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-button\" type = \"submit\"><i class=\"fas fa-inbox\"></i>&nbsp;&nbsp;Inbox</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
+							"</div>"
+							"<div class=\"inbox\">"
+							"<div style=\"font-weight: bold; padding-left: 15px; padding-right: 15px; width: 95%; padding-bottom: 10px;padding-top: 20px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
+							"<label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Subject</label>"
+							"<label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Date</label>"
+							"</div><div style=\"border-bottom: 2px solid black; width: 100%;\"></div>"
+							+ display + "</div></div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -3209,8 +3227,10 @@ struct http_response processRequest(struct http_request &req) {
 						std::string raw_bytes = std::get < 2
 								> (first50BytesRaw);
 						log(
-								"ERROR CODE GETNBYTES: " + std::to_string(std::get < 0
-										> (first50BytesRaw)));
+								"ERROR CODE GETNBYTES: "
+										+ std::to_string(
+												std::get < 0
+														> (first50BytesRaw)));
 						log("SIZE GETNBYTES: " + std::to_string(total_size));
 						log("RAW BYTES GETNBYTES" + raw_bytes);
 						message += "<li> Col: " + col;
@@ -3220,8 +3240,11 @@ struct http_response processRequest(struct http_request &req) {
 										"<br> First 50 Bytes: <br>";
 						message.append(raw_bytes);
 						message += "<br></li>";
-						if(total_size > 50) message += "<a href = \"/adminfiles/" + std::to_string(total_size) + "/" +
-								col + "/" + row + "/"+ target + "\" target=\"_blank\"> See More</a>";
+						if (total_size > 50)
+							message += "<a href = \"/adminfiles/"
+									+ std::to_string(total_size) + "/" + col
+									+ "/" + row + "/" + target
+									+ "\" target=\"_blank\"> See More</a>";
 					}
 					message += "</ul><hr>";
 				}
@@ -3250,7 +3273,7 @@ struct http_response processRequest(struct http_request &req) {
 		}
 	} else if (req.filepath.compare(0, 12, "/adminfiles/") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()
-						&& req.cookies["username"].compare("admin") == 0) {
+				&& req.cookies["username"].compare("admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
 			std::string target = trim(tokens.back());
 			tokens.pop_back();
@@ -3259,12 +3282,13 @@ struct http_response processRequest(struct http_request &req) {
 			std::string col = trim(tokens.back());
 			tokens.pop_back();
 			int total_size = std::stoi(trim(tokens.back()));
-			auto raw_data_tuple = getFirstNBytesKVS(target, row, col, total_size);
-			if(std::get<0>(raw_data_tuple) != 0){
+			auto raw_data_tuple = getFirstNBytesKVS(target, row, col,
+					total_size);
+			if (std::get < 0 > (raw_data_tuple) != 0) {
 				resp.status = "Not Found";
 				resp.status_code = 404;
 			} else {
-				std::string raw_data = std::get<2>(raw_data_tuple);
+				std::string raw_data = std::get < 2 > (raw_data_tuple);
 				resp.status = "OK";
 				resp.status_code = 200;
 				resp.headers["Content-type"] = "text/html";
