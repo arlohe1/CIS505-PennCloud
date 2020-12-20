@@ -2149,6 +2149,8 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.cookies["username"].size() > 0 && req.formData["newMessage"].size() > 0) {
             std::string message = req.cookies["username"] +":"+message; 
             log("Sending new message via putPaxos: "+message);
+            message = decodeURIComponent(message);
+            message = decodeURIComponent(message);
             sendNewMessage(message);
     }
 
