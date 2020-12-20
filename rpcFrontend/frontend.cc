@@ -37,6 +37,7 @@ volatile int session_id_counter = rand();
 sockaddr_in load_balancer_addr;
 
 /********************** Internal message stuff ******************/
+using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
 std::string INTERNAL_THREAD = "i", SMTP_THREAD = "s", HTTP_THREAD = "h";
 pthread_mutex_t modify_server_state, crashing, access_state_map;
 struct server_state {
@@ -58,6 +59,18 @@ struct internal_message {
 } internal_message;
 
 std::vector<sockaddr_in> frontend_internal_list;
+
+struct admin_console_cache {
+	bool initialized = false;
+	time_t last_modified = time(NULL);
+	std::string last_modified_by, last_accessed_for;
+	std::vector<std::tuple<std::string, std::deque<std::string>>> rowToAllItsCols;
+	std::vector<std::string> stopped_servers, activeBackendServersList;
+	std::deque<server_addr_tuple> activeBackendServers, allBackendServers;
+	std::map<std::string, std::string> frontendToAdminComm;
+} admin_console_cache;
+struct admin_console_cache my_admin_console_cache;
+
 // maps session IDs to a specific backend server as specified by whereKVS
 using server_tuple = std::tuple<std::string, std::string>;
 std::map<std::string, server_tuple> rowSessionIdToServerMap;
@@ -66,7 +79,6 @@ std::map<std::string, int> rowToClusterNum;
 std::map<int, std::deque<server_tuple>> clusterToServerListMap;
 
 using resp_tuple = std::tuple<int, std::string>;
-using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
 
 /********************** HTTP data structures *********************/
 
@@ -519,35 +531,39 @@ void buildClusterToBackendServerMapping() {
 }
 
 bool checkIfNodeIsAlive(server_tuple serverInfo) {
-    // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
-    std::string targetServer = std::get<0>(serverInfo);
-    std::string targetServerHeartbeatIP = std::get<1>(serverInfo);
-    log("Checking heartbeat for "+ targetServer+" at heartbeat address: "+targetServerHeartbeatIP);
-    int heartbeatPortNo = getPortNoFromString(targetServerHeartbeatIP);
-    std::string heartbeatAddress = getAddrFromString(targetServerHeartbeatIP);
-    rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
-    kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
-    try {
-        bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
-        log("Heartbeat for "+targetServer+" returned true!");
-        return isAlive;
-    } catch(rpc::timeout &t) {
-        log("Heartbeat for "+targetServer+" failed to return. Node is dead.");
-        return false;
-    }
-    return false;
+	// connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+	std::string targetServer = std::get < 0 > (serverInfo);
+	std::string targetServerHeartbeatIP = std::get < 1 > (serverInfo);
+	log(
+			"Checking heartbeat for " + targetServer + " at heartbeat address: "
+					+ targetServerHeartbeatIP);
+	int heartbeatPortNo = getPortNoFromString(targetServerHeartbeatIP);
+	std::string heartbeatAddress = getAddrFromString(targetServerHeartbeatIP);
+	rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
+	kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
+	try {
+		bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
+		log("Heartbeat for " + targetServer + " returned true!");
+		return isAlive;
+	} catch (rpc::timeout &t) {
+		log(
+				"Heartbeat for " + targetServer
+						+ " failed to return. Node is dead.");
+		return false;
+	}
+	return false;
 }
 
 std::string whereKVS(std::string session_id, std::string row) {
-    std::string rowSessionId = row+session_id;
+	std::string rowSessionId = row + session_id;
 	int masterPortNo = getPortNoFromString(kvMaster_addr);
 	std::string masterServAddress = getAddrFromString(kvMaster_addr);
 	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
 	try {
 		if (rowToClusterNum.count(row) <= 0) {
 			log(
-					"MASTERNODE WHERE: row (" + row + ") for session (" + session_id
-							+ ")");
+					"MASTERNODE WHERE: row (" + row + ") for session ("
+							+ session_id + ")");
 			// Returns cluster # for the row
 			int resp =
 					masterNodeRPCClient.call("where", row, session_id).as<int>();
@@ -560,10 +576,12 @@ std::string whereKVS(std::string session_id, std::string row) {
 		int clusterNum = rowToClusterNum[row];
 
 		std::deque<server_tuple> serverList = clusterToServerListMap[clusterNum];
-        log("whereKVS: Servers to choose from in cluster "+std::to_string(clusterNum)+" are:") ;
-        for(server_tuple serverInfo : serverList) {
-            log("--"+std::get<0>(serverInfo));
-        }
+		log(
+				"whereKVS: Servers to choose from in cluster "
+						+ std::to_string(clusterNum) + " are:");
+		for (server_tuple serverInfo : serverList) {
+			log("--" + std::get < 0 > (serverInfo));
+		}
 		int serverIdx = 0;
 		if (rowSessionIdToServerIdx.count(rowSessionId) <= 0) {
 			// Randomly generate index to pick server in cluster
@@ -602,87 +620,121 @@ std::string whereKVS(std::string session_id, std::string row) {
 	return "Error in whereKVS";
 }
 
-resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id, std::string row, std::string column, std::string value, std::string old_value) {
-    std::string rowSessionId = row+session_id;
-    if(rowSessionIdToServerMap.count(rowSessionId) <= 0) {
-        log(kvsFuncType +": No server for session ("+ session_id+"). Calling whereKVS.");
-        std::string newlyChosenServerAddr = whereKVS(session_id, row);
-        log(kvsFuncType +": Server "+ newlyChosenServerAddr+" chosen for session ("+ session_id+").");
-    }
-    uint64_t timeout = 5000; // 5000 milliseconds
-    bool nodeIsAlive = true;
-    int origServerIdx = rowSessionIdToServerIdx[rowSessionId];
-    int currServerIdx = -2; 
-    // Continue trying RPC call until you've tried all backend servers
-    while(origServerIdx != currServerIdx) {
-        server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
-        std::string targetServer = std::get<0>(serverInfo);
-        if(!checkIfNodeIsAlive(serverInfo)) {
-            // Resetting timeout for new server
-            timeout = 2500; // 2500 milliseconds
-            std::string newlyChosenServerAddr = whereKVS(session_id, row);
-            currServerIdx = rowSessionIdToServerIdx[rowSessionId];
-            log("Node "+targetServer+" is dead! Trying new node "+ newlyChosenServerAddr);
-            continue;
-        }
-        int serverPortNo = getPortNoFromString(targetServer);
-        std::string servAddress = getAddrFromString(targetServer);
-        rpc::client kvsRPCClient(servAddress, serverPortNo);
-        resp_tuple resp;
-        kvsRPCClient.set_timeout(timeout);
-        try {
-            if(kvsFuncType.compare("putKVS") == 0) {
+resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
+		std::string row, std::string column, std::string value,
+		std::string old_value) {
+	std::string rowSessionId = row + session_id;
+	if (rowSessionIdToServerMap.count(rowSessionId) <= 0) {
+		log(
+				kvsFuncType + ": No server for session (" + session_id
+						+ "). Calling whereKVS.");
+		std::string newlyChosenServerAddr = whereKVS(session_id, row);
+		log(
+				kvsFuncType + ": Server " + newlyChosenServerAddr
+						+ " chosen for session (" + session_id + ").");
+	}
+	uint64_t timeout = 5000; // 5000 milliseconds
+	bool nodeIsAlive = true;
+	int origServerIdx = rowSessionIdToServerIdx[rowSessionId];
+	int currServerIdx = -2;
+	// Continue trying RPC call until you've tried all backend servers
+	while (origServerIdx != currServerIdx) {
+		server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
+		std::string targetServer = std::get < 0 > (serverInfo);
+		if (!checkIfNodeIsAlive(serverInfo)) {
+			// Resetting timeout for new server
+			timeout = 2500; // 2500 milliseconds
+			std::string newlyChosenServerAddr = whereKVS(session_id, row);
+			currServerIdx = rowSessionIdToServerIdx[rowSessionId];
+			log(
+					"Node " + targetServer + " is dead! Trying new node "
+							+ newlyChosenServerAddr);
+			continue;
+		}
+		int serverPortNo = getPortNoFromString(targetServer);
+		std::string servAddress = getAddrFromString(targetServer);
+		rpc::client kvsRPCClient(servAddress, serverPortNo);
+		resp_tuple resp;
+		kvsRPCClient.set_timeout(timeout);
+		try {
+			if (kvsFuncType.compare("putKVS") == 0) {
                 log("KVS PUT VAL LENGTH:" + std::to_string(value.length()));
-                log("KVS PUT with kvServer "+targetServer+": " + row + ", " + column + ", " + value);
-                resp = kvsRPCClient.call("put", row, column, value).as<resp_tuple>();
-            } else if(kvsFuncType.compare("cputKVS") == 0) {
-                log("KVS CPUT with kvServer "+targetServer+": " + row + ", " + column + ", " + old_value + ", " + value);
-                resp = kvsRPCClient.call("cput", row, column, old_value, value).as<resp_tuple>();
-            } else if(kvsFuncType.compare("deleteKVS") == 0) {
-                log("KVS DELETE with kvServer "+targetServer+": " + row + ", " + column);
-                resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
-            } else if(kvsFuncType.compare("getKVS") == 0) {
-                log("KVS GET with kvServer "+targetServer+": " + row + ", " + column);
-                resp = kvsRPCClient.call("get", row, column).as<resp_tuple>();
-            }
-            log(kvsFuncType +" Response Status: " + std::to_string(kvsResponseStatusCode(resp)));
-            log(kvsFuncType +" Response Value: " + kvsResponseMsg(resp));
+				log(
+						"KVS PUT with kvServer " + targetServer + ": " + row
+								+ ", " + column + ", " + value);
+				resp = kvsRPCClient.call("put", row, column, value).as<
+						resp_tuple>();
+			} else if (kvsFuncType.compare("cputKVS") == 0) {
+				log(
+						"KVS CPUT with kvServer " + targetServer + ": " + row
+								+ ", " + column + ", " + old_value + ", "
+								+ value);
+				resp =
+						kvsRPCClient.call("cput", row, column, old_value, value).as<
+								resp_tuple>();
+			} else if (kvsFuncType.compare("deleteKVS") == 0) {
+				log(
+						"KVS DELETE with kvServer " + targetServer + ": " + row
+								+ ", " + column);
+				resp = kvsRPCClient.call("del", row, column).as<resp_tuple>();
+			} else if (kvsFuncType.compare("getKVS") == 0) {
+				log(
+						"KVS GET with kvServer " + targetServer + ": " + row
+								+ ", " + column);
+				resp = kvsRPCClient.call("get", row, column).as<resp_tuple>();
+			}
+			log(
+					kvsFuncType + " Response Status: "
+							+ std::to_string(kvsResponseStatusCode(resp)));
+			log(kvsFuncType + " Response Value: " + kvsResponseMsg(resp));
             log(kvsFuncType +" Response Value Length: " + std::to_string(kvsResponseMsg(resp).length()));
-            return resp;
-        } catch (rpc::timeout &t) {
-            log(kvsFuncType+" for ("+session_id+", "+row+") timed out!");
-            // connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
-            bool isAlive = checkIfNodeIsAlive(serverInfo);
-            if(isAlive) {
-                // Double timeout and try again if node is still alive
-                timeout *= 2;
-                log("Node "+targetServer+" is still alive! Doubling timeout to "+std::to_string(timeout)+" and trying again.");
-            }  else {
-                // Resetting timeout for new server
-                timeout = 5000; // 5000 milliseconds
-                std::string newlyChosenServerAddr = whereKVS(session_id, row);
-                currServerIdx = rowSessionIdToServerIdx[rowSessionId];
-                log("Node "+targetServer+" is dead! Trying new node "+ newlyChosenServerAddr);
-            }
-        } catch (rpc::rpc_error &e) {
-            /*
-             std::cout << std::endl << e.what() << std::endl;
-             std::cout << "in function " << e.get_function_name() << ": ";
-             using err_t = std::tuple<std::string, std::string>;
-             auto err = e.get_error().as<err_t>();
-             */
-            log("UNHANDLED ERROR IN "+kvsFuncType+" TRY CATCH"); // TODO
-        }
-    }
-    log(kvsFuncType+" for ("+session_id+", "+row+"): All nodes in cluster down! ERROR.");
-    return std::make_tuple(-2, "All nodes in cluster down!");
+			return resp;
+		} catch (rpc::timeout &t) {
+			log(
+					kvsFuncType + " for (" + session_id + ", " + row
+							+ ") timed out!");
+			// connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
+			bool isAlive = checkIfNodeIsAlive(serverInfo);
+			if (isAlive) {
+				// Double timeout and try again if node is still alive
+				timeout *= 2;
+				log(
+						"Node " + targetServer
+								+ " is still alive! Doubling timeout to "
+								+ std::to_string(timeout)
+								+ " and trying again.");
+			} else {
+				// Resetting timeout for new server
+				timeout = 5000; // 5000 milliseconds
+				std::string newlyChosenServerAddr = whereKVS(session_id, row);
+				currServerIdx = rowSessionIdToServerIdx[rowSessionId];
+				log(
+						"Node " + targetServer + " is dead! Trying new node "
+								+ newlyChosenServerAddr);
+			}
+		} catch (rpc::rpc_error &e) {
+			/*
+			 std::cout << std::endl << e.what() << std::endl;
+			 std::cout << "in function " << e.get_function_name() << ": ";
+			 using err_t = std::tuple<std::string, std::string>;
+			 auto err = e.get_error().as<err_t>();
+			 */
+			log("UNHANDLED ERROR IN " + kvsFuncType + " TRY CATCH"); // TODO
+		}
+	}
+	log(
+			kvsFuncType + " for (" + session_id + ", " + row
+					+ "): All nodes in cluster down! ERROR.");
+	return std::make_tuple(-2, "All nodes in cluster down!");
 }
 
 resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
 	return kvsFunc("getKVS", session_id, row, column, "", "");
 }
 
-resp_tuple putKVS(std::string session_id, std::string row, std::string column, std::string value) {
+
+resp_tuple putKVS(std::string session_id, std::string row, std::string column,
+		std::string value) {
 	return kvsFunc("putKVS", session_id, row, column, value, "");
 }
 
@@ -738,6 +790,67 @@ std::deque<server_addr_tuple> getAllNodesKVS() {
 	return resp;
 }
 
+std::deque<std::string> getAllRowsKVS(std::string addr) {
+	int portNo = getPortNoFromString(addr);
+	std::string servAddress = getAddrFromString(kvMaster_addr);
+	rpc::client nodeRPCClient(servAddress, portNo);
+	log("ge all rows port no: " + std::to_string(portNo));
+	std::deque<std::string> resp;
+	try {
+		log("NODE getAllRowsKVS");
+		resp = nodeRPCClient.call("getAllRows").as<std::deque<std::string>>();
+		return resp;
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getAllRowsKVS TRY CATCH"); // TODO
+	}
+	log("Error in getAllRowsKVS");
+	return resp;
+}
+
+std::deque<std::string> getAllColsForRowKVS(std::string addr, std::string row) {
+	int portNo = getPortNoFromString(addr);
+	std::string servAddress = getAddrFromString(kvMaster_addr);
+	rpc::client nodeRPCClient(servAddress, portNo);
+	std::deque<std::string> resp;
+	try {
+		log("NODE getAllColsForRowKVS");
+		resp = nodeRPCClient.call("getAllColsForRow", row).as<std::deque<std::string>>();
+		return resp;
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getAllColsForRowKVS TRY CATCH"); // TODO
+	}
+	log("Error in getAllColsForRowKVS");
+	return resp;
+}
+
+std::tuple<int, int, std::string> getFirstNBytesKVS(std::string addr, std::string row, std::string col, int n) {
+	int portNo = getPortNoFromString(addr);
+	std::string servAddress = getAddrFromString(kvMaster_addr);
+	rpc::client nodeRPCClient(servAddress, portNo);
+	std::tuple<int, int, std::string> resp;
+	try {
+		log("NODE getFirstNBytesKVS");
+		resp = nodeRPCClient.call("getFirstNBytes", row, col, n).as<std::tuple<int, int, std::string>>();
+		return resp;
+	} catch (rpc::rpc_error &e) {
+		std::cout << std::endl << e.what() << std::endl;
+		std::cout << "in function " << e.get_function_name() << ": ";
+		using err_t = std::tuple<std::string, std::string>;
+		auto err = e.get_error().as<err_t>();
+		log("UNHANDLED ERROR IN getFirstNBytesKVS TRY CATCH"); // TODO
+	}
+	log("Error in getFirstNBytesKVS");
+	return resp;
+}
+
 void stopServerKVS(std::string target) {
 	int targetPortNo = getPortNoFromString(target);
 	std::string targetServAddress = getAddrFromString(target);
@@ -768,6 +881,47 @@ void reviveServerKVS(std::string target) {
 	}
 }
 
+/***************************** Admin stuff ****************************/
+
+bool isAdminCacheValidFor(std::string modified_by, std::string accessed_for, int timeout){
+	if ((time(NULL) - my_admin_console_cache.last_modified > timeout) ||
+			(modified_by.compare(my_admin_console_cache.last_modified_by) != 0) ||
+			(accessed_for.compare(my_admin_console_cache.last_accessed_for) != 0)) return false;
+	return true;
+}
+
+void populateAdminCache(){
+	my_admin_console_cache.allBackendServers = getAllNodesKVS();
+	for (auto node : my_admin_console_cache.allBackendServers){
+		my_admin_console_cache.frontendToAdminComm[trim(std::get<2>(node))] = trim(std::get<3>(node));
+		log("Frontend comm: " + trim(std::get<2>(node)) + " mapped to " +  trim(std::get<3>(node)));
+	}
+	my_admin_console_cache.activeBackendServers = getActiveNodesKVS();
+	for (auto node : my_admin_console_cache.activeBackendServers){
+		my_admin_console_cache.activeBackendServersList.push_back(std::get < 2 > (node));
+		my_admin_console_cache.frontendToAdminComm[trim(std::get<2>(node))] = trim(std::get<3>(node));
+		log("Active Frontend comm: " + trim(std::get<2>(node)) + " mapped to " +  trim(std::get<3>(node)));
+	}
+	my_admin_console_cache.initialized = true;
+}
+
+void registerCacheAccess(std::string modified_by, std::string accessed_for){
+	my_admin_console_cache.last_modified = time(NULL);
+	my_admin_console_cache.last_modified_by = modified_by;
+	my_admin_console_cache.last_accessed_for = accessed_for;
+}
+
+void getMoreInfoFor(std::string target){
+	std::string adminCommAddr = my_admin_console_cache.frontendToAdminComm[target];
+	log("Admin comm for " + target + " is " + adminCommAddr);
+	auto allRows = getAllRowsKVS(target); //TODO: ask amit
+	for (std::string row : allRows){
+		auto cols = getAllColsForRowKVS(target, row);
+		if (cols.size() < 1) continue;
+		my_admin_console_cache.rowToAllItsCols.push_back(std::tuple<std::string, std::deque<std::string>>(row, cols));
+	}
+}
+
 /***************************** Start storage service functions ************************/
 
 int uploadFile(struct http_request req, std::string filepath) {
@@ -777,7 +931,7 @@ int uploadFile(struct http_request req, std::string filepath) {
 	std::string fileData = req.formData["file"];
 
 	// Construct filepath of new file
-    time_t rawtime;
+	time_t rawtime;
 	struct tm *timeinfo;
 	time(&rawtime);
 	timeinfo = gmtime(&rawtime);
@@ -2147,7 +2301,7 @@ struct http_response processRequest(struct http_request &req) {
 										"" + fileList + "<br/>"
 										"<form action=\"/files/" + filepath
 										+ "\" enctype=\"multipart/form-data\" method=\"POST\""
-												"<label for=\"file\">Upload a new File</label><br/><input type=\"file\" name=\"file\"/><br/>"
+												"<label for=\"file\">Upload a new File</label><br/><input required type=\"file\" name=\"file\"/><br/>"
 												"<input type=\"submit\" name=\"submit\" value=\"Upload\"><br/>"
 												"</form>"
 												"<form action=\"/files/"
@@ -2229,9 +2383,9 @@ struct http_response processRequest(struct http_request &req) {
 										"<form action=\"/email\" method=\"post\" style=\"margin: 0;\">"
 										"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to) + "\" />"
-										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 300px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
 										+ escape(title) + "</label>"
-										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 300px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
 										+ escape(title1) + "</label>"
 										+ "<label for =\"submit\" style=\"margin-right: 20px; vertical-align: middle;\">"
 										+ escape(title2) + "</label>"
@@ -2267,8 +2421,8 @@ struct http_response processRequest(struct http_request &req) {
 							"<html><body "
 							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
 							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input type = \"submit\" value=\"Dashboard\" /></form>"
-							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Compose Email\"/></form></div>" "<div style=\"padding-left: 15px;padding-bottom: 5px;padding-top: 10px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 300px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
-							"<label style=\"margin-right: 20px; width: 300px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Subject</label>"
+							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input type = \"submit\" value=\"Compose Email\"/></form></div>" "<div style=\"padding-left: 15px;padding-bottom: 5px;padding-top: 10px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
+							"<label style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Subject</label>"
 							"<label style=\"margin-right: 20px; vertical-align:middle;\">Date</label>"
 							"</div>" + display + "</body></html>";
 			resp.headers["Content-length"] = std::to_string(
@@ -2689,11 +2843,9 @@ struct http_response processRequest(struct http_request &req) {
 			time_t now = time(NULL);
 			log("now" + std::to_string(now));
 			requstStateFromAllServers();
-			auto allBackendNodes = getAllNodesKVS();
-			auto activeBackendNodes = getActiveNodesKVS();
-			std::deque < std::string > activeBackendNodesCollection;
-			for (auto node : activeBackendNodes)
-				activeBackendNodesCollection.push_back(std::get < 2 > (node));
+			populateAdminCache();
+			auto allBackendNodes = my_admin_console_cache.allBackendServers;
+			auto activeBackendNodesCollection = my_admin_console_cache.activeBackendServersList;
 			sleep(1);
 			std::string message =
 					"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
@@ -2733,7 +2885,7 @@ struct http_response processRequest(struct http_request &req) {
 				}
 				message += "</l1><hr>";
 			}
-			message += "</ul><h3>Backend servers:</h3><ul>";
+			message += "</ul><h3>Backend servers:</h3><br><ul>";
 			log("ADMIN all nodes");
 			for (auto node : allBackendNodes) {
 				log(std::get < 2 > (node));
@@ -2746,7 +2898,7 @@ struct http_response processRequest(struct http_request &req) {
 				message += "<l1>" + std::get < 2 > (node);
 				message += " Status: " + status;
 				message +=
-						"<form action=\"/serverinfo/b/" + std::get < 3
+						"<form action=\"/serverinfo/b/1/" + std::get < 3
 								> (node)
 										+ "\" method=\"POST\">"
 												"<input type = \"submit\" value=\"More Info\" /></form>";
@@ -2763,6 +2915,7 @@ struct http_response processRequest(struct http_request &req) {
 				message += "</l1><hr>";
 			}
 			message += "</ul></body></html>";
+			registerCacheAccess("admin", "all");
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
@@ -2875,6 +3028,8 @@ struct http_response processRequest(struct http_request &req) {
 			} else {
 				stopServerKVS(target);
 			}
+			my_admin_console_cache.stopped_servers.push_back(target);
+			registerCacheAccess("stopserver", target);
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/admin";
@@ -2895,9 +3050,101 @@ struct http_response processRequest(struct http_request &req) {
 			} else {
 				reviveServerKVS(target);
 			}
+			my_admin_console_cache.stopped_servers.erase(std::remove(my_admin_console_cache.stopped_servers.begin(),
+					my_admin_console_cache.stopped_servers.end(), target), my_admin_console_cache.stopped_servers.end());
+			registerCacheAccess("resumeserver", target);
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/admin";
+		}
+	} else if (req.filepath.compare(0, 12, "/serverinfo/") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()
+				&& req.cookies["username"].compare("admin") == 0) {
+			std::deque < std::string > tokens = split(req.filepath, "/");
+			std::string target = trim(tokens.back());
+			tokens.pop_back();
+			log("Server info for: " + target);
+			bool frontend_target = (trim(tokens.back()).compare("f") == 0);
+			std::string message = "<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+					"<input type = \"submit\" value=\"Logout\" /></form><form action=\"/admin\" method=\"POST\">"
+					"<input type = \"submit\" value=\"Back\" /></form><br>";
+			if (frontend_target) {
+				// Show front end state from frontend state map
+				log("Showing frontend info for : " + target);
+				struct server_state state = frontend_state_map[target];
+				message += "State of " + target + " <ul><li> Number of http connections: " + std::to_string(state.http_connections) + "</li>"
+						"<li> Number of smtp connections: " + std::to_string(state.smtp_connections) + "</li>"
+						"<li> Number of internal connections: " + std::to_string(state.internal_connections) + "</li>"
+						"<li> Number of active threads: " + std::to_string(state.num_threads) + "</li></ul>";
+			} else {
+				log("Target: " + target);
+				message += "<form action=\"/refreshadmincache\" method=\"POST\">"
+						"<input type = \"submit\" value=\"Refresh\" /></form><br>";
+
+				// TODO: Get all rows from backend
+				bool cache_valid = isAdminCacheValidFor("serverinfo", target, 10);
+				if(!cache_valid) {
+					if(!my_admin_console_cache.initialized) populateAdminCache();
+					getMoreInfoFor(target);
+				}
+				int page = 1;
+				try {
+					page = stoi(trim(tokens.back()));
+				} catch (const std::invalid_argument &ia){
+					page = 1;
+				}
+				if (page > 1 && my_admin_console_cache.rowToAllItsCols.size() <= (10 * (page - 1))) page = 1;
+				log("Page: " + std::to_string(page));
+				// TODO: display first n bytes (with link to new page ...)
+				message += "KVS Table for " + target + "<hr>";
+				int i;
+				for (i = (page - 1) * 10; i < std::min((int)my_admin_console_cache.rowToAllItsCols.size(), page * 10); i++){
+					std::tuple<std::string, std::deque<std::string>> entry = my_admin_console_cache.rowToAllItsCols.at(i);
+					std::string row = std::get<0>(entry);
+					message += "Row name: " + row + "<br><ul>";
+					for (std::string col: std::get<1>(entry)){
+						auto first50BytesRaw = getFirstNBytesKVS(target, row, col, 50);
+						if (std::get<0> (first50BytesRaw) != 0) continue;
+						int total_size = std::get<1> (first50BytesRaw);
+						std::string raw_bytes = std::get<2> (first50BytesRaw);
+						log("ERROR CODE GETNBYTES" + std::get<0> (first50BytesRaw));
+						log("SIZE GETNBYTES" + total_size);
+						log("RAW BYTES GETNBYTES" + raw_bytes);
+						message += "<li> Col: " + col;
+						message += (total_size <= 50) ? "<br> Entire entry: <br>" : "<br> First 50 Bytes: <br>";
+						message.append(raw_bytes);
+						message += "<br></li>";
+					}
+					message += "</ul><hr>";
+				}
+				if(page > 1){
+					message += "<form action=\"/serverinfo/" + std::to_string(page - 1) + "/" + target + "\" method=\"POST\">"
+							"<input type = \"submit\" value=\"Prev\" /></form><br>";
+				}
+				if(i < my_admin_console_cache.rowToAllItsCols.size()){
+					message += "<form action=\"/serverinfo/" + std::to_string(page + 1) + "/" + target + "\" method=\"POST\">"
+							"<input type = \"submit\" value=\"Next\" /></form><br>";
+				}
+				registerCacheAccess("serverinfo", target);
+			}
+			message += "</body></html>";
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+			resp.headers["Content-length"] = std::to_string(message.size());
+			resp.content = message;
+		}
+	} else if (req.filepath.compare("/refreshadmincache") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()
+				&& req.cookies["username"].compare("admin") == 0) {
+			std::string redirect = my_admin_console_cache.last_accessed_for;
+			my_admin_console_cache.rowToAllItsCols.clear();
+			my_admin_console_cache.last_modified = time(NULL);
+			my_admin_console_cache.last_modified_by = "refreshadmincache";
+			my_admin_console_cache.last_accessed_for = "none";
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/serverinfo/1/" + redirect;
 		}
 	} else {
 		if (req.cookies.find("username") != req.cookies.end()) {
@@ -3127,7 +3374,7 @@ void* handle_smtp_connections(void *arg) {
 						if (validAddress) {
 							checkIndex = 0;
 							bool validDomain = true;
-							for (int j = i - 11; j < i - 1; j++) {
+							for (int j = i - 15; j < i - 1; j++) {
 								if (tolower(buf[j]) != penncloud[checkIndex])
 									validDomain = false;
 								checkIndex++;
@@ -3135,7 +3382,7 @@ void* handle_smtp_connections(void *arg) {
 							if (validDomain) {
 								// Successful RCPT command.
 								recipient = "";
-								for (int j = 9; j < i - 11; j++) {
+								for (int j = 9; j < i - 15; j++) {
 									recipient = recipient + buf[j];
 								}
 								resp_tuple resp = getKVS(recipient, recipient,
