@@ -3971,6 +3971,12 @@ struct http_response processRequest(struct http_request &req) {
 						getLedgerNameFromHash(ledgerHash);
 				std::string ledgerCreator = std::get < 0 > (ledgerInfo);
 				std::string ledgerName = std::get < 1 > (ledgerInfo);
+				if (ledgerCreator == "" && ledgerName == "") {
+					resp.status_code = 307;
+					resp.status = "Temporary Redirect";
+					resp.headers["Location"] = "/discuss";
+					return resp;
+				}
 				resp.status = "OK";
 				resp.status_code = 200;
 				resp.headers["Content-type"] = "text/html";
@@ -4146,7 +4152,7 @@ struct http_response processRequest(struct http_request &req) {
 			std::replace(members_raw.begin(), members_raw.end(), '+', ' ');
 			std::replace(members_raw.begin(), members_raw.end(), ',', ';');
 			std::deque < std::string > members = split(members_raw, ";");
-			std::deque<std::string> members_polished;
+			std::deque < std::string > members_polished;
 			std::string chathash = generateStringHash(
 					req.formData["members"] + std::to_string(time(NULL)));
 
@@ -4168,12 +4174,14 @@ struct http_response processRequest(struct http_request &req) {
 				members_polished.push_back(member);
 			}
 			std::string members_polished_str;
-			for(std::string m : members_polished) members_polished_str += m + ", ";
-			members_polished_str.pop_back(); members_polished_str.pop_back();
-			for(std::string m: members_polished){
+			for (std::string m : members_polished)
+				members_polished_str += m + ", ";
+			members_polished_str.pop_back();
+			members_polished_str.pop_back();
+			for (std::string m : members_polished) {
 				std::string member = trim(m);
-				std::string cont = members_polished_str + "\t" + owner + "\t" + chathash
-						+ "\n";
+				std::string cont = members_polished_str + "\t" + owner + "\t"
+						+ chathash + "\n";
 
 				log("CHAT MEMBER : " + member);
 				std::string my_message = cont;
