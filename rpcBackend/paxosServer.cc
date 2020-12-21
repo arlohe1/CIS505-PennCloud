@@ -1547,13 +1547,13 @@ void *kvServerThreadFunc(void *arg) {
 	rpc::server srv(kvsPortForFrontend);
 
 	//srv.bind("putApproved", &put); 
-	srv.bind("put", &putReq);
+	srv.bind("putPaxos", &putReq);
 	srv.bind("sendUpdates", &sendUpdates);
 	// srv.bind("cputApproved", &cput); 
 	// srv.bind("cput", &cputReq);
 	// srv.bind("delApproved", &del);
 	// srv.bind("del", &delReq);
-	srv.bind("get", &get);
+	srv.bind("getPaxos", &get);
 	srv.bind("notifyOfNewLeader", &notifyOfNewLeader);
 	srv.bind("notifyOfNewNode", &notifyOfNewNode);
 	srv.bind("prepare", prepare);
