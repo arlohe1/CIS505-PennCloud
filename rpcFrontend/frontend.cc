@@ -80,7 +80,7 @@ std::map<int, std::deque<server_tuple>> clusterToServerListMap;
 
 using resp_tuple = std::tuple<int, std::string>;
 
-std::deque<std::string> paxosServers; 
+std::deque<std::string> paxosServers;
 std::map<std::string, std::string> paxosServersHeartbeatMap;
 
 /********************** HTTP data structures *********************/
@@ -538,7 +538,7 @@ bool checkIfNodeIsAlive(server_tuple serverInfo) {
 	int masterPortNo = getPortNoFromString(kvMaster_addr);
 	std::string masterServAddress = getAddrFromString(kvMaster_addr);
 	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
-    return masterNodeRPCClient.call("isNodeAlive", targetServer).as<bool>();
+	return masterNodeRPCClient.call("isNodeAlive", targetServer).as<bool>();
 }
 
 std::string whereKVS(std::string session_id, std::string row) {
@@ -628,18 +628,18 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 	while (origServerIdx != currServerIdx) {
 		server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
 		std::string targetServer = std::get < 0 > (serverInfo);
-        /*
-		if (!checkIfNodeIsAlive(serverInfo)) {
-			// Resetting timeout for new server
-			timeout = 2500; // 2500 milliseconds
-			std::string newlyChosenServerAddr = whereKVS(session_id, row);
-			currServerIdx = rowSessionIdToServerIdx[rowSessionId];
-			log(
-					"Node " + targetServer + " is dead! Trying new node "
-							+ newlyChosenServerAddr);
-			continue;
-		}
-        */
+		/*
+		 if (!checkIfNodeIsAlive(serverInfo)) {
+		 // Resetting timeout for new server
+		 timeout = 2500; // 2500 milliseconds
+		 std::string newlyChosenServerAddr = whereKVS(session_id, row);
+		 currServerIdx = rowSessionIdToServerIdx[rowSessionId];
+		 log(
+		 "Node " + targetServer + " is dead! Trying new node "
+		 + newlyChosenServerAddr);
+		 continue;
+		 }
+		 */
 		int serverPortNo = getPortNoFromString(targetServer);
 		std::string servAddress = getAddrFromString(targetServer);
 		rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -1177,6 +1177,9 @@ int moveFile(struct http_request req, std::string filepath,
 	if (result < 0)
 		return result;
 
+	if (hash == itemToMove)
+		return -4;
+
 	int count = 0;
 	while (count < 10) {
 		resp_tuple getCmdResponse = getKVS(sessionid, username, filepath);
@@ -1396,9 +1399,8 @@ int deleteDirectory(struct http_request req, std::string containingDir,
 
 std::string getParentDirLink(std::string fileHash) {
 	std::string link =
-			"<form style=\"padding-right:15px; margin-bottom:18px;\" method=\"POST\" action=\"/files/"
-					+ fileHash
-					+ "\"><input style=\"line-height: 24px;\" type=\"submit\" value=\"Parent Directory\" /></form>";
+			"<form method=\"POST\" action=\"/files/" + fileHash
+					+ "\"><button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-folder-minus\"></i>&nbsp;&nbsp;Parent Directory</button></form>";
 	return link;
 }
 
@@ -1407,30 +1409,30 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 	std::string link;
 	if (fileHash.substr(0, 3).compare("ss0") == 0) {
 // Directory
-		link = "<li>" + fileName + "<a href=/files/" + fileHash
-				+ ">Open Directory</a>";
+		link =
+				"<div class=\"file-item\"><div class=\"file-first-row\">"
+						"<i class=\"item-button fas fa-folder\">&nbsp;&nbsp;</i><a title=\"Open "
+						+ fileName + "\" href=/files/" + fileHash + ">"
+						+ fileName + "</a>";
 	} else {
 // File
-		link = "<li>" + fileName + "<a download=\"" + fileName
-				+ "\" href=/files/" + fileHash + ">Download</a>";
+		link =
+				"<div class=\"file-item\"><div class=\"file-first-row\">"
+						"<i class=\"item-button fas fa-file\">&nbsp;&nbsp;</i><a title=\"Download "
+						+ fileName + "\" download=\"" + fileName
+						+ "\" href=/files/" + fileHash + ">" + fileName
+						+ "</a>";
 	}
 	link +=
-			"<form action=\"/files/" + containingDirectory
-					+ "\" method=\"post\">"
-							"<input type=\"hidden\" name=\"itemToDelete\" value=\""
-					+ fileHash
-					+ "\" />"
-							"<input type=\"submit\" name=\"submit\" value=\"Delete\" />"
-							"</form>"
-							"<script>function encodeName() {document.getElementsByName(\"newName\")[0].value = encodeURIComponent(document.getElementsByName(\"newName\")[0].value); return true;}</script>"
-							"<form accept-charset=\"utf-8\" onsubmit=\"return encodeName();\" action=\"/files/"
+			"<script>function encodeName() {document.getElementsByName(\"newName\")[0].value = encodeURIComponent(document.getElementsByName(\"newName\")[0].value); return true;}</script>"
+					"<form accept-charset=\"utf-8\" onsubmit=\"return encodeName();\" action=\"/files/"
 					+ containingDirectory
 					+ "\" method=\"post\">"
-							"<div style=\"display: flex; flex-direction: row;\">"
+							"</div><div class=\"file-second-row\"><div style=\"display: flex; flex-direction: row;\">"
 							"<input type=\"hidden\" name=\"itemToRename\" value=\""
 					+ fileHash
 					+ "\" />"
-							"<label for=\"newName\">New Name</label><input required type=\"text\" name=\"newName\"/>"
+							"<label for=\"newName\"></label><input placeholder=\"New Name...\" required type=\"text\" name=\"newName\"/>"
 							"<input type=\"submit\" name=\"submit\" value=\"Rename\" />"
 							"</div>"
 							"</form>"
@@ -1442,10 +1444,17 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 							"<input type=\"hidden\" name=\"itemToMove\" value=\""
 					+ fileHash
 					+ "\" />"
-							"<label for=\"newLocation\">New Location</label><input required type=\"text\" name=\"newLocation\"/>"
+							"<label for=\"newLocation\"></label><input placeholder=\"New Location...\" required type=\"text\" name=\"newLocation\"/>"
 							"<input type=\"submit\" name=\"submit\" value=\"Move\" />"
 							"</div>"
-							"</form>";
+							"</form><form action=\"/files/"
+					+ containingDirectory
+					+ "\" method=\"post\" style=\"margin: auto;\">"
+							"<input type=\"hidden\" name=\"itemToDelete\" value=\""
+					+ fileHash
+					+ "\" />"
+							"<button class=\"item-button\" type = \"submit\"><i title=\"Delete\" class=\"fas fa-trash-alt\"></i></button>"
+							"</form></div></div>";
 	return link;
 }
 
@@ -1459,9 +1468,9 @@ std::string getFileList(struct http_request req, std::string filepath,
 	int lineNum = 0;
 	if (respStatus == 0) {
 		if (respValue.length() == 0) {
-			return "This directory is empty.";
+			return "<p>This directory is empty.</p>";
 		}
-		std::string result = "<ul>";
+		std::string result = "";
 		std::deque < std::string > splt = split(respValue, "\n");
 		for (std::string line : splt) {
 			if (line.length() > 0) {
@@ -1479,13 +1488,13 @@ std::string getFileList(struct http_request req, std::string filepath,
 				lineNum++;
 			}
 		}
-		result += "</ul>";
+		result += "";
 		if (lineNum <= 1) {
-			result += "<p>This directory is empty</p>";
+			result += "<p>This directory is empty.</p>";
 		}
 		return result;
 	} else {
-		return "No files available";
+		return "-1";
 	}
 }
 
@@ -1576,52 +1585,69 @@ void createRootDirForNewUser(struct http_request req, std::string sessionid) {
 /***************************** End storage service functions ************************/
 /***************************** Start Discussion forum functions ************************/
 std::string displayAllMessages() {
-    std::string htmlMsgs = "";
-    std::string allMessages = "";
-    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
-    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
-    paxosServerClient.set_timeout(5000);
-    try {
-        log("getPaxos: Getting messages for ledger from paxosServer: "+targetPaxosServer);
-        resp_tuple resp = paxosServerClient.call("getPaxos", "ledger", "samecolumn").as<resp_tuple>();
-        if(kvsResponseStatusCode(resp) == 0) {
-            allMessages = kvsResponseMsg(resp);
-            std::deque<std::string> messageDeque = split(allMessages, "\n");
-            log("getPaxos: Got "+std::to_string(messageDeque.size())+" messages from getPaxos");
-            for(std::string messageRaw : messageDeque) {
-                if(messageRaw.length() > 0) {
-                log("messageRaw: "+messageRaw);
-                std::string sender = messageRaw.substr(0, messageRaw.find(":"));
-                std::string message = messageRaw.substr(messageRaw.find(":")+1);
-                htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
-                }
-            }
-            log("getPaxos: Returning formatted messages from getPaxos");
-        } else {
-            log("getPaxos: no messages to display!");
-            return "<p>No posts yet.</p>";
-        }
-    return htmlMsgs;
-    } catch (rpc::timeout &t) {
-        log("getPaxos: getPaxos call timed out! Returning error message");
-        return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
-    }
+	std::string htmlMsgs = "";
+	std::string allMessages = "";
+	std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+	rpc::client paxosServerClient(getAddrFromString(targetPaxosServer),
+			getPortNoFromString(targetPaxosServer));
+	paxosServerClient.set_timeout(5000);
+	try {
+		log(
+				"getPaxos: Getting messages for ledger from paxosServer: "
+						+ targetPaxosServer);
+		resp_tuple resp = paxosServerClient.call("getPaxos", "ledger",
+				"samecolumn").as<resp_tuple>();
+		if (kvsResponseStatusCode(resp) == 0) {
+			allMessages = kvsResponseMsg(resp);
+			std::deque < std::string > messageDeque = split(allMessages, "\n");
+			log(
+					"getPaxos: Got " + std::to_string(messageDeque.size())
+							+ " messages from getPaxos");
+			for (std::string messageRaw : messageDeque) {
+				if (messageRaw.length() > 0) {
+					log("messageRaw: " + messageRaw);
+					std::string sender = messageRaw.substr(0,
+							messageRaw.find(":"));
+					std::string message = messageRaw.substr(
+							messageRaw.find(":") + 1);
+					htmlMsgs += "<p><strong>" + sender + ":</strong> " + message
+							+ "</p>";
+				}
+			}
+			log("getPaxos: Returning formatted messages from getPaxos");
+		} else {
+			log("getPaxos: no messages to display!");
+			return "<p>No posts yet.</p>";
+		}
+		return htmlMsgs;
+	} catch (rpc::timeout &t) {
+		log("getPaxos: getPaxos call timed out! Returning error message");
+		return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
+	}
 }
 
 void sendNewMessage(std::string message) {
-    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
-    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
-    paxosServerClient.set_timeout(5000);
-    try {
-        log("putPaxos: Putting new message into ledger via paxosServer: "+targetPaxosServer);
-        resp_tuple resp = paxosServerClient.call("putPaxos", "ledger", "samecolumn", message).as<resp_tuple>();
-        log("putPaxos returned with Status Code: "+std::to_string(kvsResponseStatusCode(resp)));
-        log("putPaxos returned with Value: "+kvsResponseMsg(resp));
-        log("putPaxos returned with value length: "+std::to_string(kvsResponseMsg(resp).length()));
-    } catch (rpc::timeout &t) {
-        log("putPaxos: putPaxos call timed out!");
-    }
-    log("putPaxos: complete");
+	std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+	rpc::client paxosServerClient(getAddrFromString(targetPaxosServer),
+			getPortNoFromString(targetPaxosServer));
+	paxosServerClient.set_timeout(5000);
+	try {
+		log(
+				"putPaxos: Putting new message into ledger via paxosServer: "
+						+ targetPaxosServer);
+		resp_tuple resp = paxosServerClient.call("putPaxos", "ledger",
+				"samecolumn", message).as<resp_tuple>();
+		log(
+				"putPaxos returned with Status Code: "
+						+ std::to_string(kvsResponseStatusCode(resp)));
+		log("putPaxos returned with Value: " + kvsResponseMsg(resp));
+		log(
+				"putPaxos returned with value length: "
+						+ std::to_string(kvsResponseMsg(resp).length()));
+	} catch (rpc::timeout &t) {
+		log("putPaxos: putPaxos call timed out!");
+	}
+	log("putPaxos: complete");
 }
 /***************************** End Discussion forum functions ************************/
 /*********************** Http Util function **********************************/
@@ -1998,7 +2024,7 @@ std::string encodeURIComponent(std::string decoded) {
 
 struct http_response processRequest(struct http_request &req) {
 	struct http_response resp;
-    log("Entering process request");
+	log("Entering process request");
 	for (std::map<std::string, std::string>::iterator it = req.cookies.begin();
 			it != req.cookies.end(); it++) {
 		resp.cookies[it->first] = it->second;
@@ -2007,7 +2033,7 @@ struct http_response processRequest(struct http_request &req) {
 	/* Check to see if I'm the load balancer and if this request needs to be redirected */
 	if (load_balancer && frontend_server_list.size() > 1
 			&& req.cookies.find("redirected") == req.cookies.end()) {
-        log("Load balancer redirecting request");
+		log("Load balancer redirecting request");
 		std::string redirect_server = "";
 		pthread_mutex_lock(&access_state_map);
 		int first_time = 0;
@@ -2143,17 +2169,17 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/files/" + target;
 				return resp;
 			}
-        }
+		}
 	} else if (req.formData["newMessage"].size() > 0) {
-        if(req.cookies.find("username") != req.cookies.end()) {
-            std::string message = req.cookies["username"] +":"+req.formData["newMessage"];
-            log("Sending new message via putPaxos: "+message);
-            message = decodeURIComponent(message);
-            message = decodeURIComponent(message);
-            sendNewMessage(message);
-        }
-    }
-
+		if (req.cookies.find("username") != req.cookies.end()) {
+			std::string message = req.cookies["username"] + ":"
+					+ req.formData["newMessage"];
+			log("Sending new message via putPaxos: " + message);
+			message = decodeURIComponent(message);
+			message = decodeURIComponent(message);
+			sendNewMessage(message);
+		}
+	}
 
 	if (req.filepath.compare("/") == 0) {
 		if (req.cookies.find("username") == req.cookies.end()) {
@@ -2412,31 +2438,80 @@ struct http_response processRequest(struct http_request &req) {
 						std::string parentDirLink = "";
 						std::string fileList = getFileList(req, filepath,
 								parentDirLink);
+						if (fileList == "-1") {
+							resp.status_code = 307;
+							resp.status = "Temporary Redirect";
+							resp.headers["Location"] = "/dashboard";
+							return resp;
+						}
+						/*resp.content =
+						 "<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+						 "<html><body style ="
+						 "\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+						 "<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height: 24px;\"  type = \"submit\" value=\"Dashboard\" /></form>"
+						 + parentDirLink
+						 + "<script> function getFile() {document.getElementById(\"upfile\").click();}</script>"
+						 + "<script> function sub(obj) {var file = obj.value; document.getElementById(\"yourBtn\").innerHTML = file.substring(12); event.preventDefault();}</script>"
+						 + "<form style=\"padding-left:45px; padding-right:45px; margin-bottom:18px;\" action=\"/files/"
+						 + filepath
+						 + "\" enctype=\"multipart/form-data\" method=\"POST\" name=\"myForm\">"
+						 //"<label for=\"file\" style=\"line-height: 30px;\"></label>"
+						 //"<input style=\"width: 232px;\" required type =\"file\" name=\"file\"/>"
+						 "<button style=\"line-height: 24px;\" id=\"yourBtn\" onclick=\"getFile()\">Select File</button>"
+						 "<div style=\"height: 0px; width: 0px; overflow:hidden;\"><input required id=\"upfile\" type=\"file\" value=\"upload\" name=\"file\" onchange=\"sub(this)\" /></div>"
+						 "<input type=\"submit\" name=\"submit\" value=\"Upload\">"
+						 "</form>"
+						 "<form style=\"padding-left: 15px; margin-bottom:18px;\" action=\"/files/"
+						 + filepath
+						 + "\" enctype=\"multipart/form-data\" method=\"POST\""
+						 "<label for=\"dir_name\"></label><input required type=\"text\" name=\"dir_name\" />"
+						 "<input type=\"submit\" name=\"submit\" style=\"margin-left: 15px; line-height: 24px;\" value=\"Create Directory\"><br/>"
+						 "</form>"
+						 "</div>" + fileList + "<br/>"
+						 "</body></html>";
+						 */
+
 						resp.content =
-								"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
-										"<html><body style ="
-										"\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height: 24px;\"  type = \"submit\" value=\"Dashboard\" /></form>"
+								"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1pOieVTXa5tbbaK7eg7aX3dMTWE_UR1Jm\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+										"<html><body ><div class=\"total-wrapper\">"
+										"<div class=\"nav\">"
+										"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+										"<div class=\"nav-right\">"
+										"<form action=\"/change-password\" method=\"POST\"><button  type = \"submit\" >Change Password</button></form>"
+										"</body></html>"
+										"<form action=\"/logout\" method=\"POST\"><button   type = \"submit\" >Logout</button></form>"
+										"</div>"
+										"</div>"
+										"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"subject\")[0].value = encodeURIComponent(document.getElementsByName(\"subject\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
+										"<div class=\"main-content\">"
+										"<div class=\"sidebar\">"
+										"<button class=\"sidebar-link\" ><i class=\"fas fa-folder\"></i>&nbsp;&nbsp;Current Directory</button>"
 										+ parentDirLink
 										+ "<script> function getFile() {document.getElementById(\"upfile\").click();}</script>"
-										+ "<script> function sub(obj) {var file = obj.value; document.getElementById(\"yourBtn\").innerHTML = file.substring(12); event.preventDefault();}</script>"
-										+ "<form style=\"padding-left:45px; padding-right:45px; margin-bottom:18px;\" action=\"/files/"
+										+ "<script> function sub(obj) {var file = obj.value; console.log(file); document.getElementById(\"yourBtn\").innerHTML = file.substring(12); event.preventDefault();}</script>"
+												"<form action=\"/files/"
 										+ filepath
 										+ "\" enctype=\"multipart/form-data\" method=\"POST\" name=\"myForm\">"
-										/*"<label for=\"file\" style=\"line-height: 30px;\"></label>"
-										 "<input style=\"width: 232px;\" required type =\"file\" name=\"file\"/>"*/
-												"<button style=\"line-height: 24px;\" id=\"yourBtn\" onclick=\"getFile()\">Select File</button>"
+										//"<label for=\"file\" style=\"line-height: 30px;\"></label>"
+										//"<input style=\"width: 232px;\" required type =\"file\" name=\"file\"/>"
+												"<div class=\"upload_fil\">"
+												"<button style=\"line-height: 24px;\" id=\"yourBtn\" onclick=\"getFile()\">Select File...</button>"
 												"<div style=\"height: 0px; width: 0px; overflow:hidden;\"><input required id=\"upfile\" type=\"file\" value=\"upload\" name=\"file\" onchange=\"sub(this)\" /></div>"
-												"<input type=\"submit\" name=\"submit\" value=\"Upload\">"
+												"<span class=\"input-wrap\"><input type=\"submit\" name=\"submit\" value=\"&nbsp;&nbsp;Upload File\"></span></div>"
+										//"<button class=\"sidebar-link-special\" type=\"submit\"><i class=\"fas fa-file-medical\"></i>&nbsp;&nbsp;Upload</button></div>"
 												"</form>"
-												"<form style=\"padding-left: 15px; margin-bottom:18px;\" action=\"/files/"
+												"<form action=\"/files/"
 										+ filepath
-										+ "\" enctype=\"multipart/form-data\" method=\"POST\""
-												"<label for=\"dir_name\"></label><input required type=\"text\" name=\"dir_name\" />"
-												"<input type=\"submit\" name=\"submit\" style=\"margin-left: 15px; line-height: 24px;\" value=\"Create Directory\"><br/>"
+										+ "\" method=\"POST\">"
+												"<div class=\"create_dir\">"
+												"<label for=\"dir_name\"></label><input placeholder=\"New Directory Name...\" class=\"dir_input\" required type=\"text\" name=\"dir_name\" />"
+												"<button class=\"sidebar-link-special\" type = \"submit\"><i class=\"fas fa-folder-plus\"></i>&nbsp;&nbsp;Create Directory</button></div>"
 												"</form>"
-												"</div>" + fileList + "<br/>"
-												"</body></html>";
+
+												"</div>"
+												"<div class=\"inbox\">"
+										+ fileList
+										+ "</div></div></div></body></html>";
 					} else {
 						resp.status_code = 200;
 						resp.status = "OK";
@@ -2444,24 +2519,30 @@ struct http_response processRequest(struct http_request &req) {
 						resp.content = kvsResponseMsg(getFileResp);
 					}
 				} else {
-					resp.status_code = 404;
-					resp.status = "Not found";
-					resp.headers["Content-type"] = "text/html";
-					resp.content =
-							"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
-									"<html><body>"
-									"Requested file not found!"
-									"</body></html>";
+					resp.status_code = 307;
+					resp.status = "Temporary Redirect";
+					resp.headers["Location"] = "/dashboard";
+					/*resp.status_code = 404;
+					 resp.status = "Not found";
+					 resp.headers["Content-type"] = "text/html";
+					 resp.content =
+					 "<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+					 "<html><body>"
+					 "Requested file not found!"
+					 "</body></html>";*/
 				}
 			} else {
-				resp.status_code = 404;
-				resp.status = "Not found";
-				resp.headers["Content-type"] = "text/html";
-				resp.content =
-						"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
-								"<html><body>"
-								"Requested file not found!"
-								"</body></html>";
+				resp.status_code = 307;
+				resp.status = "Temporary Redirect";
+				resp.headers["Location"] = "/dashboard";
+				/*resp.status_code = 404;
+				 resp.status = "Not found";
+				 resp.headers["Content-type"] = "text/html";
+				 resp.content =
+				 "<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+				 "<html><body>"
+				 "Requested file not found!"
+				 "</body></html>";*/
 			}
 		} else {
 			resp.status_code = 307;
@@ -2517,30 +2598,30 @@ struct http_response processRequest(struct http_request &req) {
 										+ escape(title1) + "</label>"
 										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;\">"
 										+ escape(title2) + "</label>"
-										+ "<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-eye\"></i></button>"
+										+ "<button class=\"item-button\" type = \"submit\"><i title=\"View\" class=\"fas fa-eye\"></i></button>"
 												"</form>"
 												"<form style=\"padding-left:15px; padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
 												"<input type=\"hidden\" name=\"type\" value=\"reply\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
 										+ "\" />"
-												"<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-reply\"></i></button></form>"
+												"<button class=\"item-button\" type = \"submit\"><i title=\"Reply\" class=\"fas fa-reply\"></i></button></form>"
 												"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
 												"<input type=\"hidden\" name=\"type\" value=\"forward\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
-										+ "\" />" "<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-share\"></i></button></form>"
+										+ "\" />" "<button class=\"item-button\" type = \"submit\"><i title=\"Forward\" class=\"fas fa-share\"></i></button></form>"
 												"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
-										+ "\" />" "<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-trash-alt\"></i></button></form></div>";
+										+ "\" />" "<button class=\"item-button\" type = \"submit\"><i title=\"Delete\" class=\"fas fa-trash-alt\"></i></button></form></div>";
 						display += "</ul>";
 					}
 				}
 			}
 			if (display == "") {
 				display +=
-						"<ul style=\"border-bottom: 1px solid #ccc; padding:15px; margin: 0;\">No mail yet!</ul>";
+						"<ul style=\"border-bottom: 1px solid #ccc; padding:15px; margin: 0; width: 95%; text-align: center;\">No mail yet!</ul>";
 			}
 			resp.content =
 					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1aO2UaTSAoXOhadVi5HXHN8RCLbE4O_Qt\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
@@ -3450,33 +3531,33 @@ struct http_response processRequest(struct http_request &req) {
 		}
 	} else if (req.filepath.compare("/discuss") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
-				resp.status = "OK";
-				resp.status_code = 200;
-				resp.headers["Content-type"] = "text/html";
+			resp.status = "OK";
+			resp.status_code = 200;
+			resp.headers["Content-type"] = "text/html";
 
-				std::string message = "<html><body>";
-                message+=
-                "<script>function encodeMessage() {document.getElementsByName(\"newMessage\")[0].value = encodeURIComponent(document.getElementsByName(\"newMessage\")[0].value); return true;}</script>"
-                "<div style=\"width:50%;margin:auto\">"
-                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
-                        "<h3>PennCloud Discussion Wall</h3>"
-                    "</div>"
-                    "<div style=\"height:75%;overflow-y:auto;\">";
-                message += displayAllMessages();
-                message +=
-                    "</div>"
-                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
-                    "<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss\" method=\"post\">"
-                        "<div style=\"display: flex; flex-direction: row;\">"
+			std::string message = "<html><body>";
+			message +=
+					"<script>function encodeMessage() {document.getElementsByName(\"newMessage\")[0].value = encodeURIComponent(document.getElementsByName(\"newMessage\")[0].value); return true;}</script>"
+							"<div style=\"width:50%;margin:auto\">"
+							"<div style=\"justify-content:center; align-items:center;display:flex;\">"
+							"<h3>PennCloud Discussion Wall</h3>"
+							"</div>"
+							"<div style=\"height:75%;overflow-y:auto;\">";
+			message += displayAllMessages();
+			message +=
+					"</div>"
+							"<div style=\"justify-content:center; align-items:center;display:flex;\">"
+							"<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss\" method=\"post\">"
+							"<div style=\"display: flex; flex-direction: row;\">"
 							"<label for=\"newMessage\"></label><input required type=\"text\" name=\"newMessage\" placeholder=\"Write a post\">"
-                            "<input type=\"submit\" name=\"submit\" value=\"Submit\" />"
-                        "</div>"
-                    "</form>"
-                    "</div>"
-                "</div>";
-				message += "</body></html>";
-				resp.headers["Content-length"] = std::to_string(message.size());
-				resp.content = message;
+							"<input type=\"submit\" name=\"submit\" value=\"Submit\" />"
+							"</div>"
+							"</form>"
+							"</div>"
+							"</div>";
+			message += "</body></html>";
+			resp.headers["Content-length"] = std::to_string(message.size());
+			resp.content = message;
 		} else {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
@@ -4168,13 +4249,13 @@ int main(int argc, char *argv[]) {
 		log("Successfully initialized load balancer!");
 	}
 
-    // Hardcoding Paxos server addresses
-    paxosServers.push_back("127.0.0.1:10030");
-    paxosServers.push_back("127.0.0.1:10032");
-    paxosServers.push_back("127.0.0.1:10034");
-    paxosServersHeartbeatMap["127.0.0.1:10030"] = "127.0.0.1:10031";
-    paxosServersHeartbeatMap["127.0.0.1:10032"] = "127.0.0.1:10033";
-    paxosServersHeartbeatMap["127.0.0.1:10034"] = "127.0.0.1:10035";
+// Hardcoding Paxos server addresses
+	paxosServers.push_back("127.0.0.1:10030");
+	paxosServers.push_back("127.0.0.1:10032");
+	paxosServers.push_back("127.0.0.1:10034");
+	paxosServersHeartbeatMap["127.0.0.1:10030"] = "127.0.0.1:10031";
+	paxosServersHeartbeatMap["127.0.0.1:10032"] = "127.0.0.1:10033";
+	paxosServersHeartbeatMap["127.0.0.1:10034"] = "127.0.0.1:10035";
 
 	if (list_of_frontend.length() > 0) {
 		FILE *f = fopen(list_of_frontend.c_str(), "r");
