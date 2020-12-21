@@ -1498,6 +1498,49 @@ std::string getFileList(struct http_request req, std::string filepath,
 	}
 }
 
+
+// Returns a deque of <str, str> tuples where [0] is the dir name, and [1] is the dir hash
+std::deque<std::tuple<std::string, std::string>> getFilePath(struct http_request req, std::string targetDirHash) {
+    log("Getting filepath for dir hash: "+targetDirHash);
+    std::string username = req.cookies["username"];
+    std::string sessionid = req.cookies["sessionid"];
+
+    std::string currDirHash = targetDirHash;
+    std::string dirContents = kvsResponseMsg(getKVS(sessionid, username, currDirHash));
+    std::deque<std::tuple<std::string, std::string>> result;
+    bool notAtRoot = true;
+    while(notAtRoot) {
+        std::string parentDirHash = dirContents.substr(0, dirContents.find("\n"));
+        parentDirHash = parentDirHash.substr(parentDirHash.find(",")+1);
+        resp_tuple resp = getKVS(sessionid, username, parentDirHash);
+        std::string parentDirContents = kvsResponseMsg(resp);
+        if(kvsResponseStatusCode(resp) != 0) {
+            break;
+        }
+        std::deque<std::string> parentDirContentsSplt = split(parentDirContents, "\n");
+        for(std::string line : parentDirContentsSplt) {
+            std::deque < std::string > lineSplt = split(line, ",");
+            if(lineSplt[0].compare("ROOT") == 0) {
+                notAtRoot = false;
+            } else if (lineSplt[1].compare(currDirHash) == 0) {
+                // getting name of curr dir from parent dir's contents
+                result.push_back(std::make_tuple(lineSplt[0], currDirHash));
+                break;
+            }
+        }
+        currDirHash = parentDirHash;
+        dirContents = parentDirContents;
+    }
+    result.push_back(std::make_tuple("~", "ss0_" + generateStringHash(username + "/")));
+    std::reverse(result.begin(), result.end());
+    std::string filePath = "";
+    for(std::tuple<std::string, std::string> filePathEntry : result) {
+        filePath += std::get<0>(filePathEntry) + "/";
+    }
+    log("File path is: "+filePath);
+    return result;
+}
+
 bool isFileRouteDirectory(std::string filepath) {
 // All directories should end with a '/'
 	return (filepath.length() > 4 && filepath.substr(0, 4).compare("ss0_") == 0);
@@ -2576,6 +2619,7 @@ struct http_response processRequest(struct http_request &req) {
 						resp.status = "OK";
 						resp.headers["Content-type"] = "text/html";
 						std::string parentDirLink = "";
+                        getFilePath(req, filepath);
 						std::string fileList = getFileList(req, filepath,
 								parentDirLink);
 						if (fileList == "-1") {
