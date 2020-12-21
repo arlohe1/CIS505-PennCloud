@@ -2364,7 +2364,7 @@ struct http_response processRequest(struct http_request &req) {
 						std::string fileList = getFileList(req, filepath,
 								parentDirLink);
 						resp.content =
-								"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+								"<head><meta charset=\"UTF-8\"></head>"
 										"<html><body style ="
 										"\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
 										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height: 24px;\"  type = \"submit\" value=\"Dashboard\" /></form>"
