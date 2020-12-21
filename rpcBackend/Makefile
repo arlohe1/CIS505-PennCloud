@@ -52,6 +52,7 @@ serverfiles:
 		mkdir paxos_$$i/checkpoint; \
 		mkdir paxos_$$i/logArchive; \
 		touch paxos_$$i/log.txt; \
+		touch paxos_$$i/paxos_state.txt; \
 	done
 	
 	
