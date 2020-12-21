@@ -12,7 +12,10 @@ LIBS= -lrpc -lpthread
 test:
 	$(GCC) kvServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o kvServer $(LIBS)
 	$(GCC) masterNode.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o masterNode $(LIBS)
+	$(GCC) paxosServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosServer $(LIBS)
+	$(GCC) paxosMaster.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosMaster $(LIBS)
 	$(GCC) testClient.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o testClient $(LIBS)
+	$(GCC) paxosTest.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosTest $(LIBS)
 
 kvs:
 	$(GCC) kvServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o kvServer $(LIBS)
@@ -38,12 +41,19 @@ master:
 	$(GCC) masterNode.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o masterNode $(LIBS)
 	
 serverfiles:
-	for i in 1 2 3 4 5 6; do \
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
 		rm -r server_$$i; \
 		mkdir server_$$i; \
 		mkdir server_$$i/checkpoint; \
 		mkdir server_$$i/logArchive; \
 		touch server_$$i/log.txt; \
+	done
+	for i in 1 2 3; do \
+		rm -r paxos_$$i; \
+		mkdir paxos_$$i; \
+		mkdir paxos_$$i/checkpoint; \
+		mkdir paxos_$$i/logArchive; \
+		touch paxos_$$i/log.txt; \
 	done
 	
 	
@@ -52,7 +62,7 @@ clean:
 	rm -f masterNode
 	rm -f paxosServer
 	rm -f paxosMaster
-	for i in 1 2 3 4 5 6; do \
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
 		rm -f server_$$i/checkpointNum.txt; \
 		: > server_$$i/log.txt; \
 		rm -r server_$$i/logArchive; \

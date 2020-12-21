@@ -38,7 +38,7 @@
 #define MAX_LEN_SERVER_DIR 15
 #define MAX_LEN_LOG_HEADER 100
 #define MAX_COMM_ARGS 4
-#define COM_PER_CHECKPOINT 2
+#define COM_PER_CHECKPOINT 5
 #define TIMEOUT_MILLISEC 10000
 #define CHECKPOINT_CNT_FILE "checkpointNum.txt"
 
@@ -1562,4 +1562,3 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
- 
