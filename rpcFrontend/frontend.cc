@@ -2456,7 +2456,7 @@ struct http_response processRequest(struct http_request &req) {
 						title1 = subject.substr(9);
 						title2 = to.substr(last + 2);
 						display +=
-								"<ul style=\"border-bottom: 1px solid black; padding:15px; margin: 0; width: 95%;\">";
+								"<ul style=\"border-bottom: 1px solid #ccc; padding:10px 15px; margin: 0; width: 95%;\">";
 						display +=
 								"<div style=\"display:flex; flex-direction: row;\">"
 										"<form action=\"/email\" method=\"post\" style=\"margin: 0;\">"
@@ -2491,10 +2491,8 @@ struct http_response processRequest(struct http_request &req) {
 			}
 			if (display == "") {
 				display +=
-						"<ul style=\"border-top: 1px solid black; padding:15px; margin: 0;\">No mail yet!</ul>";
+						"<ul style=\"border-bottom: 1px solid #ccc; padding:15px; margin: 0;\">No mail yet!</ul>";
 			}
-			display +=
-					"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>";
 			resp.content =
 					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1aO2UaTSAoXOhadVi5HXHN8RCLbE4O_Qt\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
 							"<html><body ><div class=\"total-wrapper\">"
@@ -2516,8 +2514,9 @@ struct http_response processRequest(struct http_request &req) {
 							"<div style=\"font-weight: bold; padding-left: 15px; padding-right: 15px; width: 95%; padding-bottom: 10px;padding-top: 20px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
 							"<label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Subject</label>"
 							"<label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Date</label>"
-							"</div><div style=\"border-bottom: 2px solid black; width: 100%;\"></div>"
-							+ display + "</div></div></div></body></html>";
+							"</div><div style=\"border-bottom: 1px solid black; width: 100%;\"></div><div class=\"emails\">"
+							+ display
+							+ "</div></div></div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -2601,28 +2600,40 @@ struct http_response processRequest(struct http_request &req) {
 				}
 			}
 			resp.content =
-					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/mailbox\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Discard\" /></form>"
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1rfpVOIMTUZBvu1pWILDKiRrDi9u0oLpi\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+							"<html><body ><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/change-password\" method=\"POST\"><button  type = \"submit\" >Change Password</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button   type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
 							"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"subject\")[0].value = encodeURIComponent(document.getElementsByName(\"subject\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
-							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\" /></form></div>"
-							"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
-							"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
+							"<div class=\"main-content\">"
+							"<div class=\"sidebar\">"
+							"<form action=\"/compose\" method=\"POST\" > <button class=\"sidebar-button\" type = \"submit\"><i class=\"far fa-edit\"></i>&nbsp;&nbsp;Compose</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-inbox\"></i>&nbsp;&nbsp;Inbox</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link danger\" type = \"submit\"><i class=\"fas fa-trash-alt\"></i>&nbsp;&nbsp;Discard</button></form>"
+							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\"> <button class=\"sidebar-link success\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Send</button></form>"
+							"</div>"
+							"<div class=\"inbox\">"
+							"<div style=\"display:flex; flex-direction: row; \">"
 							/*"<label form=\"compose\" for=\"to\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">To:&nbsp;</label>"*/
 							"<input placeholder=\"Recipients\" required form=\"compose\" style=\"flex:1;\" name=\"to\" type=\"text\" value=\""
 							+ rec + "\"/></div>"
-							+ "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
-									"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
-									/*"<label form=\"compose\" for=\"subject\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">Subject:&nbsp;</label>"*/
+							+ "<div style=\"display:flex; flex-direction: row; \">"
+							/*"<label form=\"compose\" for=\"subject\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">Subject:&nbsp;</label>"*/
 									"<input placeholder=\"Subject\" required form=\"compose\" style=\"flex:1;\" name=\"subject\" type=\"text\" value=\""
 							+ sub + "\"/></div>"
-							+ "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
-									"<div style=\"padding:15px\">"
-									"<textarea name=\"content\" form=\"compose\" style=\"width:100%; height: 450px;\">"
+							+ "<div style=\"flex:1\">"
+									"<textarea name=\"content\" form=\"compose\" style=\"width:100%; height: 100%;\">"
 							+ existing + "</textarea>"
 									"</div>"
-									"</body></html>";
+									"</div></div></div></body></html>";
+
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -2659,27 +2670,34 @@ struct http_response processRequest(struct http_request &req) {
 					while (std::getline(ss, to, '\n')) {
 						if (!found && to.rfind(header, 0) == 0) {
 							std::getline(ss, subject, '\n');
-							std::string title = "From: ";
-							std::string title1 = "Subject: ";
-							std::string title2 = "";
+							std::string title =
+									"<span style=\"font-weight: bold\">From: </span>";
+							std::string title1 =
+									"<span style=\"font-weight: bold\">Subject: </span>";
+							std::string title2 =
+									"<span style=\"font-weight: bold\">Date: </span>";
 							unsigned first = to.find('<');
 							unsigned last = to.find('>');
-							title += to.substr(first + 1, last - first - 1);
-							title1 += subject.substr(9);
-							title2 = to.substr(last + 2);
+							std::string titleA = to.substr(first + 1,
+									last - first - 1);
+							std::string title1A = subject.substr(9);
+							std::string title2A = to.substr(last + 2);
 							display +=
-									"<ul style=\"border-bottom: 1px solid black; padding:15px; margin: 0;\">";
+									"<ul style=\"border-bottom: 1px solid #ccc; padding:15px; margin: 0;\">";
 							display +=
 									"<label style=\"margin-right: 20px; margin-bottom: 10px; width: 100%; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
-											+ escape(title) + "</label>"
+											+ title + escape(titleA)
+											+ "</label>"
 											+ "<label style=\"margin-right: 20px; margin-bottom: 10px; width: 100%; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
-											+ escape(title1) + "</label>"
+											+ title1 + escape(title1A)
+											+ "</label>"
 											+ "<label style=\"margin-right: 20px; margin-bottom: 10px; vertical-align: middle;\">"
-											+ escape(title2) + "</label>";
+											+ title2 + escape(title2A)
+											+ "</label>";
 							display += "</ul>";
 							found = true;
 							display +=
-									"<span style=\"white-space: pre-wrap; padding:15px;\">";
+									"<span style=\"white-space: pre-wrap; padding:15px; overflow-y:scroll; overflow-x: hidden; word-break: break-word;\">";
 						} else if (found) {
 							if (to.rfind("From <", 0) == 0) {
 								break;
@@ -2693,29 +2711,67 @@ struct http_response processRequest(struct http_request &req) {
 						display += "</span>";
 					}
 				}
+				/*resp.content =
+				 "<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+				 "<html><body "
+				 "style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+				 "<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
+				 "<form action=\"/mailbox\" method=\"POST\" style=\"padding-right: 15px; margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Mailbox\" /></form>"
+				 "<form style=\"padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
+				 "<input type=\"hidden\" name=\"type\" value=\"reply\">"
+				 "<input type=\"hidden\" name=\"header\" value=\""
+				 + encodeURIComponent(header)
+				 + "\" />"
+				 "<input style=\"line-height:24px;\" type = \"submit\" value=\"Reply\" /></form>"
+				 "<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
+				 "<input type=\"hidden\" name=\"type\" value=\"forward\">"
+				 "<input type=\"hidden\" name=\"header\" value=\""
+				 + encodeURIComponent(header)
+				 + "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Forward\" /></form>"
+				 "<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
+				 "<input type=\"hidden\" name=\"header\" value=\""
+				 + encodeURIComponent(header)
+				 + "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Delete\" /></form></div>"
+				 "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
+				 + display + "</body></html>";*/
+
 				resp.content =
-						"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
-								"<html><body "
-								"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-								"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
-								"<form action=\"/mailbox\" method=\"POST\" style=\"padding-right: 15px; margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Mailbox\" /></form>"
-								"<form style=\"padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
+						"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1RvFSbln2s830QKnz2aBobC4d4Vck_6KN\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+								"<html><body ><div class=\"total-wrapper\">"
+								"<div class=\"nav\">"
+								"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+								"<div class=\"nav-right\">"
+								"<form action=\"/change-password\" method=\"POST\"><button  type = \"submit\" >Change Password</button></form>"
+								"</body></html>"
+								"<form action=\"/logout\" method=\"POST\"><button   type = \"submit\" >Logout</button></form>"
+								"</div>"
+								"</div>"
+								"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"subject\")[0].value = encodeURIComponent(document.getElementsByName(\"subject\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
+								"<div class=\"main-content\">"
+								"<div class=\"sidebar\">"
+								"<form action=\"/compose\" method=\"POST\" > <button class=\"sidebar-button\" type = \"submit\"><i class=\"far fa-edit\"></i>&nbsp;&nbsp;Compose</button></form>"
+								"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-inbox\"></i>&nbsp;&nbsp;Inbox</button></form>"
+								"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
+
+								"<form  action=\"/compose\" method=\"POST\">"
 								"<input type=\"hidden\" name=\"type\" value=\"reply\">"
 								"<input type=\"hidden\" name=\"header\" value=\""
 								+ encodeURIComponent(header)
 								+ "\" />"
-										"<input style=\"line-height:24px;\" type = \"submit\" value=\"Reply\" /></form>"
-										"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
+										"<button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-reply\"></i>&nbsp;&nbsp;Reply</button></form>"
+										"<form action=\"/compose\" method=\"POST\" >"
 										"<input type=\"hidden\" name=\"type\" value=\"forward\">"
 										"<input type=\"hidden\" name=\"header\" value=\""
 								+ encodeURIComponent(header)
-								+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Forward\" /></form>"
-										"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
+								+ "\" />" "<button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-share\"></i>&nbsp;&nbsp;Forward</button></form>"
+										"<form action=\"/delete\" method=\"POST\" >"
 										"<input type=\"hidden\" name=\"header\" value=\""
 								+ encodeURIComponent(header)
-								+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Delete\" /></form></div>"
-										"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
-								+ display + "</body></html>";
+								+ "\" />" "<button class=\"sidebar-link danger\" type = \"submit\"><i class=\"fas fa-trash-alt\"></i>&nbsp;&nbsp;Delete</button></form>"
+										"</div>"
+										"<div class=\"inbox\">" + display
+								+ "</div></div></body></html>";
+
 				resp.headers["Content-length"] = std::to_string(
 						resp.content.size());
 			} else {
@@ -3023,30 +3079,62 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
-			std::string test = "";
+			std::string test = "<div class=\"error\"></div>";
 			if (req.cookies.find("error") != req.cookies.end()) {
-				test = "<p style=\"color:red\";>" + req.cookies["error"]
-						+ "</p><br/>";
+				test = "<div class=\"error\" style=\"color:red\";>"
+						+ req.cookies["error"] + "</div>";
 				resp.cookies.erase("error");
 			}
 			resp.content =
-					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
-							"center;\">" + test
-							+ "<form id=\"change\" style=\"display: flex; flex-direction: column; margin-bottom: 15px;\""
-							+ "action=\"/change\" "
-									"enctype=\"multipart/form-data\" "
-									"method=\"POST\""
-									"<input style=\"margin-bottom: 15px;\" placeholder=\"Current Password\" required name=\"old\" type=\"password\"/><br/>"
-									"<input style=\"margin-bottom: 15px;\" placeholder=\"New Password\" required name=\"new\" "
-									"type=\"password\"/><br/>"
-									"<input style=\"margin-bottom: 15px;\" placeholder=\"Confirm New Password\"  required "
-									"name=\"confirm_new\" "
-									"type=\"password\"/><br/>"
-									"<input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Change Password\"></form><br/><br/>"
-									"<form id=\"cancel\" style=\"\" action=\"/dashboard\" method=\"POST\"> <input style=\"width: 100%; line-height: 24px;\" type = \"submit\" value=\"Cancel\" /></form>"
-									"</body></html>";
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=13aiSuASW9mzew62vNPzC3AFBWJ1YVTtg\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+							"<html><body><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/dashboard\" method=\"POST\"><button style=\"line-height: 24px;\" type = \"submit\" >Cancel</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button style=\"line-height: 24px;\"  type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
+							"<div style=\"display:flex; flex-direction: column; justify-content:center; align-items: center; width: 100vw; height: 92vh; overflow: hidden;\">"
+							+ test
+							+ "<div class=\"form-structor\">"
+									"<div class=\"signup\">"
+									"<h2 class=\"form-title\" id=\"signup\"><span></span>Change Password</h2>"
+									"<form id=\"signupF\" action=\"/change\" enctype=\"multipart/form-data\" method=\"POST\">"
+									"<div class=\"form-holder\">"
+									"<input required class=\"input\" placeholder=\"Current Password\" name=\"old\" type=\"password\"/>"
+									"<input placeholder=\"New Password\" class=\"input\"  required name=\"new\""
+									"type=\"password\"/>"
+									"<input placeholder=\"Confirm New Password\" class=\"input\"  required name=\"confirm_new\""
+									"type=\"password\"/>"
+									"</div>"
+									"<input  class=\"submit-btn\" type=\"submit\" name=\"submit\" value=\"Change Password\">"
+									"</form>"
+									"</div>"
+									"</div>" "<div class=\"error\"></div>"
+									"</div>"
+									"</body>"
+									"</html>";
+
+			/*resp.content =
+			 "<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+			 "<html><body "
+			 "style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
+			 "center;\">" + test
+			 + "<form id=\"change\" style=\"display: flex; flex-direction: column; margin-bottom: 15px;\""
+			 + "action=\"/change\" "
+			 "enctype=\"multipart/form-data\" "
+			 "method=\"POST\""
+			 "<input style=\"margin-bottom: 15px;\" placeholder=\"Current Password\" required name=\"old\" type=\"password\"/><br/>"
+			 "<input style=\"margin-bottom: 15px;\" placeholder=\"New Password\" required name=\"new\" "
+			 "type=\"password\"/><br/>"
+			 "<input style=\"margin-bottom: 15px;\" placeholder=\"Confirm New Password\"  required "
+			 "name=\"confirm_new\" "
+			 "type=\"password\"/><br/>"
+			 "<input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Change Password\"></form><br/><br/>"
+			 "<form id=\"cancel\" style=\"\" action=\"/dashboard\" method=\"POST\"> <input style=\"width: 100%; line-height: 24px;\" type = \"submit\" value=\"Cancel\" /></form>"
+			 "</body></html>";*/
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -3357,7 +3445,7 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 		response += "\r\n" + resp.content;
 	}
 	writeNBytes(client_fd, response.size(), response.data());
-	// log("Sent: " + response);
+// log("Sent: " + response);
 }
 
 /***************************** End http util functions ************************/
