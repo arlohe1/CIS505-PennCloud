@@ -1698,7 +1698,11 @@ std::string getFileList(struct http_request req, std::string filepath,
 		std::deque < std::string > splt = split(respValue, "\n");
 		for (std::string line : splt) {
 			if (line.length() > 0) {
-				std::deque < std::string > lineSplt = split(line, ",");
+				std::size_t foundPos = line.find_last_of(",");
+				std::string currName = line.substr(0, foundPos);
+				std::deque < std::string > lineSplt;
+				lineSplt.push_back(currName);
+				lineSplt.push_back(line.substr(foundPos + 1));
 				if (lineNum == 0) {
 					// Parent Directory Line
 					if (!(lineSplt[0].compare("ROOT") == 0
