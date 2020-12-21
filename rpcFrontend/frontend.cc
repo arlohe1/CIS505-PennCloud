@@ -83,7 +83,8 @@ struct admin_console_cache {
 	time_t last_modified = time(NULL);
 	std::string last_modified_by, last_accessed_for;
 	std::vector<std::tuple<std::string, std::deque<std::string>>> rowToAllItsCols;
-	std::vector<std::string> stopped_servers, activeBackendServersList;
+	std::vector<std::string> activeBackendServersList;
+	std::set<std::string> stopped_servers;
 	std::deque<server_addr_tuple> activeBackendServers, allBackendServers;
 	std::map<std::string, std::string> frontendToAdminComm;
 } admin_console_cache;
@@ -3553,13 +3554,10 @@ struct http_response processRequest(struct http_request &req) {
 				log(
 						"Last modified: "
 								+ std::to_string(it->second.last_modified));
-				bool stopped_by_console = std::find(
-						my_admin_console_cache.stopped_servers.begin(),
-						my_admin_console_cache.stopped_servers.end(), it->first)
-						== my_admin_console_cache.stopped_servers.end();
-				std::string status =
-						(it->second.last_modified >= now || !stopped_by_console) ?
-								"Active" : "Not Responding";
+				bool stopped_by_console = my_admin_console_cache.stopped_servers.find(trim(it->first)) != my_admin_console_cache.stopped_servers.end();
+				std::string status = (stopped_by_console)? "Not Responding" :
+						((it->second.last_modified >= now ) ?
+								"Active" : "Not Responding");
 				if (this_server_state.http_address.compare(it->first) != 0) {
 					message += "<l1>" + it->first;
 					message += " Status: " + status;
@@ -3589,18 +3587,13 @@ struct http_response processRequest(struct http_request &req) {
 			log("ADMIN all nodes");
 			for (auto node : allBackendNodes) {
 				log(std::get < 2 > (node));
-				bool stopped_by_console = std::find(
-						my_admin_console_cache.stopped_servers.begin(),
-						my_admin_console_cache.stopped_servers.end(),
-						std::get < 3 > (node))
-						== my_admin_console_cache.stopped_servers.end();
-				std::string status =
-						(std::find(activeBackendNodesCollection.begin(),
+				bool stopped_by_console = my_admin_console_cache.stopped_servers.find(trim(std::get<3>(node))) != my_admin_console_cache.stopped_servers.end();;
+				std::string status = (stopped_by_console) ? "Not Responding" :
+						((std::find(activeBackendNodesCollection.begin(),
 								activeBackendNodesCollection.end(),
 								std::get < 2 > (node))
-								!= activeBackendNodesCollection.end()
-								|| !stopped_by_console) ?
-								"Active" : "Not Responding";
+								!= activeBackendNodesCollection.end()) ?
+								"Active" : "Not Responding");
 				message += "<l1>" + std::get < 2 > (node);
 				message += " Status: " + status;
 				message +=
@@ -3769,7 +3762,8 @@ struct http_response processRequest(struct http_request &req) {
 			} else {
 				stopServerKVS(target);
 			}
-			my_admin_console_cache.stopped_servers.push_back(target);
+			my_admin_console_cache.stopped_servers.insert(trim(target));
+			log("Stopped servers size: " + std::to_string(my_admin_console_cache.stopped_servers.size()));
 			registerCacheAccess("stopserver", target);
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
@@ -3792,11 +3786,7 @@ struct http_response processRequest(struct http_request &req) {
 			} else {
 				reviveServerKVS(target);
 			}
-			my_admin_console_cache.stopped_servers.erase(
-					std::remove(my_admin_console_cache.stopped_servers.begin(),
-							my_admin_console_cache.stopped_servers.end(),
-							target),
-					my_admin_console_cache.stopped_servers.end());
+			my_admin_console_cache.stopped_servers.erase(trim(target));
 			registerCacheAccess("resumeserver", target);
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
