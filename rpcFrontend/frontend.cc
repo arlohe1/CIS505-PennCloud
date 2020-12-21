@@ -121,6 +121,56 @@ std::map<int, struct http_session> id_to_session;
 
 /******************************* End http data structures ******************************/
 
+///////////////////////////////////////////////////////////////////////////
+
+// Attributed to arthurafarias on Github: https://gist.github.com/arthurafarias/56fec2cd49a32f374c02d1df2b6c350f
+
+std::string decodeURIComponent(std::string encoded) {
+
+	std::string decoded = encoded;
+	std::smatch sm;
+	std::string haystack;
+
+	int dynamicLength = decoded.size() - 2;
+
+	if (decoded.size() < 3)
+		return decoded;
+
+	for (int i = 0; i < dynamicLength; i++) {
+
+		haystack = decoded.substr(i, 3);
+
+		if (std::regex_match(haystack, sm, std::regex("%[0-9A-F]{2}"))) {
+			haystack = haystack.replace(0, 1, "0x");
+			std::string rc = { (char) std::stoi(haystack, nullptr, 16) };
+			decoded = decoded.replace(decoded.begin() + i,
+					decoded.begin() + i + 3, rc);
+		}
+
+		dynamicLength = decoded.size() - 2;
+
+	}
+
+	return decoded;
+}
+
+std::string encodeURIComponent(std::string decoded) {
+
+	std::ostringstream oss;
+	std::regex r("[!'\\(\\)*-.0-9A-Za-z_~]");
+
+	for (char &c : decoded) {
+		if (std::regex_match((std::string ) { c }, r)) {
+			oss << c;
+		} else {
+			oss << "%" << std::uppercase << std::hex << (0xff & c);
+		}
+	}
+	return oss.str();
+}
+
+///////////////////////////////////////////////////////////////////////////
+
 /******************************* Start Util functions     ******************************/
 
 // From HW2
@@ -774,7 +824,7 @@ struct internal_message parseRawMessage(std::string &message) {
 		ret.group_owner = message.substr(0, message.find(","));
 		message.erase(0, message.find(",") + 1);
 		ret.group = message.substr(0, message.find("__chatboundary__"));
-		message.erase(0, message.find("__chatboundary__") + 1);
+		message.erase(0, message.find("__chatboundary__") + 16);
 		ret.content = message;
 	}
 	return ret;
@@ -909,15 +959,21 @@ void handleHoldbackQ(struct internal_message &message, sockaddr_in &src){
 				" but actual was " + std::to_string(actual_seq) + "\n");
 		if(expected_seq == actual_seq){
 			struct internal_message deliverable_message = fifo_holdbackQ[src_server].front();
-			std::string my_message =  "<li>" + deliverable_message.sender + ": " + deliverable_message.content +"</li>";
+			std::string my_message =  "<li>" + deliverable_message.sender + ": " + encodeURIComponent(deliverable_message.content) +"</li>";
 			std::string old_chat = "";
 			int resp_code = -1, timeout_count = 0;
-			while(resp_code != 0 && old_chat.find(my_message) == std::string::npos && (timeout_count++) < 10){
+			while(resp_code != 0 && (timeout_count++) < 10){
 				resp_tuple raw_chatroom = getKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group);
 				old_chat = kvsResponseMsg(raw_chatroom);
 				std::string new_chat = old_chat + my_message;
+				if(old_chat.find(my_message) != std::string::npos) break;
 				resp_tuple ret = cputKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group, old_chat, new_chat);
 				resp_code = kvsResponseStatusCode(ret);
+				log("Try: " + std::to_string(timeout_count));
+				log("resp_code : " + std::to_string(resp_code));
+				log("Old chat: " + old_chat);
+				log("My message: " + my_message);
+				log("New chat: " + new_chat);
 			}
 
 			for(std::string member: group_to_clients[deliverable_message.group]){
@@ -2008,56 +2064,6 @@ std::string escape(std::string input) {
 	return output;
 }
 
-///////////////////////////////////////////////////////////////////////////
-
-// Attributed to arthurafarias on Github: https://gist.github.com/arthurafarias/56fec2cd49a32f374c02d1df2b6c350f
-
-std::string decodeURIComponent(std::string encoded) {
-
-	std::string decoded = encoded;
-	std::smatch sm;
-	std::string haystack;
-
-	int dynamicLength = decoded.size() - 2;
-
-	if (decoded.size() < 3)
-		return decoded;
-
-	for (int i = 0; i < dynamicLength; i++) {
-
-		haystack = decoded.substr(i, 3);
-
-		if (std::regex_match(haystack, sm, std::regex("%[0-9A-F]{2}"))) {
-			haystack = haystack.replace(0, 1, "0x");
-			std::string rc = { (char) std::stoi(haystack, nullptr, 16) };
-			decoded = decoded.replace(decoded.begin() + i,
-					decoded.begin() + i + 3, rc);
-		}
-
-		dynamicLength = decoded.size() - 2;
-
-	}
-
-	return decoded;
-}
-
-std::string encodeURIComponent(std::string decoded) {
-
-	std::ostringstream oss;
-	std::regex r("[!'\\(\\)*-.0-9A-Za-z_~]");
-
-	for (char &c : decoded) {
-		if (std::regex_match((std::string ) { c }, r)) {
-			oss << c;
-		} else {
-			oss << "%" << std::uppercase << std::hex << (0xff & c);
-		}
-	}
-	return oss.str();
-}
-
-///////////////////////////////////////////////////////////////////////////
-
 struct http_response processRequest(struct http_request &req) {
 	struct http_response resp;
 	for (std::map<std::string, std::string>::iterator it = req.cookies.begin();
@@ -2073,7 +2079,8 @@ struct http_response processRequest(struct http_request &req) {
 		int first_time = 0;
 		while (redirect_server.compare("") == 0
 				|| time(NULL)
-						- frontend_state_map[redirect_server].last_modified > 3) {
+						- frontend_state_map[redirect_server].last_modified > 3
+				|| redirect_server.compare(this_server_state.http_address) == 0) {
 			redirect_server = frontend_server_list[l_balancer_index];
 			if (first_time < 2) {
 				log("Redirect server: " + redirect_server);
@@ -2369,6 +2376,8 @@ struct http_response processRequest(struct http_request &req) {
 							"password", req.formData["password"]);
 					putKVS(resp.cookies["sessionid"], req.formData["username"],
 							"mailbox", "");
+					putKVS(resp.cookies["sessionid"], req.formData["username"],
+							"chats", "");
 					createRootDirForNewUser(req, resp.cookies["sessionid"]);
 				}
 			}
@@ -3364,7 +3373,7 @@ struct http_response processRequest(struct http_request &req) {
 					std::string chatname = tokens.at(0), owner = tokens.at(1), chathash = tokens.at(2);
 					display+="<li><a href=\"/joinchat/" + owner + "/" + chathash + "\">"+ chatname +"</a></li>";
 				}
-				display += "/ul>";
+				display += "</ul>";
 			}
 			if (display == "") {
 				display +=
@@ -3392,7 +3401,8 @@ struct http_response processRequest(struct http_request &req) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			// Get stuff from form
 			std::string owner = req.cookies["username"];
-			std::string members_raw = owner + "; " + req.formData["members"];
+			std::string members_raw = owner + "; " + decodeURIComponent(req.formData["members"]);
+			std::replace( members_raw.begin(), members_raw.end(), '+', ' ');
 			std::deque<std::string> members = split(members_raw , ";");
 			std::string chathash = generateStringHash(req.formData["members"] + std::to_string(time(NULL)));
 
@@ -3402,7 +3412,18 @@ struct http_response processRequest(struct http_request &req) {
 			for(std::string m: members){
 				std::string member = trim(m);
 				std::string cont = members_raw + "\t" + owner + "\t" + chathash + "\n";
-				putKVS(req.cookies["sessionid"], member, "chats", cont);
+
+				std::string my_message =  cont;
+				std::string old_message = "";
+				int resp_code = -1, timeout_count = 0;
+				while(resp_code != 0 && (timeout_count++) < 10){
+					resp_tuple raw_message = getKVS(req.cookies["sessionid"], member, "chats");
+					old_message = kvsResponseMsg(raw_message);
+					std::string new_message = old_message + my_message;
+					if(old_message.find(my_message) != std::string::npos) break;
+					resp_tuple ret = cputKVS(req.cookies["sessionid"], member, "chats", old_message, new_message);
+					resp_code = kvsResponseStatusCode(ret);
+				}
 				group_to_clients[chathash].insert(member);
 			}
 
@@ -3434,6 +3455,7 @@ struct http_response processRequest(struct http_request &req) {
 
 			client_to_group[req.cookies["username"]] = chathash;
 			std::string chatroom = kvsResponseMsg(chatroom_raw);
+			std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
 
 			resp.content =
 								"<head><meta charset=\"UTF-8\"></head>"
@@ -4191,6 +4213,7 @@ int main(int argc, char *argv[]) {
 				std::stoi(load_balancer_address[1]));
 		load_balancer_addr.sin_addr.s_addr = inet_addr(
 				load_balancer_address[0].data());
+		if(load_balancer) this_server_state.http_address = split(trim(std::string(buffer)), ",").at(0);
 		frontend_internal_list.push_back(load_balancer_addr);
 		int i = 1;
 		while (fgets(buffer, 300, f)) {
