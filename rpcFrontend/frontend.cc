@@ -2552,6 +2552,8 @@ struct http_response processRequest(struct http_request &req) {
 							//"<form action=\"/compose\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Compose Email\" /></form>"
 							"<form action=\"/files/" + userRootDir
 							+ "\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-box-open\"></i><div class=\"button-text\">PennDrive</div></div></button></form>"
+									"<form action=\"/discuss\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-users\"></i><div class=\"button-text\">PennDiscuss</div></div></button></form>"
+
 									"</div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
@@ -2778,7 +2780,7 @@ struct http_response processRequest(struct http_request &req) {
 							"<div class=\"sidebar\">"
 							"<form action=\"/compose\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-edit\"></i>&nbsp;&nbsp;Compose</button></form>"
 							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-button\" type = \"submit\"><i class=\"fas fa-inbox\"></i>&nbsp;&nbsp;Inbox</button></form>"
-							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
+							//"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
 							"</div>"
 							"<div class=\"inbox\">"
 							"<div style=\"font-weight: bold; padding-left: 15px; padding-right: 15px; width: 95%; padding-bottom: 10px;padding-top: 20px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
@@ -2886,7 +2888,7 @@ struct http_response processRequest(struct http_request &req) {
 							"<div class=\"sidebar\">"
 							"<form action=\"/compose\" method=\"POST\" > <button class=\"sidebar-button\" type = \"submit\"><i class=\"far fa-edit\"></i>&nbsp;&nbsp;Compose</button></form>"
 							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-inbox\"></i>&nbsp;&nbsp;Inbox</button></form>"
-							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
+							//"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
 							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link danger\" type = \"submit\"><i class=\"fas fa-trash-alt\"></i>&nbsp;&nbsp;Discard</button></form>"
 							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\"> <button class=\"sidebar-link success\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Send</button></form>"
 							"</div>"
@@ -3023,7 +3025,7 @@ struct http_response processRequest(struct http_request &req) {
 								"<div class=\"sidebar\">"
 								"<form action=\"/compose\" method=\"POST\" > <button class=\"sidebar-button\" type = \"submit\"><i class=\"far fa-edit\"></i>&nbsp;&nbsp;Compose</button></form>"
 								"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-inbox\"></i>&nbsp;&nbsp;Inbox</button></form>"
-								"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
+								//"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
 
 								"<form  action=\"/compose\" method=\"POST\">"
 								"<input type=\"hidden\" name=\"type\" value=\"reply\">"
