@@ -2002,6 +2002,7 @@ std::string encodeURIComponent(std::string decoded) {
 
 struct http_response processRequest(struct http_request &req) {
 	struct http_response resp;
+    log("Entering process request");
 	for (std::map<std::string, std::string>::iterator it = req.cookies.begin();
 			it != req.cookies.end(); it++) {
 		resp.cookies[it->first] = it->second;
@@ -2010,6 +2011,7 @@ struct http_response processRequest(struct http_request &req) {
 	/* Check to see if I'm the load balancer and if this request needs to be redirected */
 	if (load_balancer && frontend_server_list.size() > 1
 			&& req.cookies.find("redirected") == req.cookies.end()) {
+        log("Load balancer redirecting request");
 		std::string redirect_server = "";
 		pthread_mutex_lock(&access_state_map);
 		int first_time = 0;
@@ -2146,13 +2148,16 @@ struct http_response processRequest(struct http_request &req) {
 				return resp;
 			}
         }
-	} else if (req.cookies["username"].size() > 0 && req.formData["newMessage"].size() > 0) {
+	} else if (req.formData["newMessage"].size() > 0) {
+        if(req.cookies.find("username") != req.cookies.end()) {
             std::string message = req.cookies["username"] +":"+message; 
             log("Sending new message via putPaxos: "+message);
             message = decodeURIComponent(message);
             message = decodeURIComponent(message);
             sendNewMessage(message);
+        }
     }
+
 
 	if (req.filepath.compare("/") == 0) {
 		if (req.cookies.find("username") == req.cookies.end()) {
