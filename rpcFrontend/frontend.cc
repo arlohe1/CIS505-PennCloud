@@ -1575,46 +1575,131 @@ void createRootDirForNewUser(struct http_request req, std::string sessionid) {
 
 /***************************** End storage service functions ************************/
 /***************************** Start Discussion forum functions ************************/
-std::string displayAllMessages() {
+std::string displayAllLedgerMessages(std::string ledgerHash) {
     std::string htmlMsgs = "";
-    std::string allMessages = "";
     std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
     rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
     paxosServerClient.set_timeout(5000);
     try {
-        log("getPaxos: Getting messages for ledger from paxosServer: "+targetPaxosServer);
-        resp_tuple resp = paxosServerClient.call("getPaxos", "ledger", "samecolumn").as<resp_tuple>();
+        log("getPaxos: Getting messages for ledger "+ledgerHash+" from paxosServer: "+targetPaxosServer);
+        resp_tuple resp = paxosServerClient.call("getPaxos", ledgerHash, "samecolumn").as<resp_tuple>();
         if(kvsResponseStatusCode(resp) == 0) {
-            allMessages = kvsResponseMsg(resp);
+            std::string allMessages = kvsResponseMsg(resp);
             std::deque<std::string> messageDeque = split(allMessages, "\n");
-            log("getPaxos: Got "+std::to_string(messageDeque.size())+" messages from getPaxos");
+            log("getPaxos: Got "+std::to_string(messageDeque.size())+" messages for ledger "+ledgerHash+" from getPaxos");
             for(std::string messageRaw : messageDeque) {
                 if(messageRaw.length() > 0) {
-                log("messageRaw: "+messageRaw);
-                std::string sender = messageRaw.substr(0, messageRaw.find(":"));
-                std::string message = messageRaw.substr(messageRaw.find(":")+1);
-                htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
+                    std::string sender = messageRaw.substr(0, messageRaw.find(":"));
+                    std::string message = messageRaw.substr(messageRaw.find(":")+1);
+                    htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
                 }
             }
-            log("getPaxos: Returning formatted messages from getPaxos");
+            log("getPaxos: Returning formatted messages for ledger "+ledgerHash+" from getPaxos");
+            return htmlMsgs;
         } else {
             log("getPaxos: no messages to display!");
             return "<p>No posts yet.</p>";
         }
-    return htmlMsgs;
     } catch (rpc::timeout &t) {
         log("getPaxos: getPaxos call timed out! Returning error message");
         return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
     }
 }
 
-void sendNewMessage(std::string message) {
+std::tuple<std::string, std::string> getLedgerNameFromHash(std::string targetLedgerHash) {
+    std::string htmlMsgs = "";
     std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
     rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
     paxosServerClient.set_timeout(5000);
     try {
-        log("putPaxos: Putting new message into ledger via paxosServer: "+targetPaxosServer);
-        resp_tuple resp = paxosServerClient.call("putPaxos", "ledger", "samecolumn", message).as<resp_tuple>();
+        log("getPaxos: Getting name of ledger with hash "+targetLedgerHash+" from paxosServer: "+targetPaxosServer);
+        // writing listOfLedgers to an arbitrary column so that it doesn't clash w/ a listOfLedgers ledger if a user
+        // makes one
+        resp_tuple resp = paxosServerClient.call("getPaxos", "listOfLedgers", "anythingbut_samecolumn").as<resp_tuple>();
+        if(kvsResponseStatusCode(resp) == 0) {
+            std::string allLedgers = kvsResponseMsg(resp);
+            std::deque<std::string> ledgerDeque = split(allLedgers, "\n");
+            log("getPaxos: Got "+std::to_string(ledgerDeque.size())+" ledgers from getPaxos");
+            for(std::string ledgerRaw : ledgerDeque) {
+                if(ledgerRaw.length() > 0) {
+                    std::string ledgerCreator = ledgerRaw.substr(0, ledgerRaw.find(","));
+                    ledgerRaw = ledgerRaw.substr(ledgerRaw.find(",")+1);
+                    std::string ledgerHash = ledgerRaw.substr(0, ledgerRaw.find(","));
+                    std::string ledgerName = ledgerRaw.substr(ledgerRaw.find(",")+1);
+                    if(ledgerHash.compare(targetLedgerHash) == 0) {
+                        return std::make_tuple(ledgerCreator, ledgerName);
+                    }
+                }
+            }
+            log("getPaxos: Returning formatted list of all ledgers from getPaxos");
+        } else {
+            log("getPaxos: no messages to display!");
+        }
+        return std::make_tuple("","");
+    } catch (rpc::timeout &t) {
+        log("getPaxos: getPaxos call timed out! Returning error message");
+        return std::make_tuple("","");
+    }
+}
+
+std::string displayAllLedgers() {
+    std::string htmlMsgs = "";
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("getPaxos: Getting all ledgers from paxosServer: "+targetPaxosServer);
+        // writing listOfLedgers to an arbitrary column so that it doesn't clash w/ a listOfLedgers ledger if a user
+        // makes one
+        resp_tuple resp = paxosServerClient.call("getPaxos", "listOfLedgers", "anythingbut_samecolumn").as<resp_tuple>();
+        if(kvsResponseStatusCode(resp) == 0) {
+            std::string allLedgers = kvsResponseMsg(resp);
+            std::deque<std::string> ledgerDeque = split(allLedgers, "\n");
+            log("getPaxos: Got "+std::to_string(ledgerDeque.size())+" ledgers from getPaxos");
+            for(std::string ledgerRaw : ledgerDeque) {
+                if(ledgerRaw.length() > 0) {
+                std::string ledgerCreator = ledgerRaw.substr(0, ledgerRaw.find(","));
+                ledgerRaw = ledgerRaw.substr(ledgerRaw.find(",")+1);
+                std::string ledgerHash = ledgerRaw.substr(0, ledgerRaw.find(","));
+                std::string ledgerName = ledgerRaw.substr(ledgerRaw.find(",")+1);
+                htmlMsgs += "<p><strong>"+ledgerCreator+":</strong> "+ledgerName+"<a href=/discuss/"+ledgerHash+">Link</a></p>";
+                }
+            }
+            log("getPaxos: Returning formatted list of all ledgers from getPaxos");
+            return htmlMsgs;
+        } else {
+            log("getPaxos: no messages to display!");
+            return "<p>No ledgers created yet.</p>";
+        }
+    } catch (rpc::timeout &t) {
+        log("getPaxos: getPaxos call timed out! Returning error message");
+        return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
+    }
+}
+
+void createNewLedger(std::string ledgerInfo) {
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("putPaxos: Creating new ledger "+ledgerInfo+" via paxosServer: "+targetPaxosServer);
+        resp_tuple resp = paxosServerClient.call("putPaxos", "listOfLedgers", "anythingbut_samecolumn", ledgerInfo).as<resp_tuple>();
+        log("putPaxos returned with Status Code: "+std::to_string(kvsResponseStatusCode(resp)));
+        log("putPaxos returned with Value: "+kvsResponseMsg(resp));
+        log("putPaxos returned with value length: "+std::to_string(kvsResponseMsg(resp).length()));
+    } catch (rpc::timeout &t) {
+        log("putPaxos: putPaxos call timed out!");
+    }
+    log("putPaxos: complete");
+}
+
+void sendNewMessage(std::string targetLedger, std::string message) {
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("putPaxos: Putting new message into ledger "+targetLedger+" via paxosServer: "+targetPaxosServer);
+        resp_tuple resp = paxosServerClient.call("putPaxos", targetLedger, "samecolumn", message).as<resp_tuple>();
         log("putPaxos returned with Status Code: "+std::to_string(kvsResponseStatusCode(resp)));
         log("putPaxos returned with Value: "+kvsResponseMsg(resp));
         log("putPaxos returned with value length: "+std::to_string(kvsResponseMsg(resp).length()));
@@ -2144,18 +2229,30 @@ struct http_response processRequest(struct http_request &req) {
 				return resp;
 			}
         }
-	} else if (req.formData["newMessage"].size() > 0) {
+	} else if (req.formData["newMessage"].size() > 0 && req.formData["targetLedger"].size() > 0) {
         if(req.cookies.find("username") != req.cookies.end()) {
             std::string message = req.cookies["username"] +":"+req.formData["newMessage"];
             log("Sending new message via putPaxos: "+message);
             message = decodeURIComponent(message);
             message = decodeURIComponent(message);
-            sendNewMessage(message);
+            sendNewMessage(req.formData["targetLedger"], message);
+        }
+    } else if (req.formData["newLedger"].size() > 0 && req.formData["ledgerCreator"].size() > 0) {
+        if(req.cookies.find("username") != req.cookies.end()) {
+            std::string ledgerCreator = req.formData["ledgerCreator"];
+            std::string ledgerName = req.formData["newLedger"];
+            ledgerName = decodeURIComponent(ledgerName);
+            ledgerName = decodeURIComponent(ledgerName);
+            std::string ledgerHash = generateStringHash(ledgerName);
+            std::string ledgerInfo = ledgerCreator+","+ledgerHash+","+ledgerName;
+            log("Creating a new ledger via putPaxos: "+ledgerInfo);
+            createNewLedger(ledgerInfo);
         }
     }
 
 
 	if (req.filepath.compare("/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") == req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -2264,6 +2361,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/dashboard";
 		}
 	} else if (req.filepath.compare("/login") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") == req.cookies.end()) {
 			if (req.formData["username"] == "") {
 				resp.status_code = 307;
@@ -2309,6 +2407,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/dashboard";
 		}
 	} else if (req.filepath.compare("/signup") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") == req.cookies.end()) {
 			bool valid = true;
 			for (int i = 0; i < req.formData["username"].size(); i++) {
@@ -2367,6 +2466,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/dashboard";
 		}
 	} else if (req.filepath.compare("/dashboard") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -2398,6 +2498,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare(0, 7, "/files/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.filepath.length() > 7) {
 				std::string filepath = req.filepath.substr(7);
@@ -2469,6 +2570,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/logout") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.cookies.erase("username");
 		}
@@ -2481,6 +2583,7 @@ struct http_response processRequest(struct http_request &req) {
 		resp.status = "Temporary Redirect";
 		resp.headers["Location"] = "/";
 	} else if (req.filepath.compare("/mailbox") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -2574,6 +2677,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/compose") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -2691,6 +2795,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/email") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.formData.find("header") != req.formData.end()) {
 				resp.status_code = 200;
@@ -2834,6 +2939,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/delete") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.formData.find("header") != req.formData.end()) {
 				std::string header = decodeURIComponent(req.formData["header"]);
@@ -2890,6 +2996,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/send") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.formData.find("to") != req.formData.end()) {
 				std::string to = decodeURIComponent(req.formData["to"]);
@@ -3038,6 +3145,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/admin") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			time_t now = time(NULL);
@@ -3124,6 +3232,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.content = message;
 		}
 	} else if (req.filepath.compare("/change-password") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -3192,6 +3301,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/change") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.formData["old"].size() == 0) {
 				resp.status_code = 307;
@@ -3246,6 +3356,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare(0, 12, "/stopserver/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
@@ -3268,6 +3379,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/admin";
 		}
 	} else if (req.filepath.compare(0, 14, "/resumeserver/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
@@ -3294,6 +3406,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/admin";
 		}
 	} else if (req.filepath.compare(0, 12, "/serverinfo/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
@@ -3409,6 +3522,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.content = message;
 		}
 	} else if (req.filepath.compare(0, 12, "/adminfiles/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
@@ -3437,6 +3551,7 @@ struct http_response processRequest(struct http_request &req) {
 			}
 		}
 	} else if (req.filepath.compare("/refreshadmincache") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			std::string redirect = my_admin_console_cache.last_accessed_for;
@@ -3448,8 +3563,15 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/serverinfo/1/" + redirect;
 		}
-	} else if (req.filepath.compare("/discuss") == 0) {
+	} else if (req.filepath.substr(0,8).compare("/discuss") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
+            if(req.filepath.length() > 10 && req.filepath.substr(0, 9).compare("/discuss/") == 0) {
+                // View specific ledger
+                std::string ledgerHash = req.filepath.substr(9);
+                std::tuple<std::string, std::string> ledgerInfo = getLedgerNameFromHash(ledgerHash);
+                std::string ledgerCreator = std::get<0>(ledgerInfo);
+                std::string ledgerName = std::get<1>(ledgerInfo);
 				resp.status = "OK";
 				resp.status_code = 200;
 				resp.headers["Content-type"] = "text/html";
@@ -3459,15 +3581,16 @@ struct http_response processRequest(struct http_request &req) {
                 "<script>function encodeMessage() {document.getElementsByName(\"newMessage\")[0].value = encodeURIComponent(document.getElementsByName(\"newMessage\")[0].value); return true;}</script>"
                 "<div style=\"width:50%;margin:auto\">"
                     "<div style=\"justify-content:center; align-items:center;display:flex;\">"
-                        "<h3>PennCloud Discussion Wall</h3>"
+                        "<h3>"+ledgerName+" ("+ledgerCreator+")</h3>"
                     "</div>"
                     "<div style=\"height:75%;overflow-y:auto;\">";
-                message += displayAllMessages();
+                message += displayAllLedgerMessages(ledgerHash);
                 message +=
                     "</div>"
                     "<div style=\"justify-content:center; align-items:center;display:flex;\">"
-                    "<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss\" method=\"post\">"
+                    "<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss/"+ledgerHash+"\" method=\"post\">"
                         "<div style=\"display: flex; flex-direction: row;\">"
+							"<input type=\"hidden\" name=\"targetLedger\" value=\""+ ledgerHash + "\"/>"
 							"<label for=\"newMessage\"></label><input required type=\"text\" name=\"newMessage\" placeholder=\"Write a post\">"
                             "<input type=\"submit\" name=\"submit\" value=\"Submit\" />"
                         "</div>"
@@ -3477,12 +3600,43 @@ struct http_response processRequest(struct http_request &req) {
 				message += "</body></html>";
 				resp.headers["Content-length"] = std::to_string(message.size());
 				resp.content = message;
+            } else {
+                // View list of ledgers
+				resp.status = "OK";
+				resp.status_code = 200;
+				resp.headers["Content-type"] = "text/html";
+				std::string message = "<html><body>";
+                message+=
+                "<script>function encodeLedger() {document.getElementsByName(\"newLedger\")[0].value = encodeURIComponent(document.getElementsByName(\"newLedger\")[0].value); return true;}</script>"
+                "<div style=\"width:50%;margin:auto\">"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                        "<h3>PennCloud Forums List</h3>"
+                    "</div>"
+                    "<div>";
+                message += displayAllLedgers();
+                message +=
+                    "</div>"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                    "<form accept-charset=\"utf-8\" onsubmit=\"return encodeLedger();\" action=\"/discuss\" method=\"post\">"
+                        "<div style=\"display: flex; flex-direction: row;\">"
+							"<input type=\"hidden\" name=\"ledgerCreator\" value=\""+ req.cookies["username"] + "\"/>"
+							"<label for=\"newLedger\"></label><input required type=\"text\" name=\"newLedger\" placeholder=\"Create a new forum\">"
+                            "<input type=\"submit\" name=\"submit\" value=\"Create\" />"
+                        "</div>"
+                    "</form>"
+                    "</div>"
+                "</div>";
+				message += "</body></html>";
+				resp.headers["Content-length"] = std::to_string(message.size());
+				resp.content = message;
+            }
 		} else {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
 	} else {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
