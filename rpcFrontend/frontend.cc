@@ -2779,7 +2779,7 @@ struct http_response processRequest(struct http_request &req) {
 							"<form action=\"/files/" + userRootDir
 							+ "\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-box-open\"></i><div class=\"button-text\">PennDrive</div></div></button></form>"
 									"<form action=\"/discuss\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-users\"></i><div class=\"button-text\">PennDiscuss</div></div></button></form>"
-									"<form action=\"/chat\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-mail-bulk\"></i><div class=\"button-text\">PennChat</div></div></button></form>"
+									"<form action=\"/chat\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-comments\"></i><div class=\"button-text\">PennChat</div></div></button></form>"
 									"</div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
@@ -4037,7 +4037,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
-	} else if (req.filepath.compare(0, 5, "/chat") == 0) {
+	} else if (req.filepath.compare("/chat") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -4049,32 +4049,54 @@ struct http_response processRequest(struct http_request &req) {
 			std::string chatroom;
 			std::string display = "";
 			if (getRespMsg != "") {
-				display += "<ul>";
+				display += "";
 				while (std::getline(ss, chatroom, '\n')) {
+
 					auto tokens = split(chatroom, "\t");
 					std::string chatname = tokens.at(0), owner = tokens.at(1),
 							chathash = tokens.at(2);
-					display += "<li><a href=\"/joinchat/" + owner + "/"
-							+ chathash + "\">" + chatname + "</a></li>";
+					display +=
+							"<div style=\"cursor: pointer;\" onclick=\"window.location='/joinchat/"
+									+ owner + "/" + chathash
+									+ "';\" class=\"ledger-item\"><div class=\"ledger-info\">"
+									+ escape(chatname) + "</div></div>";
 					group_to_clients[chathash].insert(req.cookies["username"]);
 				}
-				display += "</ul>";
+				display += "";
 			}
 			if (display == "") {
 				display +=
-						"<ul style=\"border-top: 1px solid black; padding:15px; margin: 0;\">No chat rooms yet!</ul>";
+						"<div class=\"ledger-item\"><div class=\"ledger-info\">"
+								"No chat rooms yet!" "</div></div>";
 			}
-			display +=
-					"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>";
 			resp.content =
-					"<head><meta charset=\"UTF-8\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
-							"<form action=\"/createchat\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Create Chat Room\"/>"
-							"<label for=\"Members\">Members</label><input required type=\"text\" name=\"members\"/>"
-							"</form></div>" "<div style=\"padding-left: 15px;padding-bottom: 5px;padding-top: 10px; display:flex; flex-direction: row;\">"
-							"</div>" + display + "</body></html>";
+					"<html><head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1l3sfLH9I09uAtIIDNiQt_6I710SRu3zO\"></head><body><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/change-password\" method=\"POST\"><button style=\"line-height: 24px;\" type = \"submit\" >Change Password</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button style=\"line-height: 24px;\"  type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
+							"<div class=\"main-content\">"
+							"<div class=\"discuss-header\">"
+							"<form action=\"/chat\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><div class=\"button-text\">PennChat</div></div></button></form>"
+							"</div>"
+							"<script>if ( window.history.replaceState ) {window.history.replaceState( null, null, window.location.href );}</script>"
+
+							"<script>function encodeLedger() {document.getElementsByName(\"members\")[0].value = encodeURIComponent(document.getElementsByName(\"members\")[0].value); return true;}</script>"
+
+							"<div class=\"discuss-new\">"
+							"<form accept-charset=\"utf-8\" onsubmit=\"return encodeLedger();\" action=\"/createchat\" method=\"post\">"
+							"<div class=\"discuss-new-row\">"
+							"<label for=\"members\"></label><input required type=\"text\" name=\"members\" placeholder=\"New Chat Members...\">"
+							"<input type=\"submit\" name=\"submit\" value=\"Create\" />"
+							"</div>"
+							"</form>"
+							"</div>"
+							"<div class=\"discuss-content\">" + display
+							+ "</div></div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -4086,8 +4108,17 @@ struct http_response processRequest(struct http_request &req) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			// Get stuff from form
 			std::string owner = req.cookies["username"];
-			std::string members_raw = owner + "; "
-					+ decodeURIComponent(req.formData["members"]);
+			std::string m = decodeURIComponent(req.formData["members"]);
+			m = decodeURIComponent(m);
+			size_t index = 0;
+			while (true) {
+				index = m.find("%D", index);
+				if (index == std::string::npos)
+					break;
+				m.replace(index, 2, "\r");
+				index += 2;
+			}
+			std::string members_raw = owner + "; " + m;
 			std::replace(members_raw.begin(), members_raw.end(), '+', ' ');
 			std::deque < std::string > members = split(members_raw, ";");
 			std::string chathash = generateStringHash(
@@ -4098,11 +4129,11 @@ struct http_response processRequest(struct http_request &req) {
 
 			for (std::string m : members) {
 				std::string member = trim(m);
-				if(member.compare("") == 0) continue;
+				if (member.compare("") == 0)
+					continue;
 				member[0] = std::toupper(member[0]);
 
-				for (std::size_t i = 1; i < member.length();
-						++i)
+				for (std::size_t i = 1; i < member.length(); ++i)
 					member[i] = std::tolower(member[i]);
 				std::string cont = members_raw + "\t" + owner + "\t" + chathash
 						+ "\n";
@@ -4114,7 +4145,8 @@ struct http_response processRequest(struct http_request &req) {
 				while (resp_code != 0 && (timeout_count++) < 10) {
 					resp_tuple raw_message = getKVS(req.cookies["sessionid"],
 							member, "chats");
-					if(kvsResponseStatusCode(raw_message) != 0) break;
+					if (kvsResponseStatusCode(raw_message) != 0)
+						break;
 					old_message = kvsResponseMsg(raw_message);
 					std::string new_message = old_message + my_message;
 					if (old_message.find(my_message) != std::string::npos)
@@ -5089,7 +5121,8 @@ int main(int argc, char *argv[]) {
 		sockaddr_in internal_server;
 		internal_server.sin_family = AF_INET;
 		internal_server.sin_port = htons(internal_port_no);
-		internal_server.sin_addr.s_addr = inet_addr(local_internal_address.data());
+		internal_server.sin_addr.s_addr = inet_addr(
+				local_internal_address.data());
 		frontend_internal_list.push_back(internal_server);
 
 	}
