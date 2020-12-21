@@ -2655,7 +2655,7 @@ struct http_response processRequest(struct http_request &req) {
 				} else {
 					resp.status_code = 307;
 					resp.status = "Temporary Redirect";
-					if (req.formData["username"].compare("admin") != 0) {
+					if (req.formData["username"].compare("Admin") != 0) {
 						resp.headers["Location"] = "/dashboard";
 					} else {
 						resp.headers["Location"] = "/admin";
@@ -3500,7 +3500,7 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare("/admin") == 0) {
 		log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
-				&& req.cookies["username"].compare("admin") == 0) {
+				&& req.cookies["username"].compare("Admin") == 0) {
 			time_t now = time(NULL);
 			log("now" + std::to_string(now));
 			requstStateFromAllServers();
@@ -3711,7 +3711,7 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare(0, 12, "/stopserver/") == 0) {
 		log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
-				&& req.cookies["username"].compare("admin") == 0) {
+				&& req.cookies["username"].compare("Admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
 			log("SUSPICION: " + tokens[0]);
 			std::string target = trim(tokens.back());
@@ -3734,7 +3734,7 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare(0, 14, "/resumeserver/") == 0) {
 		log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
-				&& req.cookies["username"].compare("admin") == 0) {
+				&& req.cookies["username"].compare("Admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
 			log("SUSPICION: " + tokens[0]);
 			std::string target = trim(tokens.back());
@@ -3761,7 +3761,7 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare(0, 12, "/serverinfo/") == 0) {
 		log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
-				&& req.cookies["username"].compare("admin") == 0) {
+				&& req.cookies["username"].compare("Admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
 			std::string target = trim(tokens.back());
 			tokens.pop_back();
@@ -3877,7 +3877,7 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare(0, 12, "/adminfiles/") == 0) {
 		log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
-				&& req.cookies["username"].compare("admin") == 0) {
+				&& req.cookies["username"].compare("Admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
 			std::string target = trim(tokens.back());
 			tokens.pop_back();
@@ -3906,7 +3906,7 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare("/refreshadmincache") == 0) {
 		log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
-				&& req.cookies["username"].compare("admin") == 0) {
+				&& req.cookies["username"].compare("Admin") == 0) {
 			std::string redirect = my_admin_console_cache.last_accessed_for;
 			my_admin_console_cache.rowToAllItsCols.clear();
 			my_admin_console_cache.last_modified = time(NULL);
