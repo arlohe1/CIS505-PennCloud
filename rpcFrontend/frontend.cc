@@ -3552,8 +3552,11 @@ struct http_response processRequest(struct http_request &req) {
 				log(
 						"Last modified: "
 								+ std::to_string(it->second.last_modified));
+				bool stopped_by_console =
+						std::find(my_admin_console_cache.stopped_servers.begin(),
+								my_admin_console_cache.stopped_servers.end(), it->first) == my_admin_console_cache.stopped_servers.end();
 				std::string status =
-						(it->second.last_modified >= now) ?
+						(it->second.last_modified >= now || !stopped_by_console) ?
 								"Active" : "Not Responding";
 				if (this_server_state.http_address.compare(it->first) != 0) {
 					message += "<l1>" + it->first;
@@ -3584,11 +3587,14 @@ struct http_response processRequest(struct http_request &req) {
 			log("ADMIN all nodes");
 			for (auto node : allBackendNodes) {
 				log(std::get < 2 > (node));
+				bool stopped_by_console =
+						std::find(my_admin_console_cache.stopped_servers.begin(),
+								my_admin_console_cache.stopped_servers.end(), std::get < 3 > (node)) == my_admin_console_cache.stopped_servers.end();
 				std::string status =
 						(std::find(activeBackendNodesCollection.begin(),
 								activeBackendNodesCollection.end(),
 								std::get < 2 > (node))
-								!= activeBackendNodesCollection.end()) ?
+								!= activeBackendNodesCollection.end() || !stopped_by_console) ?
 								"Active" : "Not Responding";
 				message += "<l1>" + std::get < 2 > (node);
 				message += " Status: " + status;
