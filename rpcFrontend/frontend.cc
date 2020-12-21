@@ -96,6 +96,9 @@ std::map<int, std::deque<server_tuple>> clusterToServerListMap;
 
 using resp_tuple = std::tuple<int, std::string>;
 
+std::deque<std::string> paxosServers; 
+std::map<std::string, std::string> paxosServersHeartbeatMap;
+
 /********************** HTTP data structures *********************/
 
 struct http_session {
@@ -467,6 +470,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 	while (origServerIdx != currServerIdx) {
 		server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
 		std::string targetServer = std::get < 0 > (serverInfo);
+        /*
 		if (!checkIfNodeIsAlive(serverInfo)) {
 			// Resetting timeout for new server
 			timeout = 2500; // 2500 milliseconds
@@ -477,6 +481,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 							+ newlyChosenServerAddr);
 			continue;
 		}
+        */
 		int serverPortNo = getPortNoFromString(targetServer);
 		std::string servAddress = getAddrFromString(targetServer);
 		rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -484,7 +489,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 		kvsRPCClient.set_timeout(timeout);
 		try {
 			if (kvsFuncType.compare("putKVS") == 0) {
-                log("KVS PUT VAL LENGTH:" + std::to_string(value.length()));
+				log("KVS PUT VAL LENGTH:" + std::to_string(value.length()));
 				log(
 						"KVS PUT with kvServer " + targetServer + ": " + row
 								+ ", " + column + ", " + value);
@@ -513,7 +518,9 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 					kvsFuncType + " Response Status: "
 							+ std::to_string(kvsResponseStatusCode(resp)));
 			log(kvsFuncType + " Response Value: " + kvsResponseMsg(resp));
-            log(kvsFuncType +" Response Value Length: " + std::to_string(kvsResponseMsg(resp).length()));
+			log(
+					kvsFuncType + " Response Value Length: "
+							+ std::to_string(kvsResponseMsg(resp).length()));
 			return resp;
 		} catch (rpc::timeout &t) {
 			log(
@@ -557,7 +564,6 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 resp_tuple getKVS(std::string session_id, std::string row, std::string column) {
 	return kvsFunc("getKVS", session_id, row, column, "", "");
 }
-
 
 resp_tuple putKVS(std::string session_id, std::string row, std::string column,
 		std::string value) {
@@ -1741,7 +1747,141 @@ void createRootDirForNewUser(struct http_request req, std::string sessionid) {
 }
 
 /***************************** End storage service functions ************************/
+/***************************** Start Discussion forum functions ************************/
+std::string displayAllLedgerMessages(std::string ledgerHash) {
+    std::string htmlMsgs = "";
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("getPaxos: Getting messages for ledger "+ledgerHash+" from paxosServer: "+targetPaxosServer);
+        resp_tuple resp = paxosServerClient.call("getPaxos", ledgerHash, "samecolumn").as<resp_tuple>();
+        if(kvsResponseStatusCode(resp) == 0) {
+            std::string allMessages = kvsResponseMsg(resp);
+            std::deque<std::string> messageDeque = split(allMessages, "\n");
+            log("getPaxos: Got "+std::to_string(messageDeque.size())+" messages for ledger "+ledgerHash+" from getPaxos");
+            for(std::string messageRaw : messageDeque) {
+                if(messageRaw.length() > 0) {
+                    std::string sender = messageRaw.substr(0, messageRaw.find(":"));
+                    std::string message = messageRaw.substr(messageRaw.find(":")+1);
+                    htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
+                }
+            }
+            log("getPaxos: Returning formatted messages for ledger "+ledgerHash+" from getPaxos");
+            return htmlMsgs;
+        } else {
+            log("getPaxos: no messages to display!");
+            return "<p>No posts yet.</p>";
+        }
+    } catch (rpc::timeout &t) {
+        log("getPaxos: getPaxos call timed out! Returning error message");
+        return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
+    }
+}
 
+std::tuple<std::string, std::string> getLedgerNameFromHash(std::string targetLedgerHash) {
+    std::string htmlMsgs = "";
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("getPaxos: Getting name of ledger with hash "+targetLedgerHash+" from paxosServer: "+targetPaxosServer);
+        // writing listOfLedgers to an arbitrary column so that it doesn't clash w/ a listOfLedgers ledger if a user
+        // makes one
+        resp_tuple resp = paxosServerClient.call("getPaxos", "listOfLedgers", "anythingbut_samecolumn").as<resp_tuple>();
+        if(kvsResponseStatusCode(resp) == 0) {
+            std::string allLedgers = kvsResponseMsg(resp);
+            std::deque<std::string> ledgerDeque = split(allLedgers, "\n");
+            log("getPaxos: Got "+std::to_string(ledgerDeque.size())+" ledgers from getPaxos");
+            for(std::string ledgerRaw : ledgerDeque) {
+                if(ledgerRaw.length() > 0) {
+                    std::string ledgerCreator = ledgerRaw.substr(0, ledgerRaw.find(","));
+                    ledgerRaw = ledgerRaw.substr(ledgerRaw.find(",")+1);
+                    std::string ledgerHash = ledgerRaw.substr(0, ledgerRaw.find(","));
+                    std::string ledgerName = ledgerRaw.substr(ledgerRaw.find(",")+1);
+                    if(ledgerHash.compare(targetLedgerHash) == 0) {
+                        return std::make_tuple(ledgerCreator, ledgerName);
+                    }
+                }
+            }
+            log("getPaxos: Returning formatted list of all ledgers from getPaxos");
+        } else {
+            log("getPaxos: no messages to display!");
+        }
+        return std::make_tuple("","");
+    } catch (rpc::timeout &t) {
+        log("getPaxos: getPaxos call timed out! Returning error message");
+        return std::make_tuple("","");
+    }
+}
+
+std::string displayAllLedgers() {
+    std::string htmlMsgs = "";
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("getPaxos: Getting all ledgers from paxosServer: "+targetPaxosServer);
+        // writing listOfLedgers to an arbitrary column so that it doesn't clash w/ a listOfLedgers ledger if a user
+        // makes one
+        resp_tuple resp = paxosServerClient.call("getPaxos", "listOfLedgers", "anythingbut_samecolumn").as<resp_tuple>();
+        if(kvsResponseStatusCode(resp) == 0) {
+            std::string allLedgers = kvsResponseMsg(resp);
+            std::deque<std::string> ledgerDeque = split(allLedgers, "\n");
+            log("getPaxos: Got "+std::to_string(ledgerDeque.size())+" ledgers from getPaxos");
+            for(std::string ledgerRaw : ledgerDeque) {
+                if(ledgerRaw.length() > 0) {
+                std::string ledgerCreator = ledgerRaw.substr(0, ledgerRaw.find(","));
+                ledgerRaw = ledgerRaw.substr(ledgerRaw.find(",")+1);
+                std::string ledgerHash = ledgerRaw.substr(0, ledgerRaw.find(","));
+                std::string ledgerName = ledgerRaw.substr(ledgerRaw.find(",")+1);
+                htmlMsgs += "<p><strong>"+ledgerCreator+":</strong> "+ledgerName+"<a href=/discuss/"+ledgerHash+">Link</a></p>";
+                }
+            }
+            log("getPaxos: Returning formatted list of all ledgers from getPaxos");
+            return htmlMsgs;
+        } else {
+            log("getPaxos: no messages to display!");
+            return "<p>No ledgers created yet.</p>";
+        }
+    } catch (rpc::timeout &t) {
+        log("getPaxos: getPaxos call timed out! Returning error message");
+        return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
+    }
+}
+
+void createNewLedger(std::string ledgerInfo) {
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("putPaxos: Creating new ledger "+ledgerInfo+" via paxosServer: "+targetPaxosServer);
+        resp_tuple resp = paxosServerClient.call("putPaxos", "listOfLedgers", "anythingbut_samecolumn", ledgerInfo).as<resp_tuple>();
+        log("putPaxos returned with Status Code: "+std::to_string(kvsResponseStatusCode(resp)));
+        log("putPaxos returned with Value: "+kvsResponseMsg(resp));
+        log("putPaxos returned with value length: "+std::to_string(kvsResponseMsg(resp).length()));
+    } catch (rpc::timeout &t) {
+        log("putPaxos: putPaxos call timed out!");
+    }
+    log("putPaxos: complete");
+}
+
+void sendNewMessage(std::string targetLedger, std::string message) {
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("putPaxos: Putting new message into ledger "+targetLedger+" via paxosServer: "+targetPaxosServer);
+        resp_tuple resp = paxosServerClient.call("putPaxos", targetLedger, "samecolumn", message).as<resp_tuple>();
+        log("putPaxos returned with Status Code: "+std::to_string(kvsResponseStatusCode(resp)));
+        log("putPaxos returned with Value: "+kvsResponseMsg(resp));
+        log("putPaxos returned with value length: "+std::to_string(kvsResponseMsg(resp).length()));
+    } catch (rpc::timeout &t) {
+        log("putPaxos: putPaxos call timed out!");
+    }
+    log("putPaxos: complete");
+}
+/***************************** End Discussion forum functions ************************/
 /*********************** Http Util function **********************************/
 std::string generateSessionID() {
 	return generateStringHash(
@@ -1799,16 +1939,16 @@ void processMultiPart(struct http_request &req) {
 		}
 	}
 
-    /*
-	log("Results of multi-part processing: ");
-	log("Form data: ");
-	for (std::map<std::string, std::string>::iterator it = req.formData.begin();
-			it != req.formData.end(); it++) {
-		log(
-				"Key : " + it->first + " value : "
-						+ std::to_string((it->second).size()));
-	}
-    */
+	/*
+	 log("Results of multi-part processing: ");
+	 log("Form data: ");
+	 for (std::map<std::string, std::string>::iterator it = req.formData.begin();
+	 it != req.formData.end(); it++) {
+	 log(
+	 "Key : " + it->first + " value : "
+	 + std::to_string((it->second).size()));
+	 }
+	 */
 }
 
 void processForm(struct http_request &req) {
@@ -1825,14 +1965,14 @@ void processForm(struct http_request &req) {
 		req.formData[key] = value;
 	}
 
-    /*
-	log("Form data: ");
-	for (std::map<std::string, std::string>::iterator it = req.formData.begin();
-			it != req.formData.end(); it++) {
-		log("Key: " + it->first + " Value: " + it->second);
-	}
-	log("End form data");
-    */
+	/*
+	 log("Form data: ");
+	 for (std::map<std::string, std::string>::iterator it = req.formData.begin();
+	 it != req.formData.end(); it++) {
+	 log("Key: " + it->first + " Value: " + it->second);
+	 }
+	 log("End form data");
+	 */
 }
 
 void processCookies(struct http_request &req) {
@@ -2066,6 +2206,7 @@ std::string escape(std::string input) {
 
 struct http_response processRequest(struct http_request &req) {
 	struct http_response resp;
+    log("Entering process request");
 	for (std::map<std::string, std::string>::iterator it = req.cookies.begin();
 			it != req.cookies.end(); it++) {
 		resp.cookies[it->first] = it->second;
@@ -2202,19 +2343,41 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/files/" + target;
 				return resp;
 			}
-		}
-	}
+        }
+	} else if (req.formData["newMessage"].size() > 0 && req.formData["targetLedger"].size() > 0) {
+        if(req.cookies.find("username") != req.cookies.end()) {
+            std::string message = req.cookies["username"] +":"+req.formData["newMessage"];
+            log("Sending new message via putPaxos: "+message);
+            message = decodeURIComponent(message);
+            message = decodeURIComponent(message);
+            sendNewMessage(req.formData["targetLedger"], message);
+        }
+    } else if (req.formData["newLedger"].size() > 0 && req.formData["ledgerCreator"].size() > 0) {
+        if(req.cookies.find("username") != req.cookies.end()) {
+            std::string ledgerCreator = req.formData["ledgerCreator"];
+            std::string ledgerName = req.formData["newLedger"];
+            ledgerName = decodeURIComponent(ledgerName);
+            ledgerName = decodeURIComponent(ledgerName);
+            std::string ledgerHash = generateStringHash(ledgerName);
+            std::string ledgerInfo = ledgerCreator+","+ledgerHash+","+ledgerName;
+            log("Creating a new ledger via putPaxos: "+ledgerInfo);
+            createNewLedger(ledgerInfo);
+        }
+    }
+
 
 	if (req.filepath.compare("/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") == req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
-			std::string test = "";
+			std::string test = "<div class=\"error\"></div>";
 			bool signuperr = false;
 			if (req.cookies.find("error") != req.cookies.end()) {
-				test = "<p style=\"color:red\";>" + req.cookies["error"]
-						+ "</p><br/>";
+				test =
+						"<div class=\"error\" style=\"color:red; text-align:center;\";>"
+								+ req.cookies["error"] + "</div>";
 				resp.cookies.erase("error");
 				if (req.cookies.find("signuperr") != req.cookies.end()) {
 					signuperr = true;
@@ -2222,49 +2385,89 @@ struct http_response processRequest(struct http_request &req) {
 				}
 			}
 			resp.content =
-					"<head><meta charset=\"UTF-8\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
-							"center;\">" + test
-							+ "<form id=\"login\" style=\"flex-direction: column; margin-bottom: 15px; display:"
-							+ (signuperr ? "none" : "flex")
-							+ ";\" action=\"/login\" enctype=\"multipart/form-data\" method=\"POST\">"
-									"<input style=\"margin-bottom: 15px;\" required placeholder=\"Username\" name=\"username\" type=\"text\"/><br/>"
-									"<input placeholder=\"Password\" style=\"margin-bottom: 15px;\" required name=\"password\" "
-									"type=\"password\"/><br/>"
-									"<input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Log In\"><br/>"
-									"</form>"
-									"<form id=\"signup\" style=\"flex-direction: column; margin-bottom: 15px; display:"
-							+ (signuperr ? "flex" : "none")
-							+ ";\" action=\"/signup\" "
-									"enctype=\"multipart/form-data\" "
-									"method=\"POST\">"
-									"<input style=\"margin-bottom: 15px;\" placeholder=\"Username\"  required name=\"username\" type=\"text\"/><br/>"
-									"<input style=\"margin-bottom: 15px;\" placeholder=\"Password\"  required name=\"password\" "
-									"type=\"password\"/><br/>"
-									"<input style=\"margin-bottom: 15px;\" placeholder=\"Confirm Password\" required "
-									"name=\"confirm_password\" "
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+							"<html>"
+							"<body><div style=\"display:flex; flex-direction: row;\">"
+							"<div class=\"heading-wrapper\"><div class=\"heading\">PennCloud</div><div class=\"subtitle\">Increase your productivity and safely store what matters most with PennCloud.</div></div>"
+							"<div style=\"display:flex; flex-direction: column;\">"
+							+ test + "<div class=\"form-structor\">"
+									"<div class=\"signup"
+							+ (signuperr ? " slide-up" : "")
+							+ "\">"
+									"<h2 class=\"form-title\" id=\"signup\"><span>or</span>Sign Up</h2>"
+									"<form id=\"signupF\" action=\"/signup\" enctype=\"multipart/form-data\" method=\"POST\">"
+									"<div class=\"form-holder\">"
+									"<input required class=\"input\" placeholder=\"Username\" name=\"username\" type=\"text\"/>"
+									"<input placeholder=\"Password\" class=\"input\"  required name=\"password\""
 									"type=\"password\"/>"
-									"<br/><input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Sign Up\"><br/>"
+									"<input placeholder=\"Confirm Password\" class=\"input\"  required name=\"confirm_password\""
+									"type=\"password\"/>"
+									"</div>"
+									"<input  class=\"submit-btn\" type=\"submit\" name=\"submit\" value=\"Sign Up\">"
 									"</form>"
-									"<br/><button style=\"line-height: 24px;\" id=\"switchButton\" type=\"button\">"
-							+ (signuperr ?
-									"Have an account? Log in!" :
-									"Don't have an account? Sign up!")
-							+ "</button>"
-									"<script>"
-									"var switchButton=document.getElementById('switchButton');"
-									"switchButton.onclick=function(){var "
-									"loginForm=document.getElementById('login');switchButton.innerHTML=(loginForm.style.display "
-									"== "
-									"'none') ? \"Don't have an account? Sign up!\" : 'Have an account? Log in!';"
-									"loginForm.style.display=(loginForm.style.display == 'none') ? 'block' : 'none';"
-									"var "
-									"signupForm=document.getElementById('signup');signupForm.style.display=(signupForm.style."
-									"display "
-									"== 'none') ? 'block' : 'none';}"
-									"</script>"
-									"</body></html>";
+									"</div>"
+									"<div class=\"login"
+							+ (signuperr ? "" : " slide-up")
+							+ "\">"
+									"<div class=\"center\">"
+									"<h2 class=\"form-title\" id=\"login\"><span>or</span>Log In</h2>"
+									"<form id=\"loginF\" action=\"/login\" enctype=\"multipart/form-data\" method=\"POST\">"
+									"<div class=\"form-holder\">"
+									"<input required class=\"input\" placeholder=\"Username\" name=\"username\" type=\"text\"/>"
+									"<input placeholder=\"Password\" class=\"input\"  required name=\"password\""
+									"type=\"password\"/>"
+									"</div>"
+									"<input  class=\"submit-btn\" type=\"submit\" name=\"submit\" value=\"Log In\">"
+									"</form>"
+									"</div>"
+									"</div>"
+									"</div>" "<div class=\"error\"></div>"
+									"</div>"
+									"</body>"
+									"<script type=\"text/javascript\" src=\"https://drive.google.com/uc?export=view&id=1Z08NGbZZz6WmAZocW6Oi_BR1hjCAzIMn\"></script>"
+									/*"<body "
+									 "style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
+									 "center;\">" + test
+									 + "<form id=\"login\" style=\"flex-direction: column; margin-bottom: 15px; display:"
+									 + (signuperr ? "none" : "flex")
+									 + ";\" action=\"/login\" enctype=\"multipart/form-data\" method=\"POST\">"
+									 "<input style=\"margin-bottom: 15px;\" required placeholder=\"Username\" name=\"username\" type=\"text\"/><br/>"
+									 "<input placeholder=\"Password\" style=\"margin-bottom: 15px;\" required name=\"password\" "
+									 "type=\"password\"/><br/>"
+									 "<input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Log In\"><br/>"
+									 "</form>"
+									 "<form id=\"signup\" style=\"flex-direction: column; margin-bottom: 15px; display:"
+									 + (signuperr ? "flex" : "none")
+									 + ";\" action=\"/signup\" "
+									 "enctype=\"multipart/form-data\" "
+									 "method=\"POST\">"
+									 "<input style=\"margin-bottom: 15px;\" placeholder=\"Username\"  required name=\"username\" type=\"text\"/><br/>"
+									 "<input style=\"margin-bottom: 15px;\" placeholder=\"Password\"  required name=\"password\" "
+									 "type=\"password\"/><br/>"
+									 "<input style=\"margin-bottom: 15px;\" placeholder=\"Confirm Password\" required "
+									 "name=\"confirm_password\" "
+									 "type=\"password\"/>"
+									 "<br/><input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Sign Up\"><br/>"
+									 "</form>"
+									 "<br/><button style=\"line-height: 24px;\" id=\"switchButton\" type=\"button\">"
+									 + (signuperr ?
+									 "Have an account? Log in!" :
+									 "Don't have an account? Sign up!")
+									 + "</button>"
+									 "<script>"
+									 "var switchButton=document.getElementById('switchButton');"
+									 "switchButton.onclick=function(){var "
+									 "loginForm=document.getElementById('login');switchButton.innerHTML=(loginForm.style.display "
+									 "== "
+									 "'none') ? \"Don't have an account? Sign up!\" : 'Have an account? Log in!';"
+									 "loginForm.style.display=(loginForm.style.display == 'none') ? 'block' : 'none';"
+									 "var "
+									 "signupForm=document.getElementById('signup');signupForm.style.display=(signupForm.style."
+									 "display "
+									 "== 'none') ? 'block' : 'none';}"
+									 "</script>"
+									 "</body>"*/
+									"</html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -2273,12 +2476,14 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/dashboard";
 		}
 	} else if (req.filepath.compare("/login") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") == req.cookies.end()) {
 			if (req.formData["username"] == "") {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] = "Invalid username.";
+				resp.cookies["signuperr"] = "1";
 			} else {
 				resp_tuple getResp = getKVS("session", req.formData["username"],
 						"password");
@@ -2289,11 +2494,13 @@ struct http_response processRequest(struct http_request &req) {
 					resp.status = "Temporary Redirect";
 					resp.headers["Location"] = "/";
 					resp.cookies["error"] = "Invalid username.";
+					resp.cookies["signuperr"] = "1";
 				} else if (getRespMsg != req.formData["password"]) {
 					resp.status_code = 307;
 					resp.status = "Temporary Redirect";
 					resp.headers["Location"] = "/";
 					resp.cookies["error"] = "Invalid password.";
+					resp.cookies["signuperr"] = "1";
 				} else {
 					resp.status_code = 307;
 					resp.status = "Temporary Redirect";
@@ -2315,6 +2522,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/dashboard";
 		}
 	} else if (req.filepath.compare("/signup") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") == req.cookies.end()) {
 			bool valid = true;
 			for (int i = 0; i < req.formData["username"].size(); i++) {
@@ -2327,7 +2535,6 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] =
 						"Username is required, and must be alphanumeric and not contain any spaces.";
-				resp.cookies["signuperr"] = "1";
 			} else if (req.formData["password"].size() == 0
 					|| std::all_of(req.formData["password"].begin(),
 							req.formData["password"].end(), isspace)) {
@@ -2336,14 +2543,12 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] =
 						"Password cannot be empty or only spaces.";
-				resp.cookies["signuperr"] = "1";
 			} else if (req.formData["password"]
 					!= req.formData["confirm_password"]) {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
 				resp.headers["Location"] = "/";
 				resp.cookies["error"] = "Passwords do not match.";
-				resp.cookies["signuperr"] = "1";
 			} else {
 				resp_tuple getResp = getKVS("session", req.formData["username"],
 						"mailbox");
@@ -2354,7 +2559,6 @@ struct http_response processRequest(struct http_request &req) {
 					resp.status = "Temporary Redirect";
 					resp.headers["Location"] = "/";
 					resp.cookies["error"] = "User already exists.";
-					resp.cookies["signuperr"] = "1";
 				} else {
 					resp.status_code = 307;
 					resp.status = "Temporary Redirect";
@@ -2379,6 +2583,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/dashboard";
 		}
 	} else if (req.filepath.compare("/dashboard") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -2386,19 +2591,23 @@ struct http_response processRequest(struct http_request &req) {
 			std::string userRootDir = "ss0_"
 					+ generateStringHash(req.cookies["username"] + "/");
 			resp.content =
-					"<head><meta charset=\"UTF-8\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
-							"center;\">"
-							"<form action=\"/mailbox\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Mailbox\" /></form>"
-							"<form action=\"/compose\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Compose Email\" /></form>"
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1yp7bV2amcRJTWoW6GpcXZ_D95Lg9_WNU\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+							"<html><body><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/change-password\" method=\"POST\"><button style=\"line-height: 24px;\" type = \"submit\" >Change Password</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button style=\"line-height: 24px;\"  type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
+							"<div class=\"main-content\">"
+							"<form action=\"/mailbox\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-mail-bulk\"></i><div class=\"button-text\">PennMail</div></div></button></form>"
+							//"<form action=\"/compose\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Compose Email\" /></form>"
 							"<form action=\"/files/" + userRootDir
-							+ "\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Storage Service\" /></form>"
-									"<form action=\"/chat\" method=\"POST\"><input style=\"line-height: 24px;\" type = \"submit\" value=\"Chat\" /></form>"
-									"<form action=\"/change-password\" method=\"POST\"><input style=\"line-height: 24px;\" type = \"submit\" value=\"Change Password\" /></form>"
-									"</body></html>"
-									"<form action=\"/logout\" method=\"POST\"><input style=\"line-height: 24px;\"  type = \"submit\" value=\"Logout\" /></form>"
-									"</body></html>";
+							+ "\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-box-open\"></i><div class=\"button-text\">PennDrive</div></div></button></form>"
+									"<form action=\"/chat\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-mail-bulk\"></i><div class=\"button-text\">PennChat</div></div></button></form>"
+									"</div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -2407,6 +2616,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare(0, 7, "/files/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.filepath.length() > 7) {
 				std::string filepath = req.filepath.substr(7);
@@ -2456,19 +2666,21 @@ struct http_response processRequest(struct http_request &req) {
 					resp.status_code = 404;
 					resp.status = "Not found";
 					resp.headers["Content-type"] = "text/html";
-					resp.content = "<head><meta charset=\"UTF-8\"></head>"
-							"<html><body>"
-							"Requested file not found!"
-							"</body></html>";
+					resp.content =
+							"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+									"<html><body>"
+									"Requested file not found!"
+									"</body></html>";
 				}
 			} else {
 				resp.status_code = 404;
 				resp.status = "Not found";
 				resp.headers["Content-type"] = "text/html";
-				resp.content = "<head><meta charset=\"UTF-8\"></head>"
-						"<html><body>"
-						"Requested file not found!"
-						"</body></html>";
+				resp.content =
+						"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+								"<html><body>"
+								"Requested file not found!"
+								"</body></html>";
 			}
 		} else {
 			resp.status_code = 307;
@@ -2476,6 +2688,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/logout") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.cookies.erase("username");
 		}
@@ -2488,6 +2701,7 @@ struct http_response processRequest(struct http_request &req) {
 		resp.status = "Temporary Redirect";
 		resp.headers["Location"] = "/";
 	} else if (req.filepath.compare("/mailbox") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -2512,54 +2726,67 @@ struct http_response processRequest(struct http_request &req) {
 						title1 = subject.substr(9);
 						title2 = to.substr(last + 2);
 						display +=
-								"<ul style=\"border-top: 1px solid black; padding:15px; margin: 0;\">";
+								"<ul style=\"border-bottom: 1px solid #ccc; padding:10px 15px; margin: 0; width: 95%;\">";
 						display +=
 								"<div style=\"display:flex; flex-direction: row;\">"
 										"<form action=\"/email\" method=\"post\" style=\"margin: 0;\">"
 										"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to) + "\" />"
-										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
 										+ escape(title) + "</label>"
-										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
 										+ escape(title1) + "</label>"
-										+ "<label for =\"submit\" style=\"margin-right: 20px; vertical-align: middle;\">"
+										+ "<label for =\"submit\" style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;\">"
 										+ escape(title2) + "</label>"
-										+ "<input style=\"line-height:24px;\" type=\"submit\" name=\"submit\" value=\"View\" />"
+										+ "<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-eye\"></i></button>"
 												"</form>"
 												"<form style=\"padding-left:15px; padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
 												"<input type=\"hidden\" name=\"type\" value=\"reply\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
 										+ "\" />"
-												"<input style=\"line-height:24px;\" type = \"submit\" value=\"Reply\" /></form>"
+												"<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-reply\"></i></button></form>"
 												"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
 												"<input type=\"hidden\" name=\"type\" value=\"forward\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
-										+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Forward\" /></form>"
+										+ "\" />" "<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-share\"></i></button></form>"
 												"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
 												"<input type=\"hidden\" name=\"header\" value=\""
 										+ encodeURIComponent(to)
-										+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Delete\" /></form></div>";
+										+ "\" />" "<button class=\"item-button\" type = \"submit\"><i class=\"fas fa-trash-alt\"></i></button></form></div>";
 						display += "</ul>";
 					}
 				}
 			}
 			if (display == "") {
 				display +=
-						"<ul style=\"border-top: 1px solid black; padding:15px; margin: 0;\">No mail yet!</ul>";
+						"<ul style=\"border-bottom: 1px solid #ccc; padding:15px; margin: 0;\">No mail yet!</ul>";
 			}
-			display +=
-					"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>";
 			resp.content =
-					"<head><meta charset=\"UTF-8\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
-							"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Compose Email\"/></form></div>" "<div style=\"padding-left: 15px;padding-bottom: 5px;padding-top: 10px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
-							"<label style=\"margin-right: 20px; width: 295px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Subject</label>"
-							"<label style=\"margin-right: 20px; vertical-align:middle;\">Date</label>"
-							"</div>" + display + "</body></html>";
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1aO2UaTSAoXOhadVi5HXHN8RCLbE4O_Qt\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+							"<html><body ><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/change-password\" method=\"POST\"><button  type = \"submit\" >Change Password</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button   type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
+							"<div class=\"main-content\">"
+							"<div class=\"sidebar\">"
+							"<form action=\"/compose\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-edit\"></i>&nbsp;&nbsp;Compose</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-button\" type = \"submit\"><i class=\"fas fa-inbox\"></i>&nbsp;&nbsp;Inbox</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
+							"</div>"
+							"<div class=\"inbox\">"
+							"<div style=\"font-weight: bold; padding-left: 15px; padding-right: 15px; width: 95%; padding-bottom: 10px;padding-top: 20px; display:flex; flex-direction: row;\"><label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Sender</label>"
+							"<label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Subject</label>"
+							"<label style=\"margin-right: 20px; width: 255px; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">Date</label>"
+							"</div><div style=\"border-bottom: 1px solid black; width: 100%;\"></div><div class=\"emails\">"
+							+ display
+							+ "</div></div></div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -2568,6 +2795,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/compose") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -2643,28 +2871,40 @@ struct http_response processRequest(struct http_request &req) {
 				}
 			}
 			resp.content =
-					"<head><meta charset=\"UTF-8\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/mailbox\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Discard\" /></form>"
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1rfpVOIMTUZBvu1pWILDKiRrDi9u0oLpi\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+							"<html><body ><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/change-password\" method=\"POST\"><button  type = \"submit\" >Change Password</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button   type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
 							"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"subject\")[0].value = encodeURIComponent(document.getElementsByName(\"subject\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
-							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\" /></form></div>"
-							"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
-							"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
+							"<div class=\"main-content\">"
+							"<div class=\"sidebar\">"
+							"<form action=\"/compose\" method=\"POST\" > <button class=\"sidebar-button\" type = \"submit\"><i class=\"far fa-edit\"></i>&nbsp;&nbsp;Compose</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-inbox\"></i>&nbsp;&nbsp;Inbox</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
+							"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link danger\" type = \"submit\"><i class=\"fas fa-trash-alt\"></i>&nbsp;&nbsp;Discard</button></form>"
+							"<form accept-charset=\"utf-8\" id=\"compose\" action=\"/send\" onsubmit=\"return encode();\" method=\"POST\"> <button class=\"sidebar-link success\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Send</button></form>"
+							"</div>"
+							"<div class=\"inbox\">"
+							"<div style=\"display:flex; flex-direction: row; \">"
 							/*"<label form=\"compose\" for=\"to\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">To:&nbsp;</label>"*/
 							"<input placeholder=\"Recipients\" required form=\"compose\" style=\"flex:1;\" name=\"to\" type=\"text\" value=\""
 							+ rec + "\"/></div>"
-							+ "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
-									"<div style=\"display:flex; flex-direction: row; padding: 15px; \">"
-									/*"<label form=\"compose\" for=\"subject\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">Subject:&nbsp;</label>"*/
+							+ "<div style=\"display:flex; flex-direction: row; \">"
+							/*"<label form=\"compose\" for=\"subject\" style=\"height:30px; display: flex; align-items: center; width: 75px;\">Subject:&nbsp;</label>"*/
 									"<input placeholder=\"Subject\" required form=\"compose\" style=\"flex:1;\" name=\"subject\" type=\"text\" value=\""
 							+ sub + "\"/></div>"
-							+ "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
-									"<div style=\"padding:15px\">"
-									"<textarea name=\"content\" form=\"compose\" style=\"width:100%; height: 450px;\">"
+							+ "<div style=\"flex:1\">"
+									"<textarea name=\"content\" form=\"compose\" style=\"width:100%; height: 100%;\">"
 							+ existing + "</textarea>"
 									"</div>"
-									"</body></html>";
+									"</div></div></div></body></html>";
+
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -2673,6 +2913,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/email") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.formData.find("header") != req.formData.end()) {
 				resp.status_code = 200;
@@ -2701,27 +2942,34 @@ struct http_response processRequest(struct http_request &req) {
 					while (std::getline(ss, to, '\n')) {
 						if (!found && to.rfind(header, 0) == 0) {
 							std::getline(ss, subject, '\n');
-							std::string title = "From: ";
-							std::string title1 = "Subject: ";
-							std::string title2 = "";
+							std::string title =
+									"<span style=\"font-weight: bold\">From: </span>";
+							std::string title1 =
+									"<span style=\"font-weight: bold\">Subject: </span>";
+							std::string title2 =
+									"<span style=\"font-weight: bold\">Date: </span>";
 							unsigned first = to.find('<');
 							unsigned last = to.find('>');
-							title += to.substr(first + 1, last - first - 1);
-							title1 += subject.substr(9);
-							title2 = to.substr(last + 2);
+							std::string titleA = to.substr(first + 1,
+									last - first - 1);
+							std::string title1A = subject.substr(9);
+							std::string title2A = to.substr(last + 2);
 							display +=
-									"<ul style=\"border-bottom: 1px solid black; padding:15px; margin: 0;\">";
+									"<ul style=\"border-bottom: 1px solid #ccc; padding:15px; margin: 0;\">";
 							display +=
 									"<label style=\"margin-right: 20px; margin-bottom: 10px; width: 100%; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
-											+ escape(title) + "</label>"
+											+ title + escape(titleA)
+											+ "</label>"
 											+ "<label style=\"margin-right: 20px; margin-bottom: 10px; width: 100%; display: inline-block; overflow: hidden; text-overflow: ellipsis; vertical-align:middle;\">"
-											+ escape(title1) + "</label>"
+											+ title1 + escape(title1A)
+											+ "</label>"
 											+ "<label style=\"margin-right: 20px; margin-bottom: 10px; vertical-align: middle;\">"
-											+ escape(title2) + "</label>";
+											+ title2 + escape(title2A)
+											+ "</label>";
 							display += "</ul>";
 							found = true;
 							display +=
-									"<span style=\"white-space: pre-wrap; padding:15px;\">";
+									"<span style=\"white-space: pre-wrap; padding:15px; overflow-y:scroll; overflow-x: hidden; word-break: break-word;\">";
 						} else if (found) {
 							if (to.rfind("From <", 0) == 0) {
 								break;
@@ -2735,29 +2983,67 @@ struct http_response processRequest(struct http_request &req) {
 						display += "</span>";
 					}
 				}
+				/*resp.content =
+				 "<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+				 "<html><body "
+				 "style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+				 "<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
+				 "<form action=\"/mailbox\" method=\"POST\" style=\"padding-right: 15px; margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Mailbox\" /></form>"
+				 "<form style=\"padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
+				 "<input type=\"hidden\" name=\"type\" value=\"reply\">"
+				 "<input type=\"hidden\" name=\"header\" value=\""
+				 + encodeURIComponent(header)
+				 + "\" />"
+				 "<input style=\"line-height:24px;\" type = \"submit\" value=\"Reply\" /></form>"
+				 "<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
+				 "<input type=\"hidden\" name=\"type\" value=\"forward\">"
+				 "<input type=\"hidden\" name=\"header\" value=\""
+				 + encodeURIComponent(header)
+				 + "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Forward\" /></form>"
+				 "<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
+				 "<input type=\"hidden\" name=\"header\" value=\""
+				 + encodeURIComponent(header)
+				 + "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Delete\" /></form></div>"
+				 "<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
+				 + display + "</body></html>";*/
+
 				resp.content =
-						"<head><meta charset=\"UTF-8\"></head>"
-								"<html><body "
-								"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-								"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
-								"<form action=\"/mailbox\" method=\"POST\" style=\"padding-right: 15px; margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Mailbox\" /></form>"
-								"<form style=\"padding-right:15px; margin: 0;\" action=\"/compose\" method=\"POST\">"
+						"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1RvFSbln2s830QKnz2aBobC4d4Vck_6KN\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+								"<html><body ><div class=\"total-wrapper\">"
+								"<div class=\"nav\">"
+								"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+								"<div class=\"nav-right\">"
+								"<form action=\"/change-password\" method=\"POST\"><button  type = \"submit\" >Change Password</button></form>"
+								"</body></html>"
+								"<form action=\"/logout\" method=\"POST\"><button   type = \"submit\" >Logout</button></form>"
+								"</div>"
+								"</div>"
+								"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"subject\")[0].value = encodeURIComponent(document.getElementsByName(\"subject\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
+								"<div class=\"main-content\">"
+								"<div class=\"sidebar\">"
+								"<form action=\"/compose\" method=\"POST\" > <button class=\"sidebar-button\" type = \"submit\"><i class=\"far fa-edit\"></i>&nbsp;&nbsp;Compose</button></form>"
+								"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-inbox\"></i>&nbsp;&nbsp;Inbox</button></form>"
+								"<form action=\"/mailbox\" method=\"POST\" > <button class=\"sidebar-link\" type = \"submit\"><i class=\"far fa-paper-plane\"></i>&nbsp;&nbsp;Sent</button></form>"
+
+								"<form  action=\"/compose\" method=\"POST\">"
 								"<input type=\"hidden\" name=\"type\" value=\"reply\">"
 								"<input type=\"hidden\" name=\"header\" value=\""
 								+ encodeURIComponent(header)
 								+ "\" />"
-										"<input style=\"line-height:24px;\" type = \"submit\" value=\"Reply\" /></form>"
-										"<form action=\"/compose\" method=\"POST\" style=\"margin-bottom:0; padding-right:15px;\">"
+										"<button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-reply\"></i>&nbsp;&nbsp;Reply</button></form>"
+										"<form action=\"/compose\" method=\"POST\" >"
 										"<input type=\"hidden\" name=\"type\" value=\"forward\">"
 										"<input type=\"hidden\" name=\"header\" value=\""
 								+ encodeURIComponent(header)
-								+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Forward\" /></form>"
-										"<form action=\"/delete\" method=\"POST\" style=\"margin-bottom:0;\">"
+								+ "\" />" "<button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-share\"></i>&nbsp;&nbsp;Forward</button></form>"
+										"<form action=\"/delete\" method=\"POST\" >"
 										"<input type=\"hidden\" name=\"header\" value=\""
 								+ encodeURIComponent(header)
-								+ "\" />" "<input style=\"line-height:24px;\" type = \"submit\" value=\"Delete\" /></form></div>"
-										"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>"
-								+ display + "</body></html>";
+								+ "\" />" "<button class=\"sidebar-link danger\" type = \"submit\"><i class=\"fas fa-trash-alt\"></i>&nbsp;&nbsp;Delete</button></form>"
+										"</div>"
+										"<div class=\"inbox\">" + display
+								+ "</div></div></body></html>";
+
 				resp.headers["Content-length"] = std::to_string(
 						resp.content.size());
 			} else {
@@ -2771,6 +3057,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/delete") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.formData.find("header") != req.formData.end()) {
 				std::string header = decodeURIComponent(req.formData["header"]);
@@ -2827,6 +3114,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/send") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.formData.find("to") != req.formData.end()) {
 				std::string to = decodeURIComponent(req.formData["to"]);
@@ -2975,6 +3263,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/admin") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			time_t now = time(NULL);
@@ -2986,7 +3275,7 @@ struct http_response processRequest(struct http_request &req) {
 					my_admin_console_cache.activeBackendServersList;
 			sleep(1);
 			std::string message =
-					"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head><html><body><form action=\"/logout\" method=\"POST\">"
 							"<input type = \"submit\" value=\"Logout\" /></form><br><h3>Frontend servers:</h3><br><ul><hr>";
 			for (std::map<std::string, struct server_state>::iterator it =
 					frontend_state_map.begin(); it != frontend_state_map.end();
@@ -3061,34 +3350,67 @@ struct http_response processRequest(struct http_request &req) {
 			resp.content = message;
 		}
 	} else if (req.filepath.compare("/change-password") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
 			resp.headers["Content-type"] = "text/html";
-			std::string test = "";
+			std::string test = "<div class=\"error\"></div>";
 			if (req.cookies.find("error") != req.cookies.end()) {
-				test = "<p style=\"color:red\";>" + req.cookies["error"]
-						+ "</p><br/>";
+				test = "<div class=\"error\" style=\"color:red\";>"
+						+ req.cookies["error"] + "</div>";
 				resp.cookies.erase("error");
 			}
 			resp.content =
-					"<head><meta charset=\"UTF-8\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
-							"center;\">" + test
-							+ "<form id=\"change\" style=\"display: flex; flex-direction: column; margin-bottom: 15px;\""
-							+ "action=\"/change\" "
-									"enctype=\"multipart/form-data\" "
-									"method=\"POST\""
-									"<input style=\"margin-bottom: 15px;\" placeholder=\"Current Password\" required name=\"old\" type=\"password\"/><br/>"
-									"<input style=\"margin-bottom: 15px;\" placeholder=\"New Password\" required name=\"new\" "
-									"type=\"password\"/><br/>"
-									"<input style=\"margin-bottom: 15px;\" placeholder=\"Confirm New Password\"  required "
-									"name=\"confirm_new\" "
-									"type=\"password\"/><br/>"
-									"<input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Change Password\"></form><br/><br/>"
-									"<form id=\"cancel\" style=\"\" action=\"/dashboard\" method=\"POST\"> <input style=\"width: 100%; line-height: 24px;\" type = \"submit\" value=\"Cancel\" /></form>"
-									"</body></html>";
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=13aiSuASW9mzew62vNPzC3AFBWJ1YVTtg\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
+							"<html><body><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/dashboard\" method=\"POST\"><button style=\"line-height: 24px;\" type = \"submit\" >Cancel</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button style=\"line-height: 24px;\"  type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
+							"<div style=\"display:flex; flex-direction: column; justify-content:center; align-items: center; width: 100vw; height: 92vh; overflow: hidden;\">"
+							+ test
+							+ "<div class=\"form-structor\">"
+									"<div class=\"signup\">"
+									"<h2 class=\"form-title\" id=\"signup\"><span></span>Change Password</h2>"
+									"<form id=\"signupF\" action=\"/change\" enctype=\"multipart/form-data\" method=\"POST\">"
+									"<div class=\"form-holder\">"
+									"<input required class=\"input\" placeholder=\"Current Password\" name=\"old\" type=\"password\"/>"
+									"<input placeholder=\"New Password\" class=\"input\"  required name=\"new\""
+									"type=\"password\"/>"
+									"<input placeholder=\"Confirm New Password\" class=\"input\"  required name=\"confirm_new\""
+									"type=\"password\"/>"
+									"</div>"
+									"<input  class=\"submit-btn\" type=\"submit\" name=\"submit\" value=\"Change Password\">"
+									"</form>"
+									"</div>"
+									"</div>" "<div class=\"error\"></div>"
+									"</div>"
+									"</body>"
+									"</html>";
+
+			/*resp.content =
+			 "<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
+			 "<html><body "
+			 "style=\"display:flex;flex-direction:column;height:100%;align-items:center;justify-content:"
+			 "center;\">" + test
+			 + "<form id=\"change\" style=\"display: flex; flex-direction: column; margin-bottom: 15px;\""
+			 + "action=\"/change\" "
+			 "enctype=\"multipart/form-data\" "
+			 "method=\"POST\""
+			 "<input style=\"margin-bottom: 15px;\" placeholder=\"Current Password\" required name=\"old\" type=\"password\"/><br/>"
+			 "<input style=\"margin-bottom: 15px;\" placeholder=\"New Password\" required name=\"new\" "
+			 "type=\"password\"/><br/>"
+			 "<input style=\"margin-bottom: 15px;\" placeholder=\"Confirm New Password\"  required "
+			 "name=\"confirm_new\" "
+			 "type=\"password\"/><br/>"
+			 "<input style=\"width: 100%; line-height: 24px;\" type=\"submit\" name=\"submit\" value=\"Change Password\"></form><br/><br/>"
+			 "<form id=\"cancel\" style=\"\" action=\"/dashboard\" method=\"POST\"> <input style=\"width: 100%; line-height: 24px;\" type = \"submit\" value=\"Cancel\" /></form>"
+			 "</body></html>";*/
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -3097,6 +3419,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare("/change") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			if (req.formData["old"].size() == 0) {
 				resp.status_code = 307;
@@ -3151,6 +3474,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/";
 		}
 	} else if (req.filepath.compare(0, 12, "/stopserver/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
@@ -3173,6 +3497,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/admin";
 		}
 	} else if (req.filepath.compare(0, 14, "/resumeserver/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
@@ -3199,6 +3524,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/admin";
 		}
 	} else if (req.filepath.compare(0, 12, "/serverinfo/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
@@ -3207,7 +3533,7 @@ struct http_response processRequest(struct http_request &req) {
 			log("Server info for: " + target);
 			bool frontend_target = (trim(tokens.back()).compare("f") == 0);
 			std::string message =
-					"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head><html><body><form action=\"/logout\" method=\"POST\">"
 							"<input type = \"submit\" value=\"Logout\" /></form><form action=\"/admin\" method=\"POST\">"
 							"<input type = \"submit\" value=\"Back\" /></form><br>";
 			if (frontend_target) {
@@ -3269,8 +3595,10 @@ struct http_response processRequest(struct http_request &req) {
 						std::string raw_bytes = std::get < 2
 								> (first50BytesRaw);
 						log(
-								"ERROR CODE GETNBYTES: " + std::to_string(std::get < 0
-										> (first50BytesRaw)));
+								"ERROR CODE GETNBYTES: "
+										+ std::to_string(
+												std::get < 0
+														> (first50BytesRaw)));
 						log("SIZE GETNBYTES: " + std::to_string(total_size));
 						log("RAW BYTES GETNBYTES" + raw_bytes);
 						message += "<li> Col: " + col;
@@ -3280,8 +3608,11 @@ struct http_response processRequest(struct http_request &req) {
 										"<br> First 50 Bytes: <br>";
 						message.append(raw_bytes);
 						message += "<br></li>";
-						if(total_size > 50) message += "<a href = \"/adminfiles/" + std::to_string(total_size) + "/" +
-								col + "/" + row + "/"+ target + "\" target=\"_blank\"> See More</a>";
+						if (total_size > 50)
+							message += "<a href = \"/adminfiles/"
+									+ std::to_string(total_size) + "/" + col
+									+ "/" + row + "/" + target
+									+ "\" target=\"_blank\"> See More</a>";
 					}
 					message += "</ul><hr>";
 				}
@@ -3309,8 +3640,9 @@ struct http_response processRequest(struct http_request &req) {
 			resp.content = message;
 		}
 	} else if (req.filepath.compare(0, 12, "/adminfiles/") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
-						&& req.cookies["username"].compare("admin") == 0) {
+				&& req.cookies["username"].compare("admin") == 0) {
 			std::deque < std::string > tokens = split(req.filepath, "/");
 			std::string target = trim(tokens.back());
 			tokens.pop_back();
@@ -3319,12 +3651,13 @@ struct http_response processRequest(struct http_request &req) {
 			std::string col = trim(tokens.back());
 			tokens.pop_back();
 			int total_size = std::stoi(trim(tokens.back()));
-			auto raw_data_tuple = getFirstNBytesKVS(target, row, col, total_size);
-			if(std::get<0>(raw_data_tuple) != 0){
+			auto raw_data_tuple = getFirstNBytesKVS(target, row, col,
+					total_size);
+			if (std::get < 0 > (raw_data_tuple) != 0) {
 				resp.status = "Not Found";
 				resp.status_code = 404;
 			} else {
-				std::string raw_data = std::get<2>(raw_data_tuple);
+				std::string raw_data = std::get < 2 > (raw_data_tuple);
 				resp.status = "OK";
 				resp.status_code = 200;
 				resp.headers["Content-type"] = "text/html";
@@ -3336,6 +3669,7 @@ struct http_response processRequest(struct http_request &req) {
 			}
 		}
 	} else if (req.filepath.compare("/refreshadmincache") == 0) {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()
 				&& req.cookies["username"].compare("admin") == 0) {
 			std::string redirect = my_admin_console_cache.last_accessed_for;
@@ -3437,6 +3771,8 @@ struct http_response processRequest(struct http_request &req) {
 			auto tokens = split(req.filepath, "/");
 			std::string chathash = tokens.back(); tokens.pop_back();
 			std::string owner = trim(tokens.back()); tokens.pop_back();
+
+			// TODO: check if user belongs
 			resp_tuple chatroom_raw = getKVS(req.cookies["sessionid"], owner, chathash);
 			if(kvsResponseStatusCode(chatroom_raw) != 0){
 				resp.status = "Temporary Redirect";
@@ -3454,10 +3790,11 @@ struct http_response processRequest(struct http_request &req) {
 										"<html><body "
 										"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
 										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
-										"</div><ul>" + chatroom + "</ul>"
+										"</div><ul id=\"message-body\">" + chatroom + "</ul>"
 										"<form action=\"/sendchatmessage/"+ owner + "/" + chathash + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\"/>"
 										"<label for=\"message\">Type something</label><input required type=\"text\" name=\"message\"/>"
-										"</form></body></html>";
+										"</form><script type=\"text/javascript\" src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js\"></script>"
+								"<script type=\"text/javascript\" src=\"https://drive.google.com/uc?export=view&id=1WYBufNkkfQD734AhDtBWZ7sSux-RuXZl\"></script></body></html>";
 		} else {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
@@ -3477,31 +3814,104 @@ struct http_response processRequest(struct http_request &req) {
 			resp.headers["Location"] = "/joinchat/" + owner + "/" + chathash;
 
 			chatMulticast(req.cookies["username"], message, chathash, owner);
-			resp_tuple chatroom_raw = getKVS(req.cookies["sessionid"], owner, chathash);
-			if(kvsResponseStatusCode(chatroom_raw) != 0){
-				resp.status = "Temporary Redirect";
-				resp.status_code = 307;
-				resp.headers["Location"] = "/chat";
-				return resp;
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare(0, 18, "/updatechatmessage") == 0){
+		if (req.cookies.find("username") != req.cookies.end()) {
+			log("HERE UPDATE CHAT MESSAGE");
+			resp.status = "OK";
+			resp.status_code = 200;
+			resp.content = "";
+			std::string user = req.cookies["username"], group = client_to_group[user];
+			if(deliverable_messages.find(user) != deliverable_messages.end()
+					&& deliverable_messages[user].find(group) != deliverable_messages[user].end()){
+				resp.content = deliverable_messages[user][group];
+				deliverable_messages[user][group] = "";
 			}
+			resp.headers["Content-type"] = "text/plain";
+			resp.headers["Content-length"] = std::to_string(resp.content.size());
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.substr(0,8).compare("/discuss") == 0) {
+        log(std::to_string(__LINE__));
+		if (req.cookies.find("username") != req.cookies.end()) {
+            if(req.filepath.length() > 10 && req.filepath.substr(0, 9).compare("/discuss/") == 0) {
+                // View specific ledger
+                std::string ledgerHash = req.filepath.substr(9);
+                std::tuple<std::string, std::string> ledgerInfo = getLedgerNameFromHash(ledgerHash);
+                std::string ledgerCreator = std::get<0>(ledgerInfo);
+                std::string ledgerName = std::get<1>(ledgerInfo);
+				resp.status = "OK";
+				resp.status_code = 200;
+				resp.headers["Content-type"] = "text/html";
 
-			std::string chatroom = kvsResponseMsg(chatroom_raw);
-
-			resp.content =
-								"<head><meta charset=\"UTF-8\"></head>"
-										"<html><body "
-										"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
-										"</div><ul>" + chatroom + "</ul>"
-										"<form action=\"/sendchatmessage/"+ owner + "/" + chathash + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\"/>"
-										"<label for=\"message\">Type something</label><input required type=\"text\" name=\"message\"/>"
-										"</form></body></html>";
+				std::string message = "<html><body>";
+                message+=
+                "<script>function encodeMessage() {document.getElementsByName(\"newMessage\")[0].value = encodeURIComponent(document.getElementsByName(\"newMessage\")[0].value); return true;}</script>"
+                "<div style=\"width:50%;margin:auto\">"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                        "<h3>"+ledgerName+" ("+ledgerCreator+")</h3>"
+                    "</div>"
+                    "<div style=\"height:75%;overflow-y:auto;\">";
+                message += displayAllLedgerMessages(ledgerHash);
+                message +=
+                    "</div>"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                    "<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss/"+ledgerHash+"\" method=\"post\">"
+                        "<div style=\"display: flex; flex-direction: row;\">"
+							"<input type=\"hidden\" name=\"targetLedger\" value=\""+ ledgerHash + "\"/>"
+							"<label for=\"newMessage\"></label><input required type=\"text\" name=\"newMessage\" placeholder=\"Write a post\">"
+                            "<input type=\"submit\" name=\"submit\" value=\"Submit\" />"
+                        "</div>"
+                    "</form>"
+                    "</div>"
+                "</div>";
+				message += "</body></html>";
+				resp.headers["Content-length"] = std::to_string(message.size());
+				resp.content = message;
+            } else {
+                // View list of ledgers
+				resp.status = "OK";
+				resp.status_code = 200;
+				resp.headers["Content-type"] = "text/html";
+				std::string message = "<html><body>";
+                message+=
+                "<script>function encodeLedger() {document.getElementsByName(\"newLedger\")[0].value = encodeURIComponent(document.getElementsByName(\"newLedger\")[0].value); return true;}</script>"
+                "<div style=\"width:50%;margin:auto\">"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                        "<h3>PennCloud Forums List</h3>"
+                    "</div>"
+                    "<div>";
+                message += displayAllLedgers();
+                message +=
+                    "</div>"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                    "<form accept-charset=\"utf-8\" onsubmit=\"return encodeLedger();\" action=\"/discuss\" method=\"post\">"
+                        "<div style=\"display: flex; flex-direction: row;\">"
+							"<input type=\"hidden\" name=\"ledgerCreator\" value=\""+ req.cookies["username"] + "\"/>"
+							"<label for=\"newLedger\"></label><input required type=\"text\" name=\"newLedger\" placeholder=\"Create a new forum\">"
+                            "<input type=\"submit\" name=\"submit\" value=\"Create\" />"
+                        "</div>"
+                    "</form>"
+                    "</div>"
+                "</div>";
+				message += "</body></html>";
+				resp.headers["Content-length"] = std::to_string(message.size());
+				resp.content = message;
+            }
 		} else {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
 	} else {
+        log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
@@ -3547,7 +3957,7 @@ void sendResponseToClient(struct http_response &resp, int *client_fd) {
 		response += "\r\n" + resp.content;
 	}
 	writeNBytes(client_fd, response.size(), response.data());
-	// log("Sent: " + response);
+// log("Sent: " + response);
 }
 
 /***************************** End http util functions ************************/
@@ -4186,6 +4596,14 @@ int main(int argc, char *argv[]) {
 		server_index = 0;
 		log("Successfully initialized load balancer!");
 	}
+
+    // Hardcoding Paxos server addresses
+    paxosServers.push_back("127.0.0.1:10030");
+    paxosServers.push_back("127.0.0.1:10032");
+    paxosServers.push_back("127.0.0.1:10034");
+    paxosServersHeartbeatMap["127.0.0.1:10030"] = "127.0.0.1:10031";
+    paxosServersHeartbeatMap["127.0.0.1:10032"] = "127.0.0.1:10033";
+    paxosServersHeartbeatMap["127.0.0.1:10034"] = "127.0.0.1:10035";
 
 	if (list_of_frontend.length() > 0) {
 		FILE *f = fopen(list_of_frontend.c_str(), "r");
