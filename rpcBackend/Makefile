@@ -12,7 +12,10 @@ LIBS= -lrpc -lpthread
 test:
 	$(GCC) kvServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o kvServer $(LIBS)
 	$(GCC) masterNode.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o masterNode $(LIBS)
+	$(GCC) paxosServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosServer $(LIBS)
+	$(GCC) paxosMaster.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosMaster $(LIBS)
 	$(GCC) testClient.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o testClient $(LIBS)
+	$(GCC) paxosTest.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o paxosTest $(LIBS)
 
 kvs:
 	$(GCC) kvServer.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o kvServer $(LIBS)
@@ -43,6 +46,13 @@ serverfiles:
 		mkdir server_$$i/checkpoint; \
 		mkdir server_$$i/logArchive; \
 		touch server_$$i/log.txt; \
+	done
+	for i in 1 2 3; do \
+		rm -r paxos_$$i; \
+		mkdir paxos_$$i; \
+		mkdir paxos_$$i/checkpoint; \
+		mkdir paxos_$$i/logArchive; \
+		touch paxos_$$i/log.txt; \
 	done
 	
 	
