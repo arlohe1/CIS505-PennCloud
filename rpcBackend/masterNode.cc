@@ -272,6 +272,20 @@ std::deque<server_addr_tuple> getAllNodes() {
     return getNodesFromMap(clusterToServersMap);
 }
 
+bool isNodeAlive(std::string server) {
+    for (auto const& entry : clusterToActiveNodesMap) {
+        std::deque<std::string> serverList = entry.second;
+        for(std::string other : serverList) {
+            if (server.compare(other) == 0) {
+                log("isNodeAlive returning true for server: "+server);
+                return true;
+            }
+        }
+    }
+    log("isNodeAlive returning false for server: "+server);
+    return false;
+}
+
 // Returns a deque of server_addr_tuples for all nodes in the given server's cluster
 std::deque<server_addr_tuple> getClusterNodes(std::string server) {
     log("getClusterNodes requested from server: "+server);
@@ -362,6 +376,7 @@ int main(int argc, char *argv[]) {
 	srv.bind("registerWithMaster", &registerWithMaster);
 	srv.bind("getClusterNodes", &getClusterNodes);
     srv.bind("getNewClusterLeader", &getNewClusterLeader);
+    srv.bind("isNodeAlive", &isNodeAlive);
 
 	srv.run();
 

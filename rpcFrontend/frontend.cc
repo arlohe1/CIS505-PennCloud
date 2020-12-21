@@ -80,6 +80,9 @@ std::map<int, std::deque<server_tuple>> clusterToServerListMap;
 
 using resp_tuple = std::tuple<int, std::string>;
 
+std::deque<std::string> paxosServers; 
+std::map<std::string, std::string> paxosServersHeartbeatMap;
+
 /********************** HTTP data structures *********************/
 
 struct http_session {
@@ -531,27 +534,11 @@ void buildClusterToBackendServerMapping() {
 }
 
 bool checkIfNodeIsAlive(server_tuple serverInfo) {
-	// connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
 	std::string targetServer = std::get < 0 > (serverInfo);
-	std::string targetServerHeartbeatIP = std::get < 1 > (serverInfo);
-	log(
-			"Checking heartbeat for " + targetServer + " at heartbeat address: "
-					+ targetServerHeartbeatIP);
-	int heartbeatPortNo = getPortNoFromString(targetServerHeartbeatIP);
-	std::string heartbeatAddress = getAddrFromString(targetServerHeartbeatIP);
-	rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
-	kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
-	try {
-		bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
-		log("Heartbeat for " + targetServer + " returned true!");
-		return isAlive;
-	} catch (rpc::timeout &t) {
-		log(
-				"Heartbeat for " + targetServer
-						+ " failed to return. Node is dead.");
-		return false;
-	}
-	return false;
+	int masterPortNo = getPortNoFromString(kvMaster_addr);
+	std::string masterServAddress = getAddrFromString(kvMaster_addr);
+	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
+    return masterNodeRPCClient.call("isNodeAlive", targetServer).as<bool>();
 }
 
 std::string whereKVS(std::string session_id, std::string row) {
@@ -641,6 +628,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 	while (origServerIdx != currServerIdx) {
 		server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
 		std::string targetServer = std::get < 0 > (serverInfo);
+        /*
 		if (!checkIfNodeIsAlive(serverInfo)) {
 			// Resetting timeout for new server
 			timeout = 2500; // 2500 milliseconds
@@ -651,6 +639,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 							+ newlyChosenServerAddr);
 			continue;
 		}
+        */
 		int serverPortNo = getPortNoFromString(targetServer);
 		std::string servAddress = getAddrFromString(targetServer);
 		rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -1585,7 +1574,56 @@ void createRootDirForNewUser(struct http_request req, std::string sessionid) {
 }
 
 /***************************** End storage service functions ************************/
+/***************************** Start Discussion forum functions ************************/
+std::string displayAllMessages() {
+    std::string htmlMsgs = "";
+    std::string allMessages = "";
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("getPaxos: Getting messages for ledger from paxosServer: "+targetPaxosServer);
+        resp_tuple resp = paxosServerClient.call("getPaxos", "ledger", "samecolumn").as<resp_tuple>();
+        if(kvsResponseStatusCode(resp) == 0) {
+            allMessages = kvsResponseMsg(resp);
+            std::deque<std::string> messageDeque = split(allMessages, "\n");
+            log("getPaxos: Got "+std::to_string(messageDeque.size())+" messages from getPaxos");
+            for(std::string messageRaw : messageDeque) {
+                if(messageRaw.length() > 0) {
+                log("messageRaw: "+messageRaw);
+                std::string sender = messageRaw.substr(0, messageRaw.find(":"));
+                std::string message = messageRaw.substr(messageRaw.find(":")+1);
+                htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
+                }
+            }
+            log("getPaxos: Returning formatted messages from getPaxos");
+        } else {
+            log("getPaxos: no messages to display!");
+            return "<p>No posts yet.</p>";
+        }
+    return htmlMsgs;
+    } catch (rpc::timeout &t) {
+        log("getPaxos: getPaxos call timed out! Returning error message");
+        return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
+    }
+}
 
+void sendNewMessage(std::string message) {
+    std::string targetPaxosServer = paxosServers[rand() % paxosServers.size()];
+    rpc::client paxosServerClient(getAddrFromString(targetPaxosServer), getPortNoFromString(targetPaxosServer));
+    paxosServerClient.set_timeout(5000);
+    try {
+        log("putPaxos: Putting new message into ledger via paxosServer: "+targetPaxosServer);
+        resp_tuple resp = paxosServerClient.call("putPaxos", "ledger", "samecolumn", message).as<resp_tuple>();
+        log("putPaxos returned with Status Code: "+std::to_string(kvsResponseStatusCode(resp)));
+        log("putPaxos returned with Value: "+kvsResponseMsg(resp));
+        log("putPaxos returned with value length: "+std::to_string(kvsResponseMsg(resp).length()));
+    } catch (rpc::timeout &t) {
+        log("putPaxos: putPaxos call timed out!");
+    }
+    log("putPaxos: complete");
+}
+/***************************** End Discussion forum functions ************************/
 /*********************** Http Util function **********************************/
 std::string generateSessionID() {
 	return generateStringHash(
@@ -1960,6 +1998,7 @@ std::string encodeURIComponent(std::string decoded) {
 
 struct http_response processRequest(struct http_request &req) {
 	struct http_response resp;
+    log("Entering process request");
 	for (std::map<std::string, std::string>::iterator it = req.cookies.begin();
 			it != req.cookies.end(); it++) {
 		resp.cookies[it->first] = it->second;
@@ -1968,6 +2007,7 @@ struct http_response processRequest(struct http_request &req) {
 	/* Check to see if I'm the load balancer and if this request needs to be redirected */
 	if (load_balancer && frontend_server_list.size() > 1
 			&& req.cookies.find("redirected") == req.cookies.end()) {
+        log("Load balancer redirecting request");
 		std::string redirect_server = "";
 		pthread_mutex_lock(&access_state_map);
 		int first_time = 0;
@@ -2103,8 +2143,17 @@ struct http_response processRequest(struct http_request &req) {
 				resp.headers["Location"] = "/files/" + target;
 				return resp;
 			}
-		}
-	}
+        }
+	} else if (req.formData["newMessage"].size() > 0) {
+        if(req.cookies.find("username") != req.cookies.end()) {
+            std::string message = req.cookies["username"] +":"+req.formData["newMessage"];
+            log("Sending new message via putPaxos: "+message);
+            message = decodeURIComponent(message);
+            message = decodeURIComponent(message);
+            sendNewMessage(message);
+        }
+    }
+
 
 	if (req.filepath.compare("/") == 0) {
 		if (req.cookies.find("username") == req.cookies.end()) {
@@ -3399,6 +3448,40 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/serverinfo/1/" + redirect;
 		}
+	} else if (req.filepath.compare("/discuss") == 0) {
+		if (req.cookies.find("username") != req.cookies.end()) {
+				resp.status = "OK";
+				resp.status_code = 200;
+				resp.headers["Content-type"] = "text/html";
+
+				std::string message = "<html><body>";
+                message+=
+                "<script>function encodeMessage() {document.getElementsByName(\"newMessage\")[0].value = encodeURIComponent(document.getElementsByName(\"newMessage\")[0].value); return true;}</script>"
+                "<div style=\"width:50%;margin:auto\">"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                        "<h3>PennCloud Discussion Wall</h3>"
+                    "</div>"
+                    "<div style=\"height:75%;overflow-y:auto;\">";
+                message += displayAllMessages();
+                message +=
+                    "</div>"
+                    "<div style=\"justify-content:center; align-items:center;display:flex;\">"
+                    "<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss\" method=\"post\">"
+                        "<div style=\"display: flex; flex-direction: row;\">"
+							"<label for=\"newMessage\"></label><input required type=\"text\" name=\"newMessage\" placeholder=\"Write a post\">"
+                            "<input type=\"submit\" name=\"submit\" value=\"Submit\" />"
+                        "</div>"
+                    "</form>"
+                    "</div>"
+                "</div>";
+				message += "</body></html>";
+				resp.headers["Content-length"] = std::to_string(message.size());
+				resp.content = message;
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
 	} else {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 307;
@@ -4084,6 +4167,14 @@ int main(int argc, char *argv[]) {
 		server_index = 0;
 		log("Successfully initialized load balancer!");
 	}
+
+    // Hardcoding Paxos server addresses
+    paxosServers.push_back("127.0.0.1:10030");
+    paxosServers.push_back("127.0.0.1:10032");
+    paxosServers.push_back("127.0.0.1:10034");
+    paxosServersHeartbeatMap["127.0.0.1:10030"] = "127.0.0.1:10031";
+    paxosServersHeartbeatMap["127.0.0.1:10032"] = "127.0.0.1:10033";
+    paxosServersHeartbeatMap["127.0.0.1:10034"] = "127.0.0.1:10035";
 
 	if (list_of_frontend.length() > 0) {
 		FILE *f = fopen(list_of_frontend.c_str(), "r");
