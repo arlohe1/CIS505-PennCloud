@@ -4144,7 +4144,9 @@ struct http_response processRequest(struct http_request &req) {
 			}
 			std::string members_raw = owner + "; " + m;
 			std::replace(members_raw.begin(), members_raw.end(), '+', ' ');
+			std::replace(members_raw.begin(), members_raw.end(), ',', ';');
 			std::deque < std::string > members = split(members_raw, ";");
+			std::deque<std::string> members_polished;
 			std::string chathash = generateStringHash(
 					req.formData["members"] + std::to_string(time(NULL)));
 
@@ -4159,7 +4161,18 @@ struct http_response processRequest(struct http_request &req) {
 
 				for (std::size_t i = 1; i < member.length(); ++i)
 					member[i] = std::tolower(member[i]);
-				std::string cont = members_raw + "\t" + owner + "\t" + chathash
+				resp_tuple raw_message = getKVS(req.cookies["sessionid"],
+						member, "chats");
+				if (kvsResponseStatusCode(raw_message) != 0)
+					continue;
+				members_polished.push_back(member);
+			}
+			std::string members_polished_str;
+			for(std::string m : members_polished) members_polished_str += m + ", ";
+			members_polished_str.pop_back(); members_polished_str.pop_back();
+			for(std::string m: members_polished){
+				std::string member = trim(m);
+				std::string cont = members_polished_str + "\t" + owner + "\t" + chathash
 						+ "\n";
 
 				log("CHAT MEMBER : " + member);
@@ -4170,7 +4183,7 @@ struct http_response processRequest(struct http_request &req) {
 					resp_tuple raw_message = getKVS(req.cookies["sessionid"],
 							member, "chats");
 					if (kvsResponseStatusCode(raw_message) != 0)
-						break;
+						continue;
 					old_message = kvsResponseMsg(raw_message);
 					std::string new_message = old_message + my_message;
 					if (old_message.find(my_message) != std::string::npos)
