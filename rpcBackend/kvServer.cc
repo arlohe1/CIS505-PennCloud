@@ -1307,10 +1307,10 @@ void getLoggingUpdates() {
 void loadLatestKVMapOnBoot() {
 	// Hardcoding admin login info on boot
     if (isPrimary()) {
-    	resp_tuple resp = get("admin", "password");
+    	resp_tuple resp = get("Admin", "password");
     	if (std::get<0>(resp) == 1) {
     		// if admin not already in backend add it
-    		std::string adminRow("admin");
+    		std::string adminRow("Admin");
 			std::string adminCol("password");
 			std::string adminVal("password");
 			put(adminRow, adminCol, adminVal);
