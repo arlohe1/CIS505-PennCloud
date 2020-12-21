@@ -866,7 +866,9 @@ using prepare_tuple = std::tuple<int, int, std::string>;  // status code, accept
 
 void decide(int seqNum, std::string row, std::string col, std::string val) {
 	// log updates for ledger
+	debugDetailed("DECIDE: seqNum: %d, row: %s, val: %s\n", seqNum, row.c_str(), val.c_str());
 	put(row, col, val);
+	return;
 }
 
 
@@ -947,7 +949,7 @@ void storeNums() {
 // status code in response is 0 - no prev acceptedVal, 1 - prev accepted Val, -1 - seqNum < prev accepted seq num
 prepare_tuple prepare(int seqNum, std::string row, std::string col) {
 	// check if a value has been accepted for entry (row, col)
-	debugDetailed("PREPARE: %s, seqNum: %d, row: %s, col: %s\n", "entered", seqNum, row.c_str(), col.c_str());
+	debugDetailed("PREPARE: %s, seqNum: %d, row: %s, col: %s\n", "received", seqNum, row.c_str(), col.c_str());
 	int retStatus = 0;
 	std::string acceptedVal = "";
 	int acceptedSeq = -1;
@@ -976,6 +978,7 @@ prepare_tuple prepare(int seqNum, std::string row, std::string col) {
 
 //note only index 0 should be used by caller
 prepare_tuple acceptProposal(int seqNum, std::string row, std::string col, std::string val) {
+	debugDetailed("ACCEPT: %s, seqNum: %d, row: %s, col: %s, val:%s\n", "received", seqNum, row.c_str(), col.c_str(), val.c_str());
 	if (seqNum >= promisedSeqNum) {
 		// ack
 		promisedSeqNum = seqNum;
@@ -983,9 +986,11 @@ prepare_tuple acceptProposal(int seqNum, std::string row, std::string col, std::
 		acceptedVals[row][col] = std::make_tuple(val, seqNum);
 		acceptedVals.erase(row);
 		storeNums();
+		debugDetailed("ACCEPT: %s\n", "responding with ACK");
 		return std::make_tuple(1, -1, val);
 	} else {
 		// nack
+		debugDetailed("ACCEPT: %s\n", "responding with NACK");
 		return std::make_tuple(-1, -1, "");
 	}
 }
@@ -1045,7 +1050,7 @@ resp_tuple sendPrepare(std::string row, std::string col, std::string val) {
 	std::map<std::string, prepare_tuple> respSet; // map from ip:port -> resp tuple
 	prepare_tuple resp;
 	bool tryAgain = true;
-	debugDetailed("---sendPrepare: %s\n", "entered");
+	debugDetailed("---sendPrepare: %s\n", "attempting to initiate consensus");
 	// phase 1
 	while (tryAgain == true) {
 		updateSeqNum();
@@ -1068,6 +1073,7 @@ resp_tuple sendPrepare(std::string row, std::string col, std::string val) {
 	                    client.set_timeout(timeout);
 	                    // TODO - try to call prepare on other Node
 	                    resp = client.call("prepare", seqNum, row, col).as<prepare_tuple>();
+	                    debugDetailed("---sendPrepare: %s ip(%s) , port(%d)\n", "send prepare to node: ", getIPAddr(otherServer).c_str(), getIPPort(otherServer));
 	                    continueTrying = false;
 	                    respSet[otherServer] = resp;
 	                } catch (rpc::timeout &t) {
@@ -1106,6 +1112,7 @@ resp_tuple sendPrepare(std::string row, std::string col, std::string val) {
 	    std::string proposalVal;
 	    // check if phase 1 succeeded
 	    if (std::get<0>(resp) == -1) {
+	    	debugDetailed("---sendPrepare: %s\n", "system cannot reach consensus");
 	    	return std::make_tuple(-1, "ERR"); // may want to continue instead
 	    } else {
 	    	proposalVal = std::get<2>(resp);
@@ -1127,6 +1134,7 @@ resp_tuple sendPrepare(std::string row, std::string col, std::string val) {
 	                try { // on timeout, query connection state and retry if connected
 	                    client.set_timeout(timeout);
 	                    // TODO - try to call prepare on other Node
+	                    debugDetailed("---sendAccept: %s ip(%s) , port(%d)\n", "send accept to node: ", getIPAddr(otherServer).c_str(), getIPPort(otherServer));
 	                    resp = client.call("accept", seqNum, row, col, proposalVal).as<prepare_tuple>();
 	                    continueTrying = false;
 	                    respSet[otherServer] = resp;
@@ -1169,6 +1177,7 @@ resp_tuple sendPrepare(std::string row, std::string col, std::string val) {
 	    	resp_tuple clientResp;
 	    	clientResp = learn(seqNum, row, col, proposalVal);
 	    	tryAgain = false;
+	    	debugDetailed("---%s\n", "CONSENSUS REACHED!! sending response to client and returning");
 	    	return clientResp;
 	    }
 	}
