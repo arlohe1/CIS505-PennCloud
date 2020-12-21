@@ -534,27 +534,11 @@ void buildClusterToBackendServerMapping() {
 }
 
 bool checkIfNodeIsAlive(server_tuple serverInfo) {
-	// connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
 	std::string targetServer = std::get < 0 > (serverInfo);
-	std::string targetServerHeartbeatIP = std::get < 1 > (serverInfo);
-	log(
-			"Checking heartbeat for " + targetServer + " at heartbeat address: "
-					+ targetServerHeartbeatIP);
-	int heartbeatPortNo = getPortNoFromString(targetServerHeartbeatIP);
-	std::string heartbeatAddress = getAddrFromString(targetServerHeartbeatIP);
-	rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
-	kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
-	try {
-		bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
-		log("Heartbeat for " + targetServer + " returned true!");
-		return isAlive;
-	} catch (rpc::timeout &t) {
-		log(
-				"Heartbeat for " + targetServer
-						+ " failed to return. Node is dead.");
-		return false;
-	}
-	return false;
+	int masterPortNo = getPortNoFromString(kvMaster_addr);
+	std::string masterServAddress = getAddrFromString(kvMaster_addr);
+	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
+    return masterNodeRPCClient.call("isNodeAlive", targetServer).as<bool>();
 }
 
 std::string whereKVS(std::string session_id, std::string row) {
@@ -644,6 +628,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 	while (origServerIdx != currServerIdx) {
 		server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
 		std::string targetServer = std::get < 0 > (serverInfo);
+        /*
 		if (!checkIfNodeIsAlive(serverInfo)) {
 			// Resetting timeout for new server
 			timeout = 2500; // 2500 milliseconds
@@ -654,6 +639,7 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 							+ newlyChosenServerAddr);
 			continue;
 		}
+        */
 		int serverPortNo = getPortNoFromString(targetServer);
 		std::string servAddress = getAddrFromString(targetServer);
 		rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -1596,15 +1582,24 @@ std::string displayAllMessages() {
     paxosServerClient.set_timeout(5000);
     try {
         log("getPaxos: Getting messages for ledger from paxosServer: "+targetPaxosServer);
-        std::string allMessages = paxosServerClient.call("getPaxos", "ledger", "samecolumn").as<std::string>();
-        std::deque<std::string> messageDeque = split(allMessages, "\n");
-        log("getPaxos: Got "+std::to_string(messageDeque.size())+" messages from getPaxos");
-        for(std::string messageRaw : messageDeque) {
-            std::string sender = messageRaw.substr(0, messageRaw.find(":"));
-            std::string message = messageRaw.substr(messageRaw.find(":")+1);
-            htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
+        resp_tuple resp = paxosServerClient.call("getPaxos", "ledger", "samecolumn").as<resp_tuple>();
+        if(kvsResponseStatusCode(resp) == 0) {
+            allMessages = kvsResponseMsg(resp);
+            std::deque<std::string> messageDeque = split(allMessages, "\n");
+            log("getPaxos: Got "+std::to_string(messageDeque.size())+" messages from getPaxos");
+            for(std::string messageRaw : messageDeque) {
+                if(messageRaw.length() > 0) {
+                log("messageRaw: "+messageRaw);
+                std::string sender = messageRaw.substr(0, messageRaw.find(":"));
+                std::string message = messageRaw.substr(messageRaw.find(":")+1);
+                htmlMsgs += "<p><strong>"+sender+":</strong> "+message+"</p>";
+                }
+            }
+            log("getPaxos: Returning formatted messages from getPaxos");
+        } else {
+            log("getPaxos: no messages to display!");
+            return "<p>No posts yet.</p>";
         }
-        log("getPaxos: Returning formatted messages from getPaxos");
     return htmlMsgs;
     } catch (rpc::timeout &t) {
         log("getPaxos: getPaxos call timed out! Returning error message");
@@ -2150,7 +2145,7 @@ struct http_response processRequest(struct http_request &req) {
         }
 	} else if (req.formData["newMessage"].size() > 0) {
         if(req.cookies.find("username") != req.cookies.end()) {
-            std::string message = req.cookies["username"] +":"+message; 
+            std::string message = req.cookies["username"] +":"+req.formData["newMessage"];
             log("Sending new message via putPaxos: "+message);
             message = decodeURIComponent(message);
             message = decodeURIComponent(message);
@@ -3309,7 +3304,7 @@ struct http_response processRequest(struct http_request &req) {
                 "<script>function encodeMessage() {document.getElementsByName(\"newMessage\")[0].value = encodeURIComponent(document.getElementsByName(\"newMessage\")[0].value); return true;}</script>"
                 "<div style=\"width:50%;margin:auto\">"
                     "<div style=\"justify-content:center; align-items:center;display:flex;\">"
-                        "<h3>PennCloud Discussion Forum</h3>"
+                        "<h3>PennCloud Discussion Wall</h3>"
                     "</div>"
                     "<div style=\"height:75%;overflow-y:auto;\">";
                 message += displayAllMessages();
@@ -3318,8 +3313,8 @@ struct http_response processRequest(struct http_request &req) {
                     "<div style=\"justify-content:center; align-items:center;display:flex;\">"
                     "<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss\" method=\"post\">"
                         "<div style=\"display: flex; flex-direction: row;\">"
-							"<label for=\"newMessage\">New Message</label><input required type=\"text\" name=\"newMessage\" placeholder=\"Send a message\">"
-                            "<input type=\"submit\" name=\"submit\" value=\"Send\" />"
+							"<label for=\"newMessage\">New Post</label><input required type=\"text\" name=\"newMessage\" placeholder=\"Write a post\">"
+                            "<input type=\"submit\" name=\"submit\" value=\"Submit\" />"
                         "</div>"
                     "</form>"
                     "</div>"
