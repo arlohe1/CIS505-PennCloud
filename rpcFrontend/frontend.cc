@@ -39,7 +39,7 @@ sockaddr_in load_balancer_addr;
 /********************** Internal message and chat stuff ******************/
 using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
 std::string INTERNAL_THREAD = "i", SMTP_THREAD = "s", HTTP_THREAD = "h";
-pthread_mutex_t modify_server_state, crashing, access_state_map;
+pthread_mutex_t modify_server_state, crashing, access_state_map, access_fifo_seq_num;
 struct server_state {
 	time_t last_modified = time(NULL);
 	std::string http_address = "";
@@ -1044,7 +1044,9 @@ void chatMulticast(std::string sender, std::string message, std::string group_ha
 	msg.sender = sender;
 	msg.group = group_hash;
 	msg.group_owner = owner;
+	pthread_mutex_lock(&access_fifo_seq_num);
 	msg.sequence_number = -(++fifo_seq);
+	pthread_mutex_unlock(&access_fifo_seq_num);
 	msg.type = CHAT;
 
 	std::string message_to_send = internalMessageToString(msg);
@@ -3780,7 +3782,18 @@ struct http_response processRequest(struct http_request &req) {
 			std::string chathash = tokens.back(); tokens.pop_back();
 			std::string owner = trim(tokens.back()); tokens.pop_back();
 
-			// TODO: check if user belongs
+			// check if user belongs
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
+			if(group_to_clients.find(chathash) != group_to_clients.end() &&
+					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+				log("valid user for group " + chathash);
+			} else if(kvsResponseStatusCode(check_raw) != 0 ||
+					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+				log("Not valid user for group " + chathash);
+				resp.status = "Temporary Redirect";
+				resp.status_code = 307;
+				resp.headers["Location"] = "/chat";
+			}
 			resp_tuple chatroom_raw = getKVS(req.cookies["sessionid"], owner, chathash);
 			if(kvsResponseStatusCode(chatroom_raw) != 0){
 				resp.status = "Temporary Redirect";
@@ -3792,14 +3805,15 @@ struct http_response processRequest(struct http_request &req) {
 			client_to_group[req.cookies["username"]] = chathash;
 			std::string chatroom = kvsResponseMsg(chatroom_raw);
 			std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
-			deliverable_messages[req.cookies["username"]][chathash] = chatroom;
-			std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
+			//deliverable_messages[req.cookies["username"]][chathash] = chatroom;
+			//std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
 
 			resp.content =
 								"<head><meta charset=\"UTF-8\"></head>"
 										"<html><body "
 										"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
+										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/chat\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Chat\" /></form>"
+										"<form action=\"/leavechat/"+ owner + "/" + chathash + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Leave Chat\"/></form>"
 										"</div><ul id=\"message-body\">" + chatroom + "</ul>"
 										"<form action=\"/sendchatmessage/"+ owner + "/" + chathash + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\"/>"
 										"<label for=\"message\">Type something</label><input required type=\"text\" name=\"message\"/>"
@@ -3812,7 +3826,7 @@ struct http_response processRequest(struct http_request &req) {
 		}
 	} else if (req.filepath.compare(0, 16, "/sendchatmessage") == 0){
 		if (req.cookies.find("username") != req.cookies.end()) {
-			// TODO: change this to javascript friendly route
+			// change this to javascript friendly route
 			resp.status = "Temporary Redirect";
 			resp.status_code = 307;
 
@@ -3821,9 +3835,64 @@ struct http_response processRequest(struct http_request &req) {
 			auto tokens = split(req.filepath, "/");
 			std::string chathash = tokens.back(); tokens.pop_back();
 			std::string owner = trim(tokens.back()); tokens.pop_back();
+			// check if user belongs
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
+			if(group_to_clients.find(chathash) != group_to_clients.end() &&
+					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+				log("valid user for group " + chathash);
+			} else if(kvsResponseStatusCode(check_raw) != 0 ||
+					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+				log("Not valid user for group " + chathash);
+				resp.status = "Temporary Redirect";
+				resp.status_code = 307;
+				resp.headers["Location"] = "/chat";
+			}
 			resp.headers["Location"] = "/joinchat/" + owner + "/" + chathash;
 
 			chatMulticast(req.cookies["username"], message, chathash, owner);
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare(0, 10, "/leavechat") == 0){
+		if (req.cookies.find("username") != req.cookies.end()) {
+			auto tokens = split(req.filepath, "/");
+			std::string chathash = tokens.back(); tokens.pop_back();
+			std::string owner = trim(tokens.back()); tokens.pop_back();
+			/// check if user belongs
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
+			if(group_to_clients.find(chathash) != group_to_clients.end() &&
+					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+				log("valid user for group " + chathash);
+			} else if(kvsResponseStatusCode(check_raw) != 0 ||
+					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+				log("Not valid user for group " + chathash);
+				resp.status = "Temporary Redirect";
+				resp.status_code = 307;
+				resp.headers["Location"] = "/chat";
+			}
+
+			resp_tuple getResp = getKVS(req.cookies["sessionid"],
+								req.cookies["username"], "chats");
+			std::string getRespMsg = kvsResponseMsg(getResp);
+			std::stringstream ss(getRespMsg);
+			std::string chatroom;
+			std::string new_chats = "";
+			if (getRespMsg != "") {
+				while (std::getline(ss, chatroom, '\n')) {
+					if(chatroom.find(chathash) != std::string::npos) continue;
+					new_chats+=chatroom;
+				}
+				putKVS(req.cookies["sessionid"],
+						req.cookies["username"], "chats", new_chats);
+			}
+			group_to_clients[chathash].erase(req.cookies["username"]);
+			client_to_group.erase(req.cookies["username"]);
+			chatMulticast(req.cookies["username"], req.cookies["username"] + "+left+the+group", chathash, owner);
+			resp.status = "Temporary Redirect";
+			resp.status_code = 307;
+			resp.headers["Location"] = "/chat";
 		} else {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
@@ -3838,7 +3907,20 @@ struct http_response processRequest(struct http_request &req) {
 			std::string user = req.cookies["username"];
 			auto tokens = split(req.filepath, "/");
 			std::string chathash = tokens.back(); tokens.pop_back();
-			std::string owner = trim(tokens.back()); tokens.pop_back();;
+			std::string owner = trim(tokens.back()); tokens.pop_back();
+			// check if user belongs
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
+			if(group_to_clients.find(chathash) != group_to_clients.end() &&
+					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+				log("valid user for group " + chathash);
+			} else if(kvsResponseStatusCode(check_raw) != 0 ||
+					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+				log("Not valid user for group " + chathash);
+				resp.status = "Temporary Redirect";
+				resp.status_code = 307;
+				resp.headers["Location"] = "/chat";
+			}
+
 			if(deliverable_messages.find(user) != deliverable_messages.end()
 					&& deliverable_messages[user].find(chathash) != deliverable_messages[user].end()){
 				log("Update chat message hit: " + deliverable_messages[user][chathash]);
@@ -4514,6 +4596,8 @@ int main(int argc, char *argv[]) {
 		log("Couldn't initialize mutex for crashing");
 	if (pthread_mutex_init(&access_state_map, NULL) != 0)
 		log("Couldn't initialize mutex for access_state_map");
+	if (pthread_mutex_init(&access_fifo_seq_num, NULL) != 0)
+			log("Couldn't initialize mutex for access_state_map");
 
 	/* Parse command line args */
 	int c, port_no = 10000, smtp_port_no = 35000, internal_port_no = 40000;
