@@ -943,6 +943,8 @@ void* heartbeat(void *arg) {
 void handleHoldbackQ(struct internal_message &message, sockaddr_in &src){
 	std::string src_server = getAddressFromSockaddr(src);
 
+	log("GOT CHAT MESSAGE FROM : " + src_server + " WITH CONTENT: " + message.content);
+
 	if(server_sequence_nums.find(src_server) == server_sequence_nums.end())
 		server_sequence_nums[src_server] = 0;
 
@@ -966,12 +968,19 @@ void handleHoldbackQ(struct internal_message &message, sockaddr_in &src){
 		if(expected_seq == actual_seq){
 			struct internal_message deliverable_message = fifo_holdbackQ[src_server].front();
 			std::string my_message =  "<li>" + deliverable_message.sender + ": " + encodeURIComponent(deliverable_message.content) +"</li>";
-			std::string old_chat = "";
+			resp_tuple raw_chatroom = getKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group);
+			std::string old_chat = kvsResponseMsg(raw_chatroom);
+			std::string new_chat = old_chat + my_message;
+
+			for(std::string member: group_to_clients[deliverable_message.group]){
+				deliverable_messages[member][deliverable_message.group] = new_chat;
+				log("NEW CHAT IS " + new_chat);
+			}
 			int resp_code = -1, timeout_count = 0;
 			while(resp_code != 0 && (timeout_count++) < 10){
-				resp_tuple raw_chatroom = getKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group);
+				raw_chatroom = getKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group);
 				old_chat = kvsResponseMsg(raw_chatroom);
-				std::string new_chat = old_chat + my_message;
+				new_chat = old_chat + my_message;
 				if(old_chat.find(my_message) != std::string::npos) break;
 				resp_tuple ret = cputKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group, old_chat, new_chat);
 				resp_code = kvsResponseStatusCode(ret);
@@ -982,9 +991,6 @@ void handleHoldbackQ(struct internal_message &message, sockaddr_in &src){
 				log("New chat: " + new_chat);
 			}
 
-			for(std::string member: group_to_clients[deliverable_message.group]){
-				deliverable_messages[member][deliverable_message.group].append(my_message);
-			}
 			std::pop_heap(fifo_holdbackQ[src_server].begin(), fifo_holdbackQ[src_server].end(),
 									internal_message_comparator());
 			fifo_holdbackQ[src_server].pop_back();
@@ -1042,6 +1048,7 @@ void chatMulticast(std::string sender, std::string message, std::string group_ha
 	msg.type = CHAT;
 
 	std::string message_to_send = internalMessageToString(msg);
+	log("MULTICASTING MESSAGE: " + message_to_send);
 	for (sockaddr_in dest : frontend_internal_list) {
 		send_message(message_to_send, dest, false);
 	}
@@ -3698,6 +3705,7 @@ struct http_response processRequest(struct http_request &req) {
 					auto tokens = split(chatroom, "\t");
 					std::string chatname = tokens.at(0), owner = tokens.at(1), chathash = tokens.at(2);
 					display+="<li><a href=\"/joinchat/" + owner + "/" + chathash + "\">"+ chatname +"</a></li>";
+					group_to_clients[chathash].insert(req.cookies["username"]);
 				}
 				display += "</ul>";
 			}
@@ -3784,6 +3792,8 @@ struct http_response processRequest(struct http_request &req) {
 			client_to_group[req.cookies["username"]] = chathash;
 			std::string chatroom = kvsResponseMsg(chatroom_raw);
 			std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
+			deliverable_messages[req.cookies["username"]][chathash] = chatroom;
+			std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
 
 			resp.content =
 								"<head><meta charset=\"UTF-8\"></head>"
@@ -3825,12 +3835,24 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "OK";
 			resp.status_code = 200;
 			resp.content = "";
-			std::string user = req.cookies["username"], group = client_to_group[user];
+			std::string user = req.cookies["username"];
+			auto tokens = split(req.filepath, "/");
+			std::string chathash = tokens.back(); tokens.pop_back();
+			std::string owner = trim(tokens.back()); tokens.pop_back();;
 			if(deliverable_messages.find(user) != deliverable_messages.end()
-					&& deliverable_messages[user].find(group) != deliverable_messages[user].end()){
-				resp.content = deliverable_messages[user][group];
-				deliverable_messages[user][group] = "";
+					&& deliverable_messages[user].find(chathash) != deliverable_messages[user].end()){
+				log("Update chat message hit: " + deliverable_messages[user][chathash]);
+				resp.content = deliverable_messages[user][chathash];
+			} else {
+				log("No luck! Getting from KVS now");
+				resp_tuple ret = getKVS(req.cookies["sessionid"], owner, chathash);
+				if(kvsResponseStatusCode(ret) == 0){
+					deliverable_messages[user][chathash] = kvsResponseMsg(ret);
+					resp.content = deliverable_messages[user][chathash];
+					log("Found: " + deliverable_messages[user][chathash]);
+				}
 			}
+			std::replace(resp.content.begin(), resp.content.end(), '+', ' ');
 			resp.headers["Content-type"] = "text/plain";
 			resp.headers["Content-length"] = std::to_string(resp.content.size());
 		} else {
