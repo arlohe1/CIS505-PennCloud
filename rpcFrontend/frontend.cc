@@ -1623,7 +1623,7 @@ void sendNewMessage(std::string message) {
         log("putPaxos returned with Value: "+kvsResponseMsg(resp));
         log("putPaxos returned with value length: "+std::to_string(kvsResponseMsg(resp).length()));
     } catch (rpc::timeout &t) {
-        log("putPaxos: getPaxos call timed out!");
+        log("putPaxos: putPaxos call timed out!");
     }
     log("putPaxos: complete");
 }
