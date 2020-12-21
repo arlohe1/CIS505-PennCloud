@@ -39,7 +39,8 @@ sockaddr_in load_balancer_addr;
 /********************** Internal message and chat stuff ******************/
 using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
 std::string INTERNAL_THREAD = "i", SMTP_THREAD = "s", HTTP_THREAD = "h";
-pthread_mutex_t modify_server_state, crashing, access_state_map, access_fifo_seq_num;
+pthread_mutex_t modify_server_state, crashing, access_state_map,
+		access_fifo_seq_num;
 struct server_state {
 	time_t last_modified = time(NULL);
 	std::string http_address = "";
@@ -51,7 +52,7 @@ std::vector<std::string> frontend_server_list;
 std::map<std::string, struct server_state> frontend_state_map;
 
 enum message_type {
-	INFO_REQ = 0, INFO_RESP = 1, STOP = 2, RESUME = 3, ACK = 4, CHAT=5
+	INFO_REQ = 0, INFO_RESP = 1, STOP = 2, RESUME = 3, ACK = 4, CHAT = 5
 };
 struct internal_message {
 	int sequence_number;
@@ -61,8 +62,9 @@ struct internal_message {
 } internal_message;
 
 struct internal_message_comparator {
-	bool operator()(const struct internal_message& a, const struct internal_message& b) const {
-		return a.sequence_number<b.sequence_number;
+	bool operator()(const struct internal_message &a,
+			const struct internal_message &b) const {
+		return a.sequence_number < b.sequence_number;
 	}
 };
 
@@ -125,9 +127,7 @@ std::map<int, struct http_session> id_to_session;
 /******************************* End http data structures ******************************/
 
 ///////////////////////////////////////////////////////////////////////////
-
 // Attributed to arthurafarias on Github: https://gist.github.com/arthurafarias/56fec2cd49a32f374c02d1df2b6c350f
-
 std::string decodeURIComponent(std::string encoded) {
 
 	std::string decoded = encoded;
@@ -765,7 +765,7 @@ std::string internalMessageToString(struct internal_message &message) {
 		ret += std::to_string(message.state.smtp_connections) + ",";
 		ret += std::to_string(message.state.internal_connections) + ",";
 		ret += std::to_string(message.state.num_threads) + ",";
-	} else if(message.type == CHAT){
+	} else if (message.type == CHAT) {
 		ret += std::to_string(message.sequence_number) + ",";
 		ret += message.sender + ",";
 		ret += message.group_owner + ",";
@@ -807,7 +807,7 @@ struct internal_message parseRawMessage(std::string &message) {
 		ret.state.num_threads = message_type(
 				stoi(message.substr(0, message.find(","))));
 		message.erase(0, message.find(",") + 1);
-	} else if (ret.type == CHAT){
+	} else if (ret.type == CHAT) {
 		ret.sequence_number = stoi(message.substr(0, message.find(",")));
 		message.erase(0, message.find(",") + 1);
 		ret.sender = message.substr(0, message.find(","));
@@ -925,12 +925,14 @@ void* heartbeat(void *arg) {
 	(NULL);
 }
 
-void handleHoldbackQ(struct internal_message &message, sockaddr_in &src){
+void handleHoldbackQ(struct internal_message &message, sockaddr_in &src) {
 	std::string src_server = getAddressFromSockaddr(src);
 
-	log("GOT CHAT MESSAGE FROM : " + src_server + " WITH CONTENT: " + message.content);
+	log(
+			"GOT CHAT MESSAGE FROM : " + src_server + " WITH CONTENT: "
+					+ message.content);
 
-	if(server_sequence_nums.find(src_server) == server_sequence_nums.end())
+	if (server_sequence_nums.find(src_server) == server_sequence_nums.end())
 		server_sequence_nums[src_server] = 0;
 
 	/* Add message to the holdback q */
@@ -945,29 +947,40 @@ void handleHoldbackQ(struct internal_message &message, sockaddr_in &src){
 	 * deliver while they match */
 	int expected_seq = -1;
 	int actual_seq = -1;
-	while(expected_seq == actual_seq && fifo_holdbackQ[src_server].size() > 0){
+	while (expected_seq == actual_seq && fifo_holdbackQ[src_server].size() > 0) {
 		expected_seq = server_sequence_nums[src_server] + 1;
 		actual_seq = -(fifo_holdbackQ[src_server].front().sequence_number);
-		log("Expected " + std::to_string(expected_seq) + " for " + src_server +
-				" but actual was " + std::to_string(actual_seq) + "\n");
-		if(expected_seq == actual_seq){
-			struct internal_message deliverable_message = fifo_holdbackQ[src_server].front();
-			std::string my_message =  "<li>" + deliverable_message.sender + ": " + encodeURIComponent(deliverable_message.content) +"</li>";
-			resp_tuple raw_chatroom = getKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group);
+		log(
+				"Expected " + std::to_string(expected_seq) + " for "
+						+ src_server + " but actual was "
+						+ std::to_string(actual_seq) + "\n");
+		if (expected_seq == actual_seq) {
+			struct internal_message deliverable_message =
+					fifo_holdbackQ[src_server].front();
+			std::string my_message = "<li>" + deliverable_message.sender + ": "
+					+ encodeURIComponent(deliverable_message.content) + "</li>";
+			resp_tuple raw_chatroom = getKVS(deliverable_message.group_owner,
+					deliverable_message.group_owner, deliverable_message.group);
 			std::string old_chat = kvsResponseMsg(raw_chatroom);
 			std::string new_chat = old_chat + my_message;
 
-			for(std::string member: group_to_clients[deliverable_message.group]){
-				deliverable_messages[member][deliverable_message.group] = new_chat;
+			for (std::string member : group_to_clients[deliverable_message.group]) {
+				deliverable_messages[member][deliverable_message.group] =
+						new_chat;
 				log("NEW CHAT IS " + new_chat);
 			}
 			int resp_code = -1, timeout_count = 0;
-			while(resp_code != 0 && (timeout_count++) < 10){
-				raw_chatroom = getKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group);
+			while (resp_code != 0 && (timeout_count++) < 10) {
+				raw_chatroom = getKVS(deliverable_message.group_owner,
+						deliverable_message.group_owner,
+						deliverable_message.group);
 				old_chat = kvsResponseMsg(raw_chatroom);
 				new_chat = old_chat + my_message;
-				if(old_chat.find(my_message) != std::string::npos) break;
-				resp_tuple ret = cputKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group, old_chat, new_chat);
+				if (old_chat.find(my_message) != std::string::npos)
+					break;
+				resp_tuple ret = cputKVS(deliverable_message.group_owner,
+						deliverable_message.group_owner,
+						deliverable_message.group, old_chat, new_chat);
 				resp_code = kvsResponseStatusCode(ret);
 				log("Try: " + std::to_string(timeout_count));
 				log("resp_code : " + std::to_string(resp_code));
@@ -976,8 +989,9 @@ void handleHoldbackQ(struct internal_message &message, sockaddr_in &src){
 				log("New chat: " + new_chat);
 			}
 
-			std::pop_heap(fifo_holdbackQ[src_server].begin(), fifo_holdbackQ[src_server].end(),
-									internal_message_comparator());
+			std::pop_heap(fifo_holdbackQ[src_server].begin(),
+					fifo_holdbackQ[src_server].end(),
+					internal_message_comparator());
 			fifo_holdbackQ[src_server].pop_back();
 			server_sequence_nums[src_server] += 1;
 //			log("after pop back");
@@ -1011,7 +1025,7 @@ void* handleInternalConnection(void *arg) {
 			resumeThisServer();
 			break;
 		case CHAT:
-			if(!load_balancer)
+			if (!load_balancer)
 				handleHoldbackQ(message, src);
 		}
 	} catch (const std::invalid_argument &ia) {
@@ -1023,7 +1037,8 @@ void* handleInternalConnection(void *arg) {
 	(NULL);
 }
 
-void chatMulticast(std::string sender, std::string message, std::string group_hash, std::string owner){
+void chatMulticast(std::string sender, std::string message,
+		std::string group_hash, std::string owner) {
 	struct internal_message msg;
 	msg.content = message;
 	msg.sender = sender;
@@ -1573,8 +1588,16 @@ std::string getParentDirLink(std::string fileHash) {
 
 std::string getFileLink(std::string fileName, std::string fileHash,
 		std::string containingDirectory) {
-    fileName = decodeURIComponent(fileName);
-    fileName = decodeURIComponent(fileName);
+	fileName = decodeURIComponent(fileName);
+	fileName = decodeURIComponent(fileName);
+	size_t index = 0;
+	while (true) {
+		index = fileName.find("%D", index);
+		if (index == std::string::npos)
+			break;
+		fileName.replace(index, 2, "\r");
+		index += 2;
+	}
 	std::string link;
 	if (fileHash.substr(0, 3).compare("ss0") == 0) {
 // Directory
@@ -1667,47 +1690,51 @@ std::string getFileList(struct http_request req, std::string filepath,
 	}
 }
 
-
 // Returns a deque of <str, str> tuples where [0] is the dir name, and [1] is the dir hash
-std::deque<std::tuple<std::string, std::string>> getFilePath(struct http_request req, std::string targetDirHash) {
-    log("Getting filepath for dir hash: "+targetDirHash);
-    std::string username = req.cookies["username"];
-    std::string sessionid = req.cookies["sessionid"];
+std::deque<std::tuple<std::string, std::string>> getFilePath(
+		struct http_request req, std::string targetDirHash) {
+	log("Getting filepath for dir hash: " + targetDirHash);
+	std::string username = req.cookies["username"];
+	std::string sessionid = req.cookies["sessionid"];
 
-    std::string currDirHash = targetDirHash;
-    std::string dirContents = kvsResponseMsg(getKVS(sessionid, username, currDirHash));
-    std::deque<std::tuple<std::string, std::string>> result;
-    bool notAtRoot = true;
-    while(notAtRoot) {
-        std::string parentDirHash = dirContents.substr(0, dirContents.find("\n"));
-        parentDirHash = parentDirHash.substr(parentDirHash.find(",")+1);
-        resp_tuple resp = getKVS(sessionid, username, parentDirHash);
-        std::string parentDirContents = kvsResponseMsg(resp);
-        if(kvsResponseStatusCode(resp) != 0) {
-            break;
-        }
-        std::deque<std::string> parentDirContentsSplt = split(parentDirContents, "\n");
-        for(std::string line : parentDirContentsSplt) {
-            std::deque < std::string > lineSplt = split(line, ",");
-            if(lineSplt[0].compare("ROOT") == 0) {
-                notAtRoot = false;
-            } else if (lineSplt[1].compare(currDirHash) == 0) {
-                // getting name of curr dir from parent dir's contents
-                result.push_back(std::make_tuple(lineSplt[0], currDirHash));
-                break;
-            }
-        }
-        currDirHash = parentDirHash;
-        dirContents = parentDirContents;
-    }
-    result.push_back(std::make_tuple("~", "ss0_" + generateStringHash(username + "/")));
-    std::reverse(result.begin(), result.end());
-    std::string filePath = "";
-    for(std::tuple<std::string, std::string> filePathEntry : result) {
-        filePath += std::get<0>(filePathEntry) + "/";
-    }
-    log("File path is: "+filePath);
-    return result;
+	std::string currDirHash = targetDirHash;
+	std::string dirContents = kvsResponseMsg(
+			getKVS(sessionid, username, currDirHash));
+	std::deque<std::tuple<std::string, std::string>> result;
+	bool notAtRoot = true;
+	while (notAtRoot) {
+		std::string parentDirHash = dirContents.substr(0,
+				dirContents.find("\n"));
+		parentDirHash = parentDirHash.substr(parentDirHash.find(",") + 1);
+		resp_tuple resp = getKVS(sessionid, username, parentDirHash);
+		std::string parentDirContents = kvsResponseMsg(resp);
+		if (kvsResponseStatusCode(resp) != 0) {
+			break;
+		}
+		std::deque < std::string > parentDirContentsSplt = split(
+				parentDirContents, "\n");
+		for (std::string line : parentDirContentsSplt) {
+			std::deque < std::string > lineSplt = split(line, ",");
+			if (lineSplt[0].compare("ROOT") == 0) {
+				notAtRoot = false;
+			} else if (lineSplt[1].compare(currDirHash) == 0) {
+				// getting name of curr dir from parent dir's contents
+				result.push_back(std::make_tuple(lineSplt[0], currDirHash));
+				break;
+			}
+		}
+		currDirHash = parentDirHash;
+		dirContents = parentDirContents;
+	}
+	result.push_back(
+			std::make_tuple("~", "ss0_" + generateStringHash(username + "/")));
+	std::reverse(result.begin(), result.end());
+	std::string filePath = "";
+	for (std::tuple<std::string, std::string> filePathEntry : result) {
+		filePath += std::get < 0 > (filePathEntry) + "/";
+	}
+	log("File path is: " + filePath);
+	return result;
 }
 
 bool isFileRouteDirectory(std::string filepath) {
@@ -2326,7 +2353,8 @@ struct http_response processRequest(struct http_request &req) {
 		std::string redirect_server = "";
 		pthread_mutex_lock(&access_state_map);
 		while (redirect_server.compare("") == 0
-				|| frontend_state_map.find(redirect_server) == frontend_state_map.end()
+				|| frontend_state_map.find(redirect_server)
+						== frontend_state_map.end()
 				|| time(NULL)
 						- frontend_state_map[redirect_server].last_modified > 3
 				|| redirect_server.compare(this_server_state.http_address) == 0) {
@@ -2764,7 +2792,7 @@ struct http_response processRequest(struct http_request &req) {
 						resp.status = "OK";
 						resp.headers["Content-type"] = "text/html";
 						std::string parentDirLink = "";
-                        getFilePath(req, filepath);
+						getFilePath(req, filepath);
 						std::string fileList = getFileList(req, filepath,
 								parentDirLink);
 						if (fileList == "-1") {
@@ -3372,10 +3400,13 @@ struct http_response processRequest(struct http_request &req) {
 							size_t last = token.find_last_not_of(' ');
 							token = token.substr(first, (last - first + 1));
 						}
-						if (token.length() >= ending.length()) {
+						std::string example = token;
+						for (std::size_t i = 1; i < example.length(); ++i)
+							example[i] = std::tolower(example[i]);
+						if (example.length() >= ending.length()) {
 							local = (0
-									== token.compare(
-											token.length() - ending.length(),
+									== example.compare(
+											example.length() - ending.length(),
 											ending.length(), ending));
 						} else {
 							local = false;
@@ -3986,7 +4017,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
-	} else if (req.filepath.compare(0, 5, "/chat") == 0){
+	} else if (req.filepath.compare(0, 5, "/chat") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -4001,8 +4032,10 @@ struct http_response processRequest(struct http_request &req) {
 				display += "<ul>";
 				while (std::getline(ss, chatroom, '\n')) {
 					auto tokens = split(chatroom, "\t");
-					std::string chatname = tokens.at(0), owner = tokens.at(1), chathash = tokens.at(2);
-					display+="<li><a href=\"/joinchat/" + owner + "/" + chathash + "\">"+ chatname +"</a></li>";
+					std::string chatname = tokens.at(0), owner = tokens.at(1),
+							chathash = tokens.at(2);
+					display += "<li><a href=\"/joinchat/" + owner + "/"
+							+ chathash + "\">" + chatname + "</a></li>";
 					group_to_clients[chathash].insert(req.cookies["username"]);
 				}
 				display += "</ul>";
@@ -4029,31 +4062,37 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
-	} else if (req.filepath.compare(0, 11, "/createchat") == 0){
+	} else if (req.filepath.compare(0, 11, "/createchat") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			// Get stuff from form
 			std::string owner = req.cookies["username"];
-			std::string members_raw = owner + "; " + decodeURIComponent(req.formData["members"]);
-			std::replace( members_raw.begin(), members_raw.end(), '+', ' ');
-			std::deque<std::string> members = split(members_raw , ";");
-			std::string chathash = generateStringHash(req.formData["members"] + std::to_string(time(NULL)));
+			std::string members_raw = owner + "; "
+					+ decodeURIComponent(req.formData["members"]);
+			std::replace(members_raw.begin(), members_raw.end(), '+', ' ');
+			std::deque < std::string > members = split(members_raw, ";");
+			std::string chathash = generateStringHash(
+					req.formData["members"] + std::to_string(time(NULL)));
 
 			// Add the chatbox to owners row
 			putKVS(req.cookies["sessionid"], owner, chathash, "");
 
-			for(std::string m: members){
+			for (std::string m : members) {
 				std::string member = trim(m);
-				std::string cont = members_raw + "\t" + owner + "\t" + chathash + "\n";
+				std::string cont = members_raw + "\t" + owner + "\t" + chathash
+						+ "\n";
 
-				std::string my_message =  cont;
+				std::string my_message = cont;
 				std::string old_message = "";
 				int resp_code = -1, timeout_count = 0;
-				while(resp_code != 0 && (timeout_count++) < 10){
-					resp_tuple raw_message = getKVS(req.cookies["sessionid"], member, "chats");
+				while (resp_code != 0 && (timeout_count++) < 10) {
+					resp_tuple raw_message = getKVS(req.cookies["sessionid"],
+							member, "chats");
 					old_message = kvsResponseMsg(raw_message);
 					std::string new_message = old_message + my_message;
-					if(old_message.find(my_message) != std::string::npos) break;
-					resp_tuple ret = cputKVS(req.cookies["sessionid"], member, "chats", old_message, new_message);
+					if (old_message.find(my_message) != std::string::npos)
+						break;
+					resp_tuple ret = cputKVS(req.cookies["sessionid"], member,
+							"chats", old_message, new_message);
 					resp_code = kvsResponseStatusCode(ret);
 				}
 				group_to_clients[chathash].insert(member);
@@ -4067,7 +4106,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
-	} else if (req.filepath.compare(0, 9, "/joinchat") == 0){
+	} else if (req.filepath.compare(0, 9, "/joinchat") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			resp.status_code = 200;
 			resp.status = "OK";
@@ -4075,23 +4114,29 @@ struct http_response processRequest(struct http_request &req) {
 
 			// Get chatroom from KVS
 			auto tokens = split(req.filepath, "/");
-			std::string chathash = tokens.back(); tokens.pop_back();
-			std::string owner = trim(tokens.back()); tokens.pop_back();
+			std::string chathash = tokens.back();
+			tokens.pop_back();
+			std::string owner = trim(tokens.back());
+			tokens.pop_back();
 
 			// check if user belongs
-			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
-			if(group_to_clients.find(chathash) != group_to_clients.end() &&
-					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"],
+					req.cookies["username"], "chats");
+			if (group_to_clients.find(chathash) != group_to_clients.end()
+					&& group_to_clients[chathash].find(req.cookies["username"])
+							!= group_to_clients[chathash].end()) {
 				log("valid user for group " + chathash);
-			} else if(kvsResponseStatusCode(check_raw) != 0 ||
-					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+			} else if (kvsResponseStatusCode(check_raw) != 0
+					|| kvsResponseMsg(check_raw).find(chathash)
+							== std::string::npos) {
 				log("Not valid user for group " + chathash);
 				resp.status = "Temporary Redirect";
 				resp.status_code = 307;
 				resp.headers["Location"] = "/chat";
 			}
-			resp_tuple chatroom_raw = getKVS(req.cookies["sessionid"], owner, chathash);
-			if(kvsResponseStatusCode(chatroom_raw) != 0){
+			resp_tuple chatroom_raw = getKVS(req.cookies["sessionid"], owner,
+					chathash);
+			if (kvsResponseStatusCode(chatroom_raw) != 0) {
 				resp.status = "Temporary Redirect";
 				resp.status_code = 307;
 				resp.headers["Location"] = "/chat";
@@ -4105,22 +4150,27 @@ struct http_response processRequest(struct http_request &req) {
 			//std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
 
 			resp.content =
-								"<head><meta charset=\"UTF-8\"></head>"
-										"<html><body "
-										"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/chat\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Chat\" /></form>"
-										"<form action=\"/leavechat/"+ owner + "/" + chathash + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Leave Chat\"/></form>"
-										"</div><ul id=\"message-body\">" + chatroom + "</ul>"
-										"<form action=\"/sendchatmessage/"+ owner + "/" + chathash + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\"/>"
-										"<label for=\"message\">Type something</label><input required type=\"text\" name=\"message\"/>"
-										"</form><script type=\"text/javascript\" src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js\"></script>"
-								"<script type=\"text/javascript\" src=\"https://drive.google.com/uc?export=view&id=1WYBufNkkfQD734AhDtBWZ7sSux-RuXZl\"></script></body></html>";
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
+							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/chat\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Chat\" /></form>"
+							"<form action=\"/leavechat/" + owner + "/"
+							+ chathash
+							+ "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Leave Chat\"/></form>"
+									"</div><ul id=\"message-body\">" + chatroom
+							+ "</ul>"
+									"<form action=\"/sendchatmessage/" + owner
+							+ "/" + chathash
+							+ "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\"/>"
+									"<label for=\"message\">Type something</label><input required type=\"text\" name=\"message\"/>"
+									"</form><script type=\"text/javascript\" src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js\"></script>"
+									"<script type=\"text/javascript\" src=\"https://drive.google.com/uc?export=view&id=1WYBufNkkfQD734AhDtBWZ7sSux-RuXZl\"></script></body></html>";
 		} else {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
-	} else if (req.filepath.compare(0, 16, "/sendchatmessage") == 0){
+	} else if (req.filepath.compare(0, 16, "/sendchatmessage") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			// change this to javascript friendly route
 			resp.status = "Temporary Redirect";
@@ -4129,15 +4179,20 @@ struct http_response processRequest(struct http_request &req) {
 			// Get chatroom from KVS
 			std::string message = req.formData["message"];
 			auto tokens = split(req.filepath, "/");
-			std::string chathash = tokens.back(); tokens.pop_back();
-			std::string owner = trim(tokens.back()); tokens.pop_back();
+			std::string chathash = tokens.back();
+			tokens.pop_back();
+			std::string owner = trim(tokens.back());
+			tokens.pop_back();
 			// check if user belongs
-			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
-			if(group_to_clients.find(chathash) != group_to_clients.end() &&
-					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"],
+					req.cookies["username"], "chats");
+			if (group_to_clients.find(chathash) != group_to_clients.end()
+					&& group_to_clients[chathash].find(req.cookies["username"])
+							!= group_to_clients[chathash].end()) {
 				log("valid user for group " + chathash);
-			} else if(kvsResponseStatusCode(check_raw) != 0 ||
-					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+			} else if (kvsResponseStatusCode(check_raw) != 0
+					|| kvsResponseMsg(check_raw).find(chathash)
+							== std::string::npos) {
 				log("Not valid user for group " + chathash);
 				resp.status = "Temporary Redirect";
 				resp.status_code = 307;
@@ -4151,18 +4206,23 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
-	} else if (req.filepath.compare(0, 10, "/leavechat") == 0){
+	} else if (req.filepath.compare(0, 10, "/leavechat") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			auto tokens = split(req.filepath, "/");
-			std::string chathash = tokens.back(); tokens.pop_back();
-			std::string owner = trim(tokens.back()); tokens.pop_back();
+			std::string chathash = tokens.back();
+			tokens.pop_back();
+			std::string owner = trim(tokens.back());
+			tokens.pop_back();
 			/// check if user belongs
-			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
-			if(group_to_clients.find(chathash) != group_to_clients.end() &&
-					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"],
+					req.cookies["username"], "chats");
+			if (group_to_clients.find(chathash) != group_to_clients.end()
+					&& group_to_clients[chathash].find(req.cookies["username"])
+							!= group_to_clients[chathash].end()) {
 				log("valid user for group " + chathash);
-			} else if(kvsResponseStatusCode(check_raw) != 0 ||
-					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+			} else if (kvsResponseStatusCode(check_raw) != 0
+					|| kvsResponseMsg(check_raw).find(chathash)
+							== std::string::npos) {
 				log("Not valid user for group " + chathash);
 				resp.status = "Temporary Redirect";
 				resp.status_code = 307;
@@ -4170,22 +4230,25 @@ struct http_response processRequest(struct http_request &req) {
 			}
 
 			resp_tuple getResp = getKVS(req.cookies["sessionid"],
-								req.cookies["username"], "chats");
+					req.cookies["username"], "chats");
 			std::string getRespMsg = kvsResponseMsg(getResp);
 			std::stringstream ss(getRespMsg);
 			std::string chatroom;
 			std::string new_chats = "";
 			if (getRespMsg != "") {
 				while (std::getline(ss, chatroom, '\n')) {
-					if(chatroom.find(chathash) != std::string::npos) continue;
-					new_chats+=chatroom;
+					if (chatroom.find(chathash) != std::string::npos)
+						continue;
+					new_chats += chatroom;
 				}
-				putKVS(req.cookies["sessionid"],
-						req.cookies["username"], "chats", new_chats);
+				putKVS(req.cookies["sessionid"], req.cookies["username"],
+						"chats", new_chats);
 			}
 			group_to_clients[chathash].erase(req.cookies["username"]);
 			client_to_group.erase(req.cookies["username"]);
-			chatMulticast(req.cookies["username"], req.cookies["username"] + "+left+the+group", chathash, owner);
+			chatMulticast(req.cookies["username"],
+					req.cookies["username"] + "+left+the+group", chathash,
+					owner);
 			resp.status = "Temporary Redirect";
 			resp.status_code = 307;
 			resp.headers["Location"] = "/chat";
@@ -4194,7 +4257,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
-	} else if (req.filepath.compare(0, 18, "/updatechatmessage") == 0){
+	} else if (req.filepath.compare(0, 18, "/updatechatmessage") == 0) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			log("HERE UPDATE CHAT MESSAGE");
 			resp.status = "OK";
@@ -4202,29 +4265,38 @@ struct http_response processRequest(struct http_request &req) {
 			resp.content = "";
 			std::string user = req.cookies["username"];
 			auto tokens = split(req.filepath, "/");
-			std::string chathash = tokens.back(); tokens.pop_back();
-			std::string owner = trim(tokens.back()); tokens.pop_back();
+			std::string chathash = tokens.back();
+			tokens.pop_back();
+			std::string owner = trim(tokens.back());
+			tokens.pop_back();
 			// check if user belongs
-			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
-			if(group_to_clients.find(chathash) != group_to_clients.end() &&
-					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"],
+					req.cookies["username"], "chats");
+			if (group_to_clients.find(chathash) != group_to_clients.end()
+					&& group_to_clients[chathash].find(req.cookies["username"])
+							!= group_to_clients[chathash].end()) {
 				log("valid user for group " + chathash);
-			} else if(kvsResponseStatusCode(check_raw) != 0 ||
-					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+			} else if (kvsResponseStatusCode(check_raw) != 0
+					|| kvsResponseMsg(check_raw).find(chathash)
+							== std::string::npos) {
 				log("Not valid user for group " + chathash);
 				resp.status = "Temporary Redirect";
 				resp.status_code = 307;
 				resp.headers["Location"] = "/chat";
 			}
 
-			if(deliverable_messages.find(user) != deliverable_messages.end()
-					&& deliverable_messages[user].find(chathash) != deliverable_messages[user].end()){
-				log("Update chat message hit: " + deliverable_messages[user][chathash]);
+			if (deliverable_messages.find(user) != deliverable_messages.end()
+					&& deliverable_messages[user].find(chathash)
+							!= deliverable_messages[user].end()) {
+				log(
+						"Update chat message hit: "
+								+ deliverable_messages[user][chathash]);
 				resp.content = deliverable_messages[user][chathash];
 			} else {
 				log("No luck! Getting from KVS now");
-				resp_tuple ret = getKVS(req.cookies["sessionid"], owner, chathash);
-				if(kvsResponseStatusCode(ret) == 0){
+				resp_tuple ret = getKVS(req.cookies["sessionid"], owner,
+						chathash);
+				if (kvsResponseStatusCode(ret) == 0) {
 					deliverable_messages[user][chathash] = kvsResponseMsg(ret);
 					resp.content = deliverable_messages[user][chathash];
 					log("Found: " + deliverable_messages[user][chathash]);
@@ -4232,7 +4304,8 @@ struct http_response processRequest(struct http_request &req) {
 			}
 			std::replace(resp.content.begin(), resp.content.end(), '+', ' ');
 			resp.headers["Content-type"] = "text/plain";
-			resp.headers["Content-length"] = std::to_string(resp.content.size());
+			resp.headers["Content-length"] = std::to_string(
+					resp.content.size());
 		} else {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
@@ -4821,7 +4894,7 @@ int main(int argc, char *argv[]) {
 	if (pthread_mutex_init(&access_state_map, NULL) != 0)
 		log("Couldn't initialize mutex for access_state_map");
 	if (pthread_mutex_init(&access_fifo_seq_num, NULL) != 0)
-			log("Couldn't initialize mutex for access_state_map");
+		log("Couldn't initialize mutex for access_state_map");
 
 	/* Parse command line args */
 	int c, port_no = 10000, smtp_port_no = 35000, internal_port_no = 40000;
@@ -4953,7 +5026,9 @@ int main(int argc, char *argv[]) {
 				std::stoi(load_balancer_address[1]));
 		load_balancer_addr.sin_addr.s_addr = inet_addr(
 				load_balancer_address[0].data());
-		if(load_balancer) this_server_state.http_address = split(trim(std::string(buffer)), ",").at(0);
+		if (load_balancer)
+			this_server_state.http_address = split(trim(std::string(buffer)),
+					",").at(0);
 		frontend_internal_list.push_back(load_balancer_addr);
 		int i = 1;
 		while (fgets(buffer, 300, f)) {
