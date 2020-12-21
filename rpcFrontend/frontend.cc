@@ -4078,15 +4078,23 @@ struct http_response processRequest(struct http_request &req) {
 
 			for (std::string m : members) {
 				std::string member = trim(m);
+				if(member.compare("") == 0) continue;
+				member[0] = std::toupper(member[0]);
+
+				for (std::size_t i = 1; i < member.length();
+						++i)
+					member[i] = std::tolower(member[i]);
 				std::string cont = members_raw + "\t" + owner + "\t" + chathash
 						+ "\n";
 
+				log("CHAT MEMBER : " + member);
 				std::string my_message = cont;
 				std::string old_message = "";
 				int resp_code = -1, timeout_count = 0;
 				while (resp_code != 0 && (timeout_count++) < 10) {
 					resp_tuple raw_message = getKVS(req.cookies["sessionid"],
 							member, "chats");
+					if(kvsResponseStatusCode(raw_message) != 0) break;
 					old_message = kvsResponseMsg(raw_message);
 					std::string new_message = old_message + my_message;
 					if (old_message.find(my_message) != std::string::npos)
@@ -5056,6 +5064,14 @@ int main(int argc, char *argv[]) {
 			pthread_t pthread_id;
 			pthread_create(&pthread_id, NULL, heartbeat, NULL);
 		}
+	} else { // if config file not given, i.e., stand alone frontend
+		std::string local_internal_address = "127.0.0.1";
+		sockaddr_in internal_server;
+		internal_server.sin_family = AF_INET;
+		internal_server.sin_port = htons(internal_port_no);
+		internal_server.sin_addr.s_addr = inet_addr(local_internal_address.data());
+		frontend_internal_list.push_back(internal_server);
+
 	}
 
 	/* Initialize socket: http and smtp are tcp, internal is UDP */
