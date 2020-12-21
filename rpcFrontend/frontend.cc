@@ -1573,6 +1573,8 @@ std::string getParentDirLink(std::string fileHash) {
 
 std::string getFileLink(std::string fileName, std::string fileHash,
 		std::string containingDirectory) {
+    fileName = decodeURIComponent(fileName);
+    fileName = decodeURIComponent(fileName);
 	std::string link;
 	if (fileHash.substr(0, 3).compare("ss0") == 0) {
 // Directory
