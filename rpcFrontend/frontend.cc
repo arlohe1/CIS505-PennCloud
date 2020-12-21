@@ -1586,6 +1586,25 @@ std::string getParentDirLink(std::string fileHash) {
 	return link;
 }
 
+std::string escape(std::string input) {
+	std::string output = "";
+	output.reserve(input.size());
+	for (const char c : input) {
+		switch (c) {
+		case '<':
+			output += "&lt;";
+			break;
+		case '>':
+			output += "&gt;";
+			break;
+		default:
+			output += c;
+			break;
+		}
+	}
+	return output;
+}
+
 std::string getFileLink(std::string fileName, std::string fileHash,
 		std::string containingDirectory) {
 	fileName = decodeURIComponent(fileName);
@@ -1604,19 +1623,19 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 		link =
 				"<div class=\"file-item\"><div class=\"file-first-row\">"
 						"<i class=\"item-button fas fa-folder\" style=\"cursor: default;\">&nbsp;&nbsp;</i><a title=\"Open "
-						+ fileName + "\" href=/files/" + fileHash + ">"
-						+ fileName + "</a>";
+						+ escape(fileName) + "\" href=/files/" + fileHash + ">"
+						+ escape(fileName) + "</a>";
 	} else {
 // File
 		link =
 				"<div class=\"file-item\"><div class=\"file-first-row\">"
 						"<i class=\"item-button fas fa-file\" style=\"cursor: default;\">&nbsp;&nbsp;</i><a title=\"Download "
-						+ fileName + "\" download=\"" + fileName
-						+ "\" href=/files/" + fileHash + ">" + fileName
+						+ escape(fileName) + "\" download=\"" + escape(fileName)
+						+ "\" href=/files/" + fileHash + ">" + escape(fileName)
 						+ "</a>";
 	}
 	link +=
-			"<script>function encodeName() {document.getElementsByName(\"newName\")[0].value = encodeURIComponent(document.getElementsByName(\"newName\")[0].value); return true;}</script>"
+			"<script>function encodeName() {for (var i = 0; i < document.getElementsByName(\"newName\").length; i++) {document.getElementsByName(\"newName\")[i].value = encodeURIComponent(document.getElementsByName(\"newName\")[i].value);} return true;}</script>"
 					"<form accept-charset=\"utf-8\" onsubmit=\"return encodeName();\" action=\"/files/"
 					+ containingDirectory
 					+ "\" method=\"post\">"
@@ -1628,7 +1647,7 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 							"<input type=\"submit\" name=\"submit\" value=\"Rename\" />"
 							"</div>"
 							"</form>"
-							"<script>function encode() {document.getElementsByName(\"newLocation\")[0].value = encodeURIComponent(document.getElementsByName(\"newLocation\")[0].value); return true;}</script>"
+							"<script>function encode() {for (var i = 0; i < document.getElementsByName(\"newName\").length; i++) {document.getElementsByName(\"newLocation\")[i].value = encodeURIComponent(document.getElementsByName(\"newLocation\")[i].value);} return true;}</script>"
 							"<form accept-charset=\"utf-8\" onsubmit=\"return encode();\" action=\"/files/"
 					+ containingDirectory
 					+ "\" method=\"post\">"
@@ -1636,7 +1655,7 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 							"<input type=\"hidden\" name=\"itemToMove\" value=\""
 					+ fileHash
 					+ "\" />"
-							"<label for=\"newLocation\"></label><input placeholder=\"New Location...\" required type=\"text\" name=\"newLocation\"/>"
+							"<label for=\"newLocation\"></label><input placeholder=\"New Absolute Path...\" required type=\"text\" name=\"newLocation\"/>"
 							"<input type=\"submit\" name=\"submit\" value=\"Move\" />"
 							"</div>"
 							"</form><form action=\"/files/"
@@ -2321,25 +2340,6 @@ int getSocketExternalMail(const char *name) {
 	return sfd;
 }
 
-std::string escape(std::string input) {
-	std::string output = "";
-	output.reserve(input.size());
-	for (const char c : input) {
-		switch (c) {
-		case '<':
-			output += "&lt;";
-			break;
-		case '>':
-			output += "&gt;";
-			break;
-		default:
-			output += c;
-			break;
-		}
-	}
-	return output;
-}
-
 struct http_response processRequest(struct http_request &req) {
 	struct http_response resp;
 	log("Entering process request");
@@ -2408,7 +2408,17 @@ struct http_response processRequest(struct http_request &req) {
 				&& req.filepath.length() > 7
 				&& isFileRouteDirectory(req.filepath.substr(7))) {
 			std::string filepath = req.filepath.substr(7);
-			createDirectory(req, filepath, req.formData["dir_name"]);
+			std::string dirName = decodeURIComponent(req.formData["dir_name"]);
+			dirName = decodeURIComponent(dirName);
+			size_t index = 0;
+			while (true) {
+				index = dirName.find("%D", index);
+				if (index == std::string::npos)
+					break;
+				dirName.replace(index, 2, "\r");
+				index += 2;
+			}
+			createDirectory(req, filepath, dirName);
 		}
 	} else if (req.formData["file"].size() > 0) {
 // File present to upload
@@ -2792,7 +2802,16 @@ struct http_response processRequest(struct http_request &req) {
 						resp.status = "OK";
 						resp.headers["Content-type"] = "text/html";
 						std::string parentDirLink = "";
-						getFilePath(req, filepath);
+						std::deque<std::tuple<std::string, std::string>> paths =
+								getFilePath(req, filepath);
+						std::string filepathlink = "";
+						for (std::tuple<std::string, std::string> a : paths) {
+							filepathlink += ""
+									"<a title=\"Open " + std::get < 0
+									> (a) + "\" href=/files/" + std::get < 1
+									> (a) + ">" + std::get < 0
+									> (a) + "</a>" + "/";
+						}
 						std::string fileList = getFileList(req, filepath,
 								parentDirLink);
 						if (fileList == "-1") {
@@ -2840,7 +2859,6 @@ struct http_response processRequest(struct http_request &req) {
 										"<form action=\"/logout\" method=\"POST\"><button   type = \"submit\" >Logout</button></form>"
 										"</div>"
 										"</div>"
-										"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"subject\")[0].value = encodeURIComponent(document.getElementsByName(\"subject\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
 										"<div class=\"main-content\">"
 										"<div class=\"sidebar\">"
 										//"<button class=\"sidebar-link\" ><i class=\"fas fa-folder\"></i>&nbsp;&nbsp;Current Directory</button>"
@@ -2858,7 +2876,8 @@ struct http_response processRequest(struct http_request &req) {
 												"<span class=\"input-wrap\"><input type=\"submit\" name=\"submit\" value=\"&nbsp;&nbsp;Upload File\"></span></div>"
 										//"<button class=\"sidebar-link-special\" type=\"submit\"><i class=\"fas fa-file-medical\"></i>&nbsp;&nbsp;Upload</button></div>"
 												"</form>"
-												"<form action=\"/files/"
+												"<script>function encodeD() {document.getElementsByName(\"dir_name\")[0].value = encodeURIComponent(document.getElementsByName(\"dir_name\")[0].value); return true;}</script>"
+												"<form accept-charset=\"utf-8\" onsubmit=\"return encodeD();\" action=\"/files/"
 										+ filepath
 										+ "\" method=\"POST\">"
 												"<div class=\"create_dir\">"
@@ -2868,7 +2887,8 @@ struct http_response processRequest(struct http_request &req) {
 
 												"</div>"
 												"<div class=\"inbox\">"
-										+ fileList
+										+ "<div class=\"filepathlink-wrapper\">"
+										+ filepathlink + "</div>" + fileList
 										+ "</div></div></div></body></html>";
 					} else {
 						resp.status_code = 200;
