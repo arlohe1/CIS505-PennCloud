@@ -40,7 +40,7 @@ master:
 	$(GCC) masterNode.cc  $(INCLUDES) -L $(RPC_DIR)/output/lib -o masterNode $(LIBS)
 	
 serverfiles:
-	for i in 1 2 3 4 5 6; do \
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
 		rm -r server_$$i; \
 		mkdir server_$$i; \
 		mkdir server_$$i/checkpoint; \
@@ -61,7 +61,7 @@ clean:
 	rm -f masterNode
 	rm -f paxosServer
 	rm -f paxosMaster
-	for i in 1 2 3 4 5 6; do \
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
 		rm -f server_$$i/checkpointNum.txt; \
 		: > server_$$i/log.txt; \
 		rm -r server_$$i/logArchive; \
