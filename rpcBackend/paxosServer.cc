@@ -41,6 +41,7 @@
 #define COM_PER_CHECKPOINT 2
 #define TIMEOUT_MILLISEC 10000
 #define CHECKPOINT_CNT_FILE "checkpointNum.txt"
+#define PAXOS_FILE "paxos_state.txt"
 
 enum Command {GET, PUT, CPUT, DELETE};
 enum EvictCause {MEM, COMM};
@@ -1284,6 +1285,7 @@ std::tuple<int, std::string> get(std::string row, std::string col) {
 				}
 				// read from file and append to local kvMap
 				std::string val = readFileToString((char*) colFile.c_str());
+				cacheSize = cacheSize + val.length();
 				if (kvLoc[row][col] == 1) {
 					val = val + kvMap[row][col];
 				}

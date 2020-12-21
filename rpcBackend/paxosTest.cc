@@ -45,7 +45,7 @@ int main() {
 
         // consistnecy tests
         std::cout << "ON SERV(p=10001): put(lianap, name, Lee) = ";
-        resp = c1.call("put", "lianap", "name", "Lee").as<resp_tuple>();
+        resp = c1.call("putPaxos", "lianap", "name", "Lee").as<resp_tuple>();
         std::cout << std::get<1>(resp) << std::endl;
         isCorrect("OK", std::get<1>(resp));
 
@@ -59,7 +59,7 @@ int main() {
         
 
         std::cout << "ON SERV(p=10002) put(lianap, file, homework 2) = ";
-        resp = c.call("put", "lianap", "name", "homework 2").as<resp_tuple>();
+        resp = c.call("putPaxos", "lianap", "name", "homework 2").as<resp_tuple>();
         std::cout << std::get<1>(resp) << std::endl;
         isCorrect("OK", std::get<1>(resp));
 
@@ -70,15 +70,15 @@ int main() {
         // isCorrect("OK", std::get<1>(resp));
 
         std::cout << "put(lianap, email, Hi! What's Up???) = ";
-        resp = c.call("put", "lianap", "name", "Hi! What's Up???").as<resp_tuple>();
+        resp = c.call("putPaxos", "lianap", "name", "Hi! What's Up???").as<resp_tuple>();
         std::cout << std::get<1>(resp) << std::endl;
         isCorrect("OK", std::get<1>(resp));
 
         //test eviction/checkpointing for get
         std::cout << "ON SERV(p=10000) get(lianap, name) = ";
-        resp = c.call("get", rowString, colString).as<resp_tuple>();
+        resp = c.call("getPaxos", rowString, colString).as<resp_tuple>();
         std::cout << std::get<1>(resp) << std::endl;
-        isCorrect("Lee\nhomework2\nHi! What's Up???\n", std::get<1>(resp));
+        isCorrect("Lee\nhomework 2\nHi! What's Up???\n", std::get<1>(resp));
 
         // std::cout << "put(lianap, file, homework 2) = ";
         // resp = c.call("put", "lianap", "file", "homework 2").as<resp_tuple>();
