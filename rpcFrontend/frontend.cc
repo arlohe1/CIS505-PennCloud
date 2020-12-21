@@ -126,6 +126,25 @@ std::map<int, struct http_session> id_to_session;
 
 /******************************* End http data structures ******************************/
 
+std::string escape(std::string input) {
+	std::string output = "";
+	output.reserve(input.size());
+	for (const char c : input) {
+		switch (c) {
+		case '<':
+			output += "&lt;";
+			break;
+		case '>':
+			output += "&gt;";
+			break;
+		default:
+			output += c;
+			break;
+		}
+	}
+	return output;
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Attributed to arthurafarias on Github: https://gist.github.com/arthurafarias/56fec2cd49a32f374c02d1df2b6c350f
 std::string decodeURIComponent(std::string encoded) {
@@ -470,16 +489,16 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 	while (origServerIdx != currServerIdx) {
 		server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
 		std::string targetServer = std::get < 0 > (serverInfo);
-		 if (!checkIfNodeIsAlive(serverInfo)) {
-		 // Resetting timeout for new server
-		 timeout = 2500; // 2500 milliseconds
-		 std::string newlyChosenServerAddr = whereKVS(session_id, row);
-		 currServerIdx = rowSessionIdToServerIdx[rowSessionId];
-		 log(
-		 "Node " + targetServer + " is dead! Trying new node "
-		 + newlyChosenServerAddr);
-		 continue;
-		 }
+		if (!checkIfNodeIsAlive(serverInfo)) {
+			// Resetting timeout for new server
+			timeout = 2500; // 2500 milliseconds
+			std::string newlyChosenServerAddr = whereKVS(session_id, row);
+			currServerIdx = rowSessionIdToServerIdx[rowSessionId];
+			log(
+					"Node " + targetServer + " is dead! Trying new node "
+							+ newlyChosenServerAddr);
+			continue;
+		}
 		int serverPortNo = getPortNoFromString(targetServer);
 		std::string servAddress = getAddrFromString(targetServer);
 		rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -970,8 +989,8 @@ void handleHoldbackQ(struct internal_message &message, sockaddr_in &src) {
 		if (expected_seq == actual_seq) {
 			struct internal_message deliverable_message =
 					fifo_holdbackQ[src_server].front();
-			std::string my_message = "<li>" + deliverable_message.sender + ": "
-					+ encodeURIComponent(deliverable_message.content) + "</li>";
+			std::string my_message = "<li>" + escape(deliverable_message.sender)
+					+ ": " + escape(deliverable_message.content) + "</li>";
 			resp_tuple raw_chatroom = getKVS(deliverable_message.group_owner,
 					deliverable_message.group_owner, deliverable_message.group);
 			std::string old_chat = kvsResponseMsg(raw_chatroom);
@@ -1597,25 +1616,6 @@ std::string getParentDirLink(std::string fileHash) {
 			"<form method=\"POST\" action=\"/files/" + fileHash
 					+ "\"><button class=\"sidebar-link\" type = \"submit\"><i class=\"fas fa-folder-minus\"></i>&nbsp;&nbsp;Parent Directory</button></form>";
 	return link;
-}
-
-std::string escape(std::string input) {
-	std::string output = "";
-	output.reserve(input.size());
-	for (const char c : input) {
-		switch (c) {
-		case '<':
-			output += "&lt;";
-			break;
-		case '>':
-			output += "&gt;";
-			break;
-		default:
-			output += c;
-			break;
-		}
-	}
-	return output;
 }
 
 std::string getFileLink(std::string fileName, std::string fileHash,
@@ -3542,8 +3542,9 @@ struct http_response processRequest(struct http_request &req) {
 			auto activeBackendNodesCollection =
 					my_admin_console_cache.activeBackendServersList;
 			sleep(1);
-			std::string message =
-					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+			std::string message = "<head><meta charset=\"UTF-8\">"
+			//"<link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\">"
+							"</head><html><body><form action=\"/logout\" method=\"POST\">"
 							"<input type = \"submit\" value=\"Logout\" /></form><br><h3>Frontend servers:</h3><br><ul><hr>";
 			for (std::map<std::string, struct server_state>::iterator it =
 					frontend_state_map.begin(); it != frontend_state_map.end();
@@ -3552,9 +3553,10 @@ struct http_response processRequest(struct http_request &req) {
 				log(
 						"Last modified: "
 								+ std::to_string(it->second.last_modified));
-				bool stopped_by_console =
-						std::find(my_admin_console_cache.stopped_servers.begin(),
-								my_admin_console_cache.stopped_servers.end(), it->first) == my_admin_console_cache.stopped_servers.end();
+				bool stopped_by_console = std::find(
+						my_admin_console_cache.stopped_servers.begin(),
+						my_admin_console_cache.stopped_servers.end(), it->first)
+						== my_admin_console_cache.stopped_servers.end();
 				std::string status =
 						(it->second.last_modified >= now || !stopped_by_console) ?
 								"Active" : "Not Responding";
@@ -3587,14 +3589,17 @@ struct http_response processRequest(struct http_request &req) {
 			log("ADMIN all nodes");
 			for (auto node : allBackendNodes) {
 				log(std::get < 2 > (node));
-				bool stopped_by_console =
-						std::find(my_admin_console_cache.stopped_servers.begin(),
-								my_admin_console_cache.stopped_servers.end(), std::get < 3 > (node)) == my_admin_console_cache.stopped_servers.end();
+				bool stopped_by_console = std::find(
+						my_admin_console_cache.stopped_servers.begin(),
+						my_admin_console_cache.stopped_servers.end(),
+						std::get < 3 > (node))
+						== my_admin_console_cache.stopped_servers.end();
 				std::string status =
 						(std::find(activeBackendNodesCollection.begin(),
 								activeBackendNodesCollection.end(),
 								std::get < 2 > (node))
-								!= activeBackendNodesCollection.end() || !stopped_by_console) ?
+								!= activeBackendNodesCollection.end()
+								|| !stopped_by_console) ?
 								"Active" : "Not Responding";
 				message += "<l1>" + std::get < 2 > (node);
 				message += " Status: " + status;
@@ -3807,7 +3812,7 @@ struct http_response processRequest(struct http_request &req) {
 			log("Server info for: " + target);
 			bool frontend_target = (trim(tokens.back()).compare("f") == 0);
 			std::string message =
-					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head><html><body><form action=\"/logout\" method=\"POST\">"
+					"<head><meta charset=\"UTF-8\"></head><html><body><form action=\"/logout\" method=\"POST\">"
 							"<input type = \"submit\" value=\"Logout\" /></form><form action=\"/admin\" method=\"POST\">"
 							"<input type = \"submit\" value=\"Back\" /></form><br>";
 			if (frontend_target) {
@@ -4242,26 +4247,69 @@ struct http_response processRequest(struct http_request &req) {
 
 			client_to_group[req.cookies["username"]] = chathash;
 			std::string chatroom = kvsResponseMsg(chatroom_raw);
-			std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
+			//std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
 			//deliverable_messages[req.cookies["username"]][chathash] = chatroom;
 			//std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
 
-			resp.content =
-					"<head><meta charset=\"UTF-8\"></head>"
-							"<html><body "
-							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
-							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/chat\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Chat\" /></form>"
-							"<form action=\"/leavechat/" + owner + "/"
-							+ chathash
-							+ "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Leave Chat\"/></form>"
-									"</div><ul id=\"message-body\">" + chatroom
+			/*resp.content =
+			 "<head><meta charset=\"UTF-8\"></head>"
+			 "<html><body "
+			 "style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+			 "<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/chat\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Chat\" /></form>"
+			 "<form action=\"/leavechat/" + owner + "/"
+			 + chathash
+			 + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Leave Chat\"/></form>"
+			 "</div><ul id=\"message-body\">" + chatroom
+			 + "</ul>"
+			 "<form action=\"/sendchatmessage/" + owner
+			 + "/" + chathash
+			 + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\"/>"
+			 "<label for=\"message\">Type something</label><input required type=\"text\" name=\"message\"/>"
+			 "</form><script type=\"text/javascript\" src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js\"></script>"
+			 "<script type=\"text/javascript\" src=\"https://drive.google.com/uc?export=view&id=1WYBufNkkfQD734AhDtBWZ7sSux-RuXZl\"></script></body></html>";*/
+
+			std::string message =
+					"<html><head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1PoIbJlTGlxAi24J7s5J8aRViWVW1XHgh\"></head><body><div class=\"total-wrapper\">"
+							"<div class=\"nav\">"
+							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+							"<div class=\"nav-right\">"
+							"<form action=\"/change-password\" method=\"POST\"><button style=\"line-height: 24px;\" type = \"submit\" >Change Password</button></form>"
+							"</body></html>"
+							"<form action=\"/logout\" method=\"POST\"><button style=\"line-height: 24px;\"  type = \"submit\" >Logout</button></form>"
+							"</div>"
+							"</div>"
+							"<div class=\"main-content\">";
+			message +=
+					"<script>if ( window.history.replaceState ) {window.history.replaceState( null, null, window.location.href );}</script>"
+							"<script>function encodeMessage() {document.getElementsByName(\"message\")[0].value = encodeURIComponent(document.getElementsByName(\"message\")[0].value); return true;}</script>"
+							"<div class=\"discuss-header\">"
+							"<form action=\"/chat\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><div class=\"button-text\">PennChat</div></div></button></form>"
+							//"<div class=\"forum-name\">"
+							/*"<form action=\"/leavechat/"
+							 + owner + "/" + chathash
+							 + "\" method=\"POST\"> <input type = \"submit\" value=\"Leave Chat\"/></form>""</div>"*/
+							"</div>"
+							"<div class=\"discuss-content\">"
+							//message += displayAllLedgerMessages(ledgerHash);
+							//message +=
+							"<ul id=\"message-body\">" + chatroom
 							+ "</ul>"
-									"<form action=\"/sendchatmessage/" + owner
-							+ "/" + chathash
-							+ "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\"/>"
-									"<label for=\"message\">Type something</label><input required type=\"text\" name=\"message\"/>"
-									"</form><script type=\"text/javascript\" src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js\"></script>"
-									"<script type=\"text/javascript\" src=\"https://drive.google.com/uc?export=view&id=1WYBufNkkfQD734AhDtBWZ7sSux-RuXZl\"></script></body></html>";
+									"</div>"
+									"<div class=\"discuss-new\">"
+									"<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/sendchatmessage/"
+							+ owner + "/" + chathash
+							+ "\" method=\"post\">"
+									"<div class=\"discuss-new-row\">"
+									"<label for=\"message\"></label><input required type=\"text\" name=\"message\" placeholder=\"Type a Message...\">"
+									"<input type=\"submit\" name=\"submit\" value=\"Send\" />"
+									"</div>"
+									"</form>"
+									"</div>"
+									"</div>";
+			message +=
+					"</div><script type=\"text/javascript\" src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js\"></script>"
+							"<script type=\"text/javascript\" src=\"https://drive.google.com/uc?export=view&id=1WYBufNkkfQD734AhDtBWZ7sSux-RuXZl\"></script></body></html>";
+			resp.content = message;
 		} else {
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
@@ -4275,6 +4323,16 @@ struct http_response processRequest(struct http_request &req) {
 
 			// Get chatroom from KVS
 			std::string message = req.formData["message"];
+			message = decodeURIComponent(message);
+			message = decodeURIComponent(message);
+			size_t index = 0;
+			while (true) {
+				index = message.find("%D", index);
+				if (index == std::string::npos)
+					break;
+				message.replace(index, 2, "\r");
+				index += 2;
+			}
 			auto tokens = split(req.filepath, "/");
 			std::string chathash = tokens.back();
 			tokens.pop_back();
@@ -4399,7 +4457,7 @@ struct http_response processRequest(struct http_request &req) {
 					log("Found: " + deliverable_messages[user][chathash]);
 				}
 			}
-			std::replace(resp.content.begin(), resp.content.end(), '+', ' ');
+			//std::replace(resp.content.begin(), resp.content.end(), '+', ' ');
 			resp.headers["Content-type"] = "text/plain";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
