@@ -3313,7 +3313,7 @@ struct http_response processRequest(struct http_request &req) {
                     "<div style=\"justify-content:center; align-items:center;display:flex;\">"
                     "<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss\" method=\"post\">"
                         "<div style=\"display: flex; flex-direction: row;\">"
-							"<label for=\"newMessage\">New Post</label><input required type=\"text\" name=\"newMessage\" placeholder=\"Write a post\">"
+							"<label for=\"newMessage\"></label><input required type=\"text\" name=\"newMessage\" placeholder=\"Write a post\">"
                             "<input type=\"submit\" name=\"submit\" value=\"Submit\" />"
                         "</div>"
                     "</form>"
