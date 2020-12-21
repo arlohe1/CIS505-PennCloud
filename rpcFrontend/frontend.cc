@@ -362,10 +362,25 @@ void buildClusterToBackendServerMapping() {
 bool checkIfNodeIsAlive(server_tuple serverInfo) {
 	// connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
 	std::string targetServer = std::get < 0 > (serverInfo);
-	int masterPortNo = getPortNoFromString(kvMaster_addr);
-	std::string masterServAddress = getAddrFromString(kvMaster_addr);
-	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
-	return masterNodeRPCClient.call("isNodeAlive", targetServer).as<bool>();
+	std::string targetServerHeartbeatIP = std::get < 1 > (serverInfo);
+	log(
+			"Checking heartbeat for " + targetServer + " at heartbeat address: "
+					+ targetServerHeartbeatIP);
+	int heartbeatPortNo = getPortNoFromString(targetServerHeartbeatIP);
+	std::string heartbeatAddress = getAddrFromString(targetServerHeartbeatIP);
+	rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
+	kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
+	try {
+		bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
+		log("Heartbeat for " + targetServer + " returned true!");
+		return isAlive;
+	} catch (rpc::timeout &t) {
+		log(
+				"Heartbeat for " + targetServer
+						+ " failed to return. Node is dead.");
+		return false;
+	}
+	return false;
 }
 
 std::string whereKVS(std::string session_id, std::string row) {
@@ -455,7 +470,6 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 	while (origServerIdx != currServerIdx) {
 		server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
 		std::string targetServer = std::get < 0 > (serverInfo);
-		/*
 		 if (!checkIfNodeIsAlive(serverInfo)) {
 		 // Resetting timeout for new server
 		 timeout = 2500; // 2500 milliseconds
@@ -466,7 +480,6 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 		 + newlyChosenServerAddr);
 		 continue;
 		 }
-		 */
 		int serverPortNo = getPortNoFromString(targetServer);
 		std::string servAddress = getAddrFromString(targetServer);
 		rpc::client kvsRPCClient(servAddress, serverPortNo);
@@ -3539,8 +3552,11 @@ struct http_response processRequest(struct http_request &req) {
 				log(
 						"Last modified: "
 								+ std::to_string(it->second.last_modified));
+				bool stopped_by_console =
+						std::find(my_admin_console_cache.stopped_servers.begin(),
+								my_admin_console_cache.stopped_servers.end(), it->first) == my_admin_console_cache.stopped_servers.end();
 				std::string status =
-						(it->second.last_modified >= now) ?
+						(it->second.last_modified >= now || !stopped_by_console) ?
 								"Active" : "Not Responding";
 				if (this_server_state.http_address.compare(it->first) != 0) {
 					message += "<l1>" + it->first;
@@ -3571,11 +3587,14 @@ struct http_response processRequest(struct http_request &req) {
 			log("ADMIN all nodes");
 			for (auto node : allBackendNodes) {
 				log(std::get < 2 > (node));
+				bool stopped_by_console =
+						std::find(my_admin_console_cache.stopped_servers.begin(),
+								my_admin_console_cache.stopped_servers.end(), std::get < 3 > (node)) == my_admin_console_cache.stopped_servers.end();
 				std::string status =
 						(std::find(activeBackendNodesCollection.begin(),
 								activeBackendNodesCollection.end(),
 								std::get < 2 > (node))
-								!= activeBackendNodesCollection.end()) ?
+								!= activeBackendNodesCollection.end() || !stopped_by_console) ?
 								"Active" : "Not Responding";
 				message += "<l1>" + std::get < 2 > (node);
 				message += " Status: " + status;
