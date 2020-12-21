@@ -937,6 +937,13 @@ int acceptedSeqNum;
 std::map<std::string, std::map<std::string, std::tuple<std::string, int>>> acceptedVals; // row entry -> col entry -> tuple(value, highest accepted seqNum for entry)
 // acceptedVal
 
+void storeNums() {
+	FILE* paxos_state_ptr = fopen(PAXOS_FILE, "w");
+	fprintf(paxos_state_ptr, "%d\n%d\n",promisedSeqNum, acceptedSeqNum);
+	fclose(paxos_state_ptr);
+}
+
+
 // status code in response is 0 - no prev acceptedVal, 1 - prev accepted Val, -1 - seqNum < prev accepted seq num
 prepare_tuple prepare(int seqNum, std::string row, std::string col) {
 	// check if a value has been accepted for entry (row, col)
@@ -975,6 +982,7 @@ prepare_tuple acceptProposal(int seqNum, std::string row, std::string col, std::
 		acceptedSeqNum = seqNum;
 		acceptedVals[row][col] = std::make_tuple(val, seqNum);
 		acceptedVals.erase(row);
+		storeNums();
 		return std::make_tuple(1, -1, val);
 	} else {
 		// nack
@@ -1098,7 +1106,7 @@ resp_tuple sendPrepare(std::string row, std::string col, std::string val) {
 	    std::string proposalVal;
 	    // check if phase 1 succeeded
 	    if (std::get<0>(resp) == -1) {
-	    	return std::make_tuple(-1, "ERR");
+	    	return std::make_tuple(-1, "ERR"); // may want to continue instead
 	    } else {
 	    	proposalVal = std::get<2>(resp);
 	    }
@@ -1492,6 +1500,13 @@ void getLoggingUpdates() {
 
 }
 
+void getPaxosNums() {
+	FILE* paxos_state_ptr = fopen(PAXOS_FILE, "r");
+	promisedSeqNum = getValSize(paxos_state_ptr);
+	acceptedSeqNum = getValSize(paxos_state_ptr);
+	fclose(paxos_state_ptr);
+}
+
 
 // Requests latest log files from primary node via getLoggingUpdates(). Should be run on boot to ensure data is
 // up-to-date.
@@ -1507,6 +1522,8 @@ void loadLatestKVMapOnBoot() {
 			put(adminRow, adminCol, adminVal);
     	}
     }
+
+    getPaxosNums();
  	// debug("%s\n", "kvMap before log replay or checkpoint: ");
  	printKvMap();
  	loadKvStoreFromDisk();
