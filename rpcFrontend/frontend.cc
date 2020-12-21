@@ -1186,7 +1186,7 @@ int uploadFile(struct http_request req, std::string filepath) {
 					std::transform(currName.begin(), currName.end(),
 							currName.begin(), ::tolower);
 					if (currName == fileNameLower) {
-						return -1;
+						return -1; // file with same name already exists in directory
 					} else if (currName.compare(fileNameLower) < 0) {
 						contents += fileEntry + "\n";
 					} else {
@@ -1212,10 +1212,10 @@ int uploadFile(struct http_request req, std::string filepath) {
 			}
 			count++;
 		} else {
-			return -2;
+			return -2; // unknown error please try again later
 		}
 	}
-	return -2;
+	return -2; // unknown error please try again later
 }
 
 int renameFile(struct http_request req, std::string filepath,
@@ -1253,7 +1253,7 @@ int renameFile(struct http_request req, std::string filepath,
 				}
 			}
 			if (!found) {
-				return -3;
+				return -3; // file to be renamed not found
 			}
 
 			std::string newEntry = newName + "," + itemToRename;
@@ -1269,7 +1269,7 @@ int renameFile(struct http_request req, std::string filepath,
 					std::transform(currName.begin(), currName.end(),
 							currName.begin(), ::tolower);
 					if (currName == fileNameLower) {
-						return -1;
+						return -1; // file with name already exists
 					} else if (currName.compare(fileNameLower) < 0) {
 						contentsFinal += fileEntry + "\n";
 					} else {
@@ -1294,10 +1294,10 @@ int renameFile(struct http_request req, std::string filepath,
 			}
 			count++;
 		} else {
-			return -2;
+			return -2; // unknown
 		}
 	}
-	return -2;
+	return -2; // unknown
 }
 
 int isDirectoryGetHash(struct http_request req, std::string filepath,
@@ -1312,7 +1312,7 @@ int isDirectoryGetHash(struct http_request req, std::string filepath,
 		return 0;
 	}
 	if (filepath.substr(0, 2) != "~/") {
-		return -1;
+		return -3;
 	}
 
 	size_t last = 0;
@@ -1346,7 +1346,7 @@ int isDirectoryGetHash(struct http_request req, std::string filepath,
 				return -1;
 			}
 		} else {
-			return -2;
+			return -2; // unknown
 		}
 	}
 
@@ -1390,7 +1390,7 @@ int moveFile(struct http_request req, std::string filepath,
 	int result = isDirectoryGetHash(req, newLocation, hash);
 
 	if (result < 0)
-		return result;
+		return result - 10;
 
 	if (hash == itemToMove)
 		return -4;
@@ -1814,7 +1814,7 @@ int createDirectory(struct http_request req, std::string filepath,
 					std::transform(currName.begin(), currName.end(),
 							currName.begin(), ::tolower);
 					if (currName == dirNameLower) {
-						return -1;
+						return -1; // file or directory with this name already exists
 					} else if (currName.compare(dirNameLower) < 0) {
 						contents += fileEntry + "\n";
 					} else {
@@ -2416,6 +2416,7 @@ struct http_response processRequest(struct http_request &req) {
 		}
 	}
 
+	std::string fileError = "";
 	if (req.formData["dir_name"].size() > 0) {
 // File present to upload
 		if (req.filepath.substr(0, 7).compare("/files/") == 0
@@ -2432,7 +2433,13 @@ struct http_response processRequest(struct http_request &req) {
 				dirName.replace(index, 2, "\r");
 				index += 2;
 			}
-			createDirectory(req, filepath, dirName);
+			int res = createDirectory(req, filepath, dirName);
+			if (res == -1) {
+				fileError =
+						"File or directory with this name already exists within this directory.";
+			} else if (res == -2) {
+				fileError = "Something went wrong; please try again later.";
+			}
 		}
 	} else if (req.formData["file"].size() > 0) {
 // File present to upload
@@ -2440,7 +2447,13 @@ struct http_response processRequest(struct http_request &req) {
 				&& req.filepath.length() > 7
 				&& isFileRouteDirectory(req.filepath.substr(7))) {
 			std::string filepath = req.filepath.substr(7);
-			uploadFile(req, filepath);
+			int res = uploadFile(req, filepath);
+			if (res == -1) {
+				fileError =
+						"File or directory with this name already exists within this directory.";
+			} else if (res == -2) {
+				fileError = "Something went wrong; please try again later.";
+			}
 		}
 	} else if (req.formData["itemToDelete"].size() > 0) {
 		if (req.filepath.substr(0, 7).compare("/files/") == 0
@@ -2448,13 +2461,24 @@ struct http_response processRequest(struct http_request &req) {
 				&& isFileRouteDirectory(req.filepath.substr(7))) {
 			std::string filepath = req.filepath.substr(7);
 			std::string itemToDelete = req.formData["itemToDelete"];
+			int res;
 			if (itemToDelete.at(2) == '1') {
 				// itemToDelete is a FILE
-				deleteFile(req, filepath, itemToDelete);
+				res = deleteFile(req, filepath, itemToDelete);
+				if (res == -1) {
+					fileError = "File to be deleted was not found.";
+				} else if (res == -2) {
+					fileError = "Something went wrong; please try again later.";
+				}
 			} else if (itemToDelete.at(2) == '0') {
 				// itemToDelete is a DIRECTORY
 				// Recursively delete all subdirectories and files
-				deleteDirectory(req, filepath, itemToDelete);
+				res = deleteDirectory(req, filepath, itemToDelete);
+				if (res == -1) {
+					fileError = "Directory to be deleted was not found.";
+				} else if (res == -2) {
+					fileError = "Something went wrong; please try again later.";
+				}
 			}
 		}
 	} else if (req.formData["itemToRename"].size() > 0
@@ -2475,7 +2499,15 @@ struct http_response processRequest(struct http_request &req) {
 				newName.replace(index, 2, "\r");
 				index += 2;
 			}
-			renameFile(req, filepath, itemToRename, newName);
+			int res = renameFile(req, filepath, itemToRename, newName);
+			if (res == -1) {
+				fileError =
+						"File or directory with this new name already exists within this directory.";
+			} else if (res == -2) {
+				fileError = "Something went wrong; please try again later.";
+			} else if (res == -3) {
+				fileError = "File to be renamed was not found.";
+			}
 		}
 	} else if (req.formData["itemToMove"].size() > 0
 			&& req.formData["newLocation"].size() > 0) {
@@ -2503,6 +2535,20 @@ struct http_response processRequest(struct http_request &req) {
 				resp.status = "Temporary Redirect";
 				resp.headers["Location"] = "/files/" + target;
 				return resp;
+			}
+
+			if (status == -1) {
+				fileError =
+						"File or directory with this name already exists within the target directory.";
+			} else if (status == -2 || status == -12) {
+				fileError = "Something went wrong; please try again later.";
+			} else if (status == -3) {
+				fileError = "File to be moved was not found.";
+			} else if (status == -4) {
+				fileError = "Cannot move directory into itself.";
+			} else if (status == -13 || status == -11) {
+				fileError =
+						"Cannot find target directory. Remember that absolute path to target directory must begin with '~/'.";
 			}
 		}
 	} else if (req.formData["newMessage"].size() > 0
@@ -2898,8 +2944,8 @@ struct http_response processRequest(struct http_request &req) {
 												"<label for=\"dir_name\"></label><input placeholder=\"New Directory Name...\" class=\"dir_input\" required type=\"text\" name=\"dir_name\" />"
 												"<button class=\"sidebar-link-special\" type = \"submit\"><i class=\"fas fa-folder-plus\"></i>&nbsp;&nbsp;Create Directory</button></div>"
 												"</form>"
-
-												"</div>"
+										+ "<div class=\"error-holder\">"
+										+ fileError + "</div></div>"
 												"<div class=\"inbox\">"
 										+ "<div class=\"filepathlink-wrapper\">"
 										+ filepathlink + "</div>" + fileList
@@ -3961,6 +4007,12 @@ struct http_response processRequest(struct http_request &req) {
 						getLedgerNameFromHash(ledgerHash);
 				std::string ledgerCreator = std::get < 0 > (ledgerInfo);
 				std::string ledgerName = std::get < 1 > (ledgerInfo);
+				if (ledgerCreator == "" && ledgerName == "") {
+					resp.status_code = 307;
+					resp.status = "Temporary Redirect";
+					resp.headers["Location"] = "/discuss";
+					return resp;
+				}
 				resp.status = "OK";
 				resp.status_code = 200;
 				resp.headers["Content-type"] = "text/html";
@@ -4137,7 +4189,7 @@ struct http_response processRequest(struct http_request &req) {
 			std::replace(members_raw.begin(), members_raw.end(), ',', ';');
 			log("MEMBER RAW: " + members_raw);
 			std::deque < std::string > members = split(members_raw, ";");
-			std::set<std::string> members_polished;
+			std::set < std::string > members_polished;
 			std::string chathash = generateStringHash(
 					req.formData["members"] + std::to_string(time(NULL)));
 
@@ -4149,11 +4201,13 @@ struct http_response processRequest(struct http_request &req) {
 				if (member.compare("") == 0)
 					continue;
 				member[0] = std::toupper(member[0]);
-				if(!std::isalnum(member[0])) continue;
+				if (!std::isalnum(member[0]))
+					continue;
 
-				for (std::size_t i = 1; i < member.length(); ++i){
+				for (std::size_t i = 1; i < member.length(); ++i) {
 					member[i] = std::tolower(member[i]);
-					if(!std::isalnum(member[i])) continue;
+					if (!std::isalnum(member[i]))
+						continue;
 				}
 				resp_tuple raw_message = getKVS(req.cookies["sessionid"],
 						member, "chats");
@@ -4163,12 +4217,14 @@ struct http_response processRequest(struct http_request &req) {
 				log("MEMBERS POLISHED: " + member);
 			}
 			std::string members_polished_str;
-			for(std::string m : members_polished) members_polished_str += m + ", ";
-			members_polished_str.pop_back(); members_polished_str.pop_back();
-			for(std::string m: members_polished){
+			for (std::string m : members_polished)
+				members_polished_str += m + ", ";
+			members_polished_str.pop_back();
+			members_polished_str.pop_back();
+			for (std::string m : members_polished) {
 				std::string member = trim(m);
-				std::string cont = members_polished_str + "\t" + owner + "\t" + chathash
-						+ "\n";
+				std::string cont = members_polished_str + "\t" + owner + "\t"
+						+ chathash + "\n";
 
 				log("CHAT MEMBER : " + member);
 				std::string my_message = cont;
