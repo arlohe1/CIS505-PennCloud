@@ -362,10 +362,25 @@ void buildClusterToBackendServerMapping() {
 bool checkIfNodeIsAlive(server_tuple serverInfo) {
 	// connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
 	std::string targetServer = std::get < 0 > (serverInfo);
-	int masterPortNo = getPortNoFromString(kvMaster_addr);
-	std::string masterServAddress = getAddrFromString(kvMaster_addr);
-	rpc::client masterNodeRPCClient(masterServAddress, masterPortNo);
-	return masterNodeRPCClient.call("isNodeAlive", targetServer).as<bool>();
+	std::string targetServerHeartbeatIP = std::get < 1 > (serverInfo);
+	log(
+			"Checking heartbeat for " + targetServer + " at heartbeat address: "
+					+ targetServerHeartbeatIP);
+	int heartbeatPortNo = getPortNoFromString(targetServerHeartbeatIP);
+	std::string heartbeatAddress = getAddrFromString(targetServerHeartbeatIP);
+	rpc::client kvsHeartbeatRPCClient(heartbeatAddress, heartbeatPortNo);
+	kvsHeartbeatRPCClient.set_timeout(2000); // 2000 milliseconds
+	try {
+		bool isAlive = kvsHeartbeatRPCClient.call("heartbeat").as<bool>();
+		log("Heartbeat for " + targetServer + " returned true!");
+		return isAlive;
+	} catch (rpc::timeout &t) {
+		log(
+				"Heartbeat for " + targetServer
+						+ " failed to return. Node is dead.");
+		return false;
+	}
+	return false;
 }
 
 std::string whereKVS(std::string session_id, std::string row) {
@@ -455,7 +470,6 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 	while (origServerIdx != currServerIdx) {
 		server_tuple serverInfo = rowSessionIdToServerMap[rowSessionId];
 		std::string targetServer = std::get < 0 > (serverInfo);
-		/*
 		 if (!checkIfNodeIsAlive(serverInfo)) {
 		 // Resetting timeout for new server
 		 timeout = 2500; // 2500 milliseconds
@@ -466,7 +480,6 @@ resp_tuple kvsFunc(std::string kvsFuncType, std::string session_id,
 		 + newlyChosenServerAddr);
 		 continue;
 		 }
-		 */
 		int serverPortNo = getPortNoFromString(targetServer);
 		std::string servAddress = getAddrFromString(targetServer);
 		rpc::client kvsRPCClient(servAddress, serverPortNo);

@@ -1385,7 +1385,7 @@ void adminReviveServer() {
 
 // Returns true if the kv thread is running. Used to check if server is alive.
 bool heartbeat() {
-    debug("%s\n", "Heartbeat requested! Returning true.");
+    debug("Heartbeat requested! Returning %d\n", (kvServerWithFrontendThreadId != 0));
     return (kvServerWithFrontendThreadId != 0);
 }
 
