@@ -1411,14 +1411,14 @@ std::string getFileLink(std::string fileName, std::string fileHash,
 // Directory
 		link =
 				"<div class=\"file-item\"><div class=\"file-first-row\">"
-						"<i class=\"item-button fas fa-folder\">&nbsp;&nbsp;</i><a title=\"Open "
+						"<i class=\"item-button fas fa-folder\" style=\"cursor: default;\">&nbsp;&nbsp;</i><a title=\"Open "
 						+ fileName + "\" href=/files/" + fileHash + ">"
 						+ fileName + "</a>";
 	} else {
 // File
 		link =
 				"<div class=\"file-item\"><div class=\"file-first-row\">"
-						"<i class=\"item-button fas fa-file\">&nbsp;&nbsp;</i><a title=\"Download "
+						"<i class=\"item-button fas fa-file\" style=\"cursor: default;\">&nbsp;&nbsp;</i><a title=\"Download "
 						+ fileName + "\" download=\"" + fileName
 						+ "\" href=/files/" + fileHash + ">" + fileName
 						+ "</a>";
@@ -1609,8 +1609,10 @@ std::string displayAllLedgerMessages(std::string ledgerHash) {
 							messageRaw.find(":"));
 					std::string message = messageRaw.substr(
 							messageRaw.find(":") + 1);
-					htmlMsgs += "<p><strong>" + sender + ":</strong> " + message
-							+ "</p>";
+					htmlMsgs +=
+							"<div class=\"ledger-item\"><div class=\"ledger-info\">"
+									+ sender + ":&nbsp;&nbsp;" + message
+									+ "</div></div>";
 				}
 			}
 			log(
@@ -1619,11 +1621,11 @@ std::string displayAllLedgerMessages(std::string ledgerHash) {
 			return htmlMsgs;
 		} else {
 			log("getPaxos: no messages to display!");
-			return "<p>No posts yet.</p>";
+			return "<div class=\"ledger-item\"><div class=\"ledger-info\">No posts yet.</div></div>";
 		}
 	} catch (rpc::timeout &t) {
 		log("getPaxos: getPaxos call timed out! Returning error message");
-		return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
+		return "<div class=\"ledger-item\"><div class=\"ledger-info\">Failed to load messages! Please try again later.</div></div>";
 	}
 }
 
@@ -1694,7 +1696,9 @@ std::string displayAllLedgers() {
 			log(
 					"getPaxos: Got " + std::to_string(ledgerDeque.size())
 							+ " ledgers from getPaxos");
-			for (std::string ledgerRaw : ledgerDeque) {
+			std::deque<std::string>::reverse_iterator rit;
+			for (rit = ledgerDeque.rbegin(); rit != ledgerDeque.rend(); ++rit) {
+				std::string ledgerRaw = *rit;
 				if (ledgerRaw.length() > 0) {
 					std::string ledgerCreator = ledgerRaw.substr(0,
 							ledgerRaw.find(","));
@@ -1703,9 +1707,13 @@ std::string displayAllLedgers() {
 							ledgerRaw.find(","));
 					std::string ledgerName = ledgerRaw.substr(
 							ledgerRaw.find(",") + 1);
-					htmlMsgs += "<p><strong>" + ledgerCreator + ":</strong> "
-							+ ledgerName + "<a href=/discuss/" + ledgerHash
-							+ ">Link</a></p>";
+					htmlMsgs +=
+							"<div style=\"cursor: pointer;\" onclick=\"window.location='/discuss/"
+									+ ledgerHash
+									+ "';\" class=\"ledger-item\"><div class=\"ledger-info\">"
+									+ ledgerName
+									+ "</div><div class=\"ledger-creator\">By&nbsp;"
+									+ ledgerCreator + "</div></div>";
 				}
 			}
 			log(
@@ -1713,11 +1721,13 @@ std::string displayAllLedgers() {
 			return htmlMsgs;
 		} else {
 			log("getPaxos: no messages to display!");
-			return "<p>No ledgers created yet.</p>";
+			return "<div class=\"ledger-item\"><div class=\"ledger-info\">No forums yet."
+					"</div></div>";
 		}
 	} catch (rpc::timeout &t) {
 		log("getPaxos: getPaxos call timed out! Returning error message");
-		return "<p style=\"color:red;\">Failed to load messages! Please try again later.</p>";
+		return "<div class=\"ledger-item\"><div class=\"ledger-info\">Failed to load forums. Please try again later!"
+				"</div></div>";
 	}
 }
 
@@ -2336,6 +2346,8 @@ struct http_response processRequest(struct http_request &req) {
 					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1iikoQUWZmEpJ6XyCKMU4hrnkA9ZTg_5B\"></head>"
 							"<html>"
 							"<body><div style=\"display:flex; flex-direction: row;\">"
+							"<script>if ( window.history.replaceState ) {window.history.replaceState( null, null, window.location.href );}</script>"
+
 							"<div class=\"heading-wrapper\"><div class=\"heading\">PennCloud</div><div class=\"subtitle\">Increase your productivity and safely store what matters most with PennCloud.</div></div>"
 							"<div style=\"display:flex; flex-direction: column;\">"
 							+ test + "<div class=\"form-structor\">"
@@ -2426,6 +2438,15 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare("/login") == 0) {
 		log(std::to_string(__LINE__));
 		if (req.cookies.find("username") == req.cookies.end()) {
+			if (!req.formData["username"].empty()) {
+				req.formData["username"][0] = std::toupper(
+						req.formData["username"][0]);
+
+				for (std::size_t i = 1; i < req.formData["username"].length();
+						++i)
+					req.formData["username"][i] = std::tolower(
+							req.formData["username"][i]);
+			}
 			if (req.formData["username"] == "") {
 				resp.status_code = 307;
 				resp.status = "Temporary Redirect";
@@ -2472,6 +2493,15 @@ struct http_response processRequest(struct http_request &req) {
 	} else if (req.filepath.compare("/signup") == 0) {
 		log(std::to_string(__LINE__));
 		if (req.cookies.find("username") == req.cookies.end()) {
+			if (!req.formData["username"].empty()) {
+				req.formData["username"][0] = std::toupper(
+						req.formData["username"][0]);
+
+				for (std::size_t i = 1; i < req.formData["username"].length();
+						++i)
+					req.formData["username"][i] = std::tolower(
+							req.formData["username"][i]);
+			}
 			bool valid = true;
 			for (int i = 0; i < req.formData["username"].size(); i++) {
 				if (!isalnum(req.formData["username"][i]))
@@ -2539,6 +2569,8 @@ struct http_response processRequest(struct http_request &req) {
 			resp.content =
 					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1yp7bV2amcRJTWoW6GpcXZ_D95Lg9_WNU\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
 							"<html><body><div class=\"total-wrapper\">"
+							"<script>if ( window.history.replaceState ) {window.history.replaceState( null, null, window.location.href );}</script>"
+
 							"<div class=\"nav\">"
 							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
 							"<div class=\"nav-right\">"
@@ -2614,6 +2646,7 @@ struct http_response processRequest(struct http_request &req) {
 						resp.content =
 								"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1pOieVTXa5tbbaK7eg7aX3dMTWE_UR1Jm\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
 										"<html><body ><div class=\"total-wrapper\">"
+										"<script>if ( window.history.replaceState ) {window.history.replaceState( null, null, window.location.href );}</script>"
 										"<div class=\"nav\">"
 										"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
 										"<div class=\"nav-right\">"
@@ -2625,7 +2658,7 @@ struct http_response processRequest(struct http_request &req) {
 										"<script>function encode() {document.getElementsByName(\"to\")[0].value = encodeURIComponent(document.getElementsByName(\"to\")[0].value); document.getElementsByName(\"subject\")[0].value = encodeURIComponent(document.getElementsByName(\"subject\")[0].value); document.getElementsByName(\"content\")[0].value = encodeURIComponent(document.getElementsByName(\"content\")[0].value); return true;}</script>"
 										"<div class=\"main-content\">"
 										"<div class=\"sidebar\">"
-										"<button class=\"sidebar-link\" ><i class=\"fas fa-folder\"></i>&nbsp;&nbsp;Current Directory</button>"
+										//"<button class=\"sidebar-link\" ><i class=\"fas fa-folder\"></i>&nbsp;&nbsp;Current Directory</button>"
 										+ parentDirLink
 										+ "<script> function getFile() {document.getElementById(\"upfile\").click();}</script>"
 										+ "<script> function sub(obj) {var file = obj.value; console.log(file); document.getElementById(\"yourBtn\").innerHTML = file.substring(12); event.preventDefault();}</script>"
@@ -2768,6 +2801,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.content =
 					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1aO2UaTSAoXOhadVi5HXHN8RCLbE4O_Qt\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
 							"<html><body ><div class=\"total-wrapper\">"
+							"<script>if ( window.history.replaceState ) {window.history.replaceState( null, null, window.location.href );}</script>"
 							"<div class=\"nav\">"
 							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
 							"<div class=\"nav-right\">"
@@ -2875,6 +2909,7 @@ struct http_response processRequest(struct http_request &req) {
 			resp.content =
 					"<head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1rfpVOIMTUZBvu1pWILDKiRrDi9u0oLpi\"><link href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css\" rel=\"stylesheet\"></head>"
 							"<html><body ><div class=\"total-wrapper\">"
+
 							"<div class=\"nav\">"
 							"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
 							"<div class=\"nav-right\">"
@@ -3226,26 +3261,36 @@ struct http_response processRequest(struct http_request &req) {
 							}
 						} else {
 							std::string addr = token.substr(0, token.find("@"));
-							resp_tuple getResp = getKVS(addr, addr, "mailbox");
-							std::string current = kvsResponseMsg(getResp);
-							int getRespStatusCode = kvsResponseStatusCode(
-									getResp);
-							if (getRespStatusCode == 0) {
-								std::string final = temp;
-								final += current;
-								resp_tuple resp2 = cputKVS(addr, addr,
-										"mailbox", current, final);
-								int respStatus2 = kvsResponseStatusCode(resp2);
-								while (respStatus2 != 0) {
-									getResp = getKVS(addr, addr, "mailbox");
-									getRespStatusCode = kvsResponseStatusCode(
-											getResp);
-									current = kvsResponseMsg(getResp);
-									final = temp;
+							if (!addr.empty()) {
+								addr[0] = std::toupper(addr[0]);
+
+								for (std::size_t i = 1; i < addr.length(); ++i)
+									addr[i] = std::tolower(addr[i]);
+
+								resp_tuple getResp = getKVS(addr, addr,
+										"mailbox");
+								std::string current = kvsResponseMsg(getResp);
+								int getRespStatusCode = kvsResponseStatusCode(
+										getResp);
+								if (getRespStatusCode == 0) {
+									std::string final = temp;
 									final += current;
-									resp2 = cputKVS(addr, addr, "mailbox",
-											current, final);
-									respStatus2 = kvsResponseStatusCode(resp2);
+									resp_tuple resp2 = cputKVS(addr, addr,
+											"mailbox", current, final);
+									int respStatus2 = kvsResponseStatusCode(
+											resp2);
+									while (respStatus2 != 0) {
+										getResp = getKVS(addr, addr, "mailbox");
+										getRespStatusCode =
+												kvsResponseStatusCode(getResp);
+										current = kvsResponseMsg(getResp);
+										final = temp;
+										final += current;
+										resp2 = cputKVS(addr, addr, "mailbox",
+												current, final);
+										respStatus2 = kvsResponseStatusCode(
+												resp2);
+									}
 								}
 							}
 						}
@@ -3698,23 +3743,33 @@ struct http_response processRequest(struct http_request &req) {
 				resp.status_code = 200;
 				resp.headers["Content-type"] = "text/html";
 
-				std::string message = "<html><body>";
+				std::string message =
+						"<html><head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1AzSbD5ig5sSeHDvxG4yTneWVpXx5gnwJ\"></head><body><div class=\"total-wrapper\">"
+								"<div class=\"nav\">"
+								"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+								"<div class=\"nav-right\">"
+								"<form action=\"/change-password\" method=\"POST\"><button style=\"line-height: 24px;\" type = \"submit\" >Change Password</button></form>"
+								"</body></html>"
+								"<form action=\"/logout\" method=\"POST\"><button style=\"line-height: 24px;\"  type = \"submit\" >Logout</button></form>"
+								"</div>"
+								"</div>"
+								"<div class=\"main-content\">";
 				message +=
-						"<script>function encodeMessage() {document.getElementsByName(\"newMessage\")[0].value = encodeURIComponent(document.getElementsByName(\"newMessage\")[0].value); return true;}</script>"
-								"<div style=\"width:50%;margin:auto\">"
-								"<div style=\"justify-content:center; align-items:center;display:flex;\">"
-								"<h3>" + ledgerName + " (" + ledgerCreator
-								+ ")</h3>"
-										"</div>"
-										"<div style=\"height:75%;overflow-y:auto;\">";
+						"<script>if ( window.history.replaceState ) {window.history.replaceState( null, null, window.location.href );}</script>"
+								"<script>function encodeMessage() {document.getElementsByName(\"newMessage\")[0].value = encodeURIComponent(document.getElementsByName(\"newMessage\")[0].value); return true;}</script>"
+								"<div class=\"discuss-header\">"
+								"<form action=\"/discuss\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><div class=\"button-text\">PennDiscuss</div></div></button></form>"
+								"<div class=\"forum-name\">" + ledgerCreator
+								+ ":&nbsp;&nbsp;" + ledgerName + "</div></div>"
+										"<div class=\"discuss-content\">";
 				message += displayAllLedgerMessages(ledgerHash);
 				message +=
 						"</div>"
-								"<div style=\"justify-content:center; align-items:center;display:flex;\">"
+								"<div class=\"discuss-new\">"
 								"<form accept-charset=\"utf-8\" onsubmit=\"return encodeMessage();\" action=\"/discuss/"
 								+ ledgerHash
 								+ "\" method=\"post\">"
-										"<div style=\"display: flex; flex-direction: row;\">"
+										"<div class=\"discuss-new-row\">"
 										"<input type=\"hidden\" name=\"targetLedger\" value=\""
 								+ ledgerHash
 								+ "\"/>"
@@ -3724,7 +3779,7 @@ struct http_response processRequest(struct http_request &req) {
 										"</form>"
 										"</div>"
 										"</div>";
-				message += "</body></html>";
+				message += "</div></body></html>";
 				resp.headers["Content-length"] = std::to_string(message.size());
 				resp.content = message;
 			} else {
@@ -3732,30 +3787,40 @@ struct http_response processRequest(struct http_request &req) {
 				resp.status = "OK";
 				resp.status_code = 200;
 				resp.headers["Content-type"] = "text/html";
-				std::string message = "<html><body>";
-				message +=
-						"<script>function encodeLedger() {document.getElementsByName(\"newLedger\")[0].value = encodeURIComponent(document.getElementsByName(\"newLedger\")[0].value); return true;}</script>"
-								"<div style=\"width:50%;margin:auto\">"
-								"<div style=\"justify-content:center; align-items:center;display:flex;\">"
-								"<h3>PennCloud Forums List</h3>"
+				std::string message =
+						"<html><head><meta charset=\"UTF-8\"><link rel=\"stylesheet\" href=\"https://drive.google.com/uc?export=view&id=1xheWcLxhfn4LNAupczXfW-gUUuahw1Lx\"></head><body><div class=\"total-wrapper\">"
+								"<div class=\"nav\">"
+								"<div class=\"nav-title\"><form action=\"/dashboard\" method=\"POST\"><button   type = \"submit\" >PennCloud</button></form></div>"
+								"<div class=\"nav-right\">"
+								"<form action=\"/change-password\" method=\"POST\"><button style=\"line-height: 24px;\" type = \"submit\" >Change Password</button></form>"
+								"</body></html>"
+								"<form action=\"/logout\" method=\"POST\"><button style=\"line-height: 24px;\"  type = \"submit\" >Logout</button></form>"
 								"</div>"
-								"<div>";
-				message += displayAllLedgers();
+								"</div>"
+								"<div class=\"main-content\">";
 				message +=
-						"</div>"
-								"<div style=\"justify-content:center; align-items:center;display:flex;\">"
+						"<script>if ( window.history.replaceState ) {window.history.replaceState( null, null, window.location.href );}</script>"
+								"<script>function encodeLedger() {document.getElementsByName(\"newLedger\")[0].value = encodeURIComponent(document.getElementsByName(\"newLedger\")[0].value); return true;}</script>"
+								"<div class=\"discuss-header\">"
+								"<form action=\"/discuss\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><div class=\"button-text\">PennDiscuss</div></div></button></form>"
+								"</div>"
+								"<div class=\"discuss-new\">"
 								"<form accept-charset=\"utf-8\" onsubmit=\"return encodeLedger();\" action=\"/discuss\" method=\"post\">"
-								"<div style=\"display: flex; flex-direction: row;\">"
+								"<div class=\"discuss-new-row\">"
 								"<input type=\"hidden\" name=\"ledgerCreator\" value=\""
 								+ req.cookies["username"]
 								+ "\"/>"
-										"<label for=\"newLedger\"></label><input required type=\"text\" name=\"newLedger\" placeholder=\"Create a new forum\">"
+										"<label for=\"newLedger\"></label><input required type=\"text\" name=\"newLedger\" placeholder=\"New Forum Name...\">"
 										"<input type=\"submit\" name=\"submit\" value=\"Create\" />"
 										"</div>"
 										"</form>"
 										"</div>"
-										"</div>";
-				message += "</body></html>";
+										"<div class=\"discuss-content\">";
+				message += displayAllLedgers();
+				message += "</div>"
+
+						"</div>";
+				message += "</div></div></body></html>";
 				resp.headers["Content-length"] = std::to_string(message.size());
 				resp.content = message;
 			}
