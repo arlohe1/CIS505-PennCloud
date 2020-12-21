@@ -1554,6 +1554,7 @@ void *kvServerThreadFunc(void *arg) {
 	// srv.bind("delApproved", &del);
 	// srv.bind("del", &delReq);
 	srv.bind("getPaxos", &get);
+	srv.bind("sendPrepare", &sendPrepare);
 	srv.bind("notifyOfNewLeader", &notifyOfNewLeader);
 	srv.bind("notifyOfNewNode", &notifyOfNewNode);
 	srv.bind("prepare", prepare);
