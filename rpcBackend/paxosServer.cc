@@ -923,20 +923,6 @@ resp_tuple learn(int seqNum, std::string row, std::string col, std::string val) 
 	            }
 	        }
 	    }
-
-
-	// debugDetailed("Trying remote %s to: %s with timeout %ld\n", kvsFunc.c_str(), otherServer.c_str(), timeout);
-    // if(kvsFunc.compare("PUT") == 0) {
-    //     resp = client.call("putApproved", row, col, val).as<resp_tuple>();
-    //     debug("putApproved returned: %s\n", std::get<1>(resp).c_str());
-    // } else if(kvsFunc.compare("CPUT") == 0) {
-    //     resp = client.call("cputApproved", row, col, oldVal, val).as<resp_tuple>();
-    // } else if(kvsFunc.compare("DEL") == 0) {
-    //     resp = client.call("delApproved", row, col).as<resp_tuple>();
-    // } else {
-    //     debugDetailed("%s is an invalid function for kvsFuncReq()!\n", kvsFunc.c_str());
-    //     return std::make_tuple(1, "ERR");
-    // }
 	return std::make_tuple(0, "OK");
 }
 
