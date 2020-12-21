@@ -2838,13 +2838,14 @@ struct http_response processRequest(struct http_request &req) {
 							"</div>"
 							"</div>"
 							"<div class=\"main-content\">"
+							"<div class=\"row-1\">"
 							"<form action=\"/mailbox\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-mail-bulk\"></i><div class=\"button-text\">PennMail</div></div></button></form>"
 							//"<form action=\"/compose\" method=\"POST\"> <input style=\"line-height: 24px;\" type = \"submit\" value=\"Compose Email\" /></form>"
 							"<form action=\"/files/" + userRootDir
 							+ "\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-box-open\"></i><div class=\"button-text\">PennDrive</div></div></button></form>"
-									"<form action=\"/discuss\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-users\"></i><div class=\"button-text\">PennDiscuss</div></div></button></form>"
+									"</div><div class=\"row-2\"><form action=\"/discuss\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-users\"></i><div class=\"button-text\">PennDiscuss</div></div></button></form>"
 									"<form action=\"/chat\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-comments\"></i><div class=\"button-text\">PennChat</div></div></button></form>"
-									"</div></div></body></html>";
+									"</div></div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
 		} else {
@@ -3604,10 +3605,15 @@ struct http_response processRequest(struct http_request &req) {
 				log(
 						"Last modified: "
 								+ std::to_string(it->second.last_modified));
-				bool stopped_by_console = my_admin_console_cache.stopped_servers.find(trim(it->first)) != my_admin_console_cache.stopped_servers.end();
-				std::string status = (stopped_by_console)? "Not Responding" :
-						((it->second.last_modified >= now ) ?
-								"Active" : "Not Responding");
+				bool stopped_by_console =
+						my_admin_console_cache.stopped_servers.find(
+								trim(it->first))
+								!= my_admin_console_cache.stopped_servers.end();
+				std::string status =
+						(stopped_by_console) ?
+								"Not Responding" :
+								((it->second.last_modified >= now) ?
+										"Active" : "Not Responding");
 				if (this_server_state.http_address.compare(it->first) != 0) {
 					message += "<l1>" + it->first;
 					message += " Status: " + status;
@@ -3637,13 +3643,20 @@ struct http_response processRequest(struct http_request &req) {
 			log("ADMIN all nodes");
 			for (auto node : allBackendNodes) {
 				log(std::get < 2 > (node));
-				bool stopped_by_console = my_admin_console_cache.stopped_servers.find(trim(std::get<3>(node))) != my_admin_console_cache.stopped_servers.end();;
-				std::string status = (stopped_by_console) ? "Not Responding" :
-						((std::find(activeBackendNodesCollection.begin(),
-								activeBackendNodesCollection.end(),
-								std::get < 2 > (node))
-								!= activeBackendNodesCollection.end()) ?
-								"Active" : "Not Responding");
+				bool stopped_by_console =
+						my_admin_console_cache.stopped_servers.find(
+								trim(std::get < 3 > (node)))
+								!= my_admin_console_cache.stopped_servers.end();
+				;
+				std::string status =
+						(stopped_by_console) ?
+								"Not Responding" :
+								((std::find(
+										activeBackendNodesCollection.begin(),
+										activeBackendNodesCollection.end(),
+										std::get < 2 > (node))
+										!= activeBackendNodesCollection.end()) ?
+										"Active" : "Not Responding");
 				message += "<l1>" + std::get < 2 > (node);
 				message += " Status: " + status;
 				message +=
@@ -3813,7 +3826,10 @@ struct http_response processRequest(struct http_request &req) {
 				stopServerKVS(target);
 			}
 			my_admin_console_cache.stopped_servers.insert(trim(target));
-			log("Stopped servers size: " + std::to_string(my_admin_console_cache.stopped_servers.size()));
+			log(
+					"Stopped servers size: "
+							+ std::to_string(
+									my_admin_console_cache.stopped_servers.size()));
 			registerCacheAccess("stopserver", target);
 			resp.status_code = 307;
 			resp.status = "Temporary Redirect";
