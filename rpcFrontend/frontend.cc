@@ -4127,21 +4127,22 @@ struct http_response processRequest(struct http_request &req) {
 		if (req.cookies.find("username") != req.cookies.end()) {
 			// Get stuff from form
 			std::string owner = req.cookies["username"];
-			std::string m = decodeURIComponent(req.formData["members"]);
-			m = decodeURIComponent(m);
+			std::string decoded_m = decodeURIComponent(req.formData["members"]);
+			decoded_m = decodeURIComponent(decoded_m);
 			size_t index = 0;
 			while (true) {
-				index = m.find("%D", index);
+				index = decoded_m.find("%D", index);
 				if (index == std::string::npos)
 					break;
-				m.replace(index, 2, "\r");
+				decoded_m.replace(index, 2, "\r");
 				index += 2;
 			}
-			std::string members_raw = owner + "; " + m;
+			std::string members_raw = owner + "; " + decoded_m;
 			std::replace(members_raw.begin(), members_raw.end(), '+', ' ');
 			std::replace(members_raw.begin(), members_raw.end(), ',', ';');
+			log("MEMBER RAW: " + members_raw);
 			std::deque < std::string > members = split(members_raw, ";");
-			std::deque<std::string> members_polished;
+			std::set<std::string> members_polished;
 			std::string chathash = generateStringHash(
 					req.formData["members"] + std::to_string(time(NULL)));
 
@@ -4153,14 +4154,18 @@ struct http_response processRequest(struct http_request &req) {
 				if (member.compare("") == 0)
 					continue;
 				member[0] = std::toupper(member[0]);
+				if(!std::isalnum(member[0])) continue;
 
-				for (std::size_t i = 1; i < member.length(); ++i)
+				for (std::size_t i = 1; i < member.length(); ++i){
 					member[i] = std::tolower(member[i]);
+					if(!std::isalnum(member[i])) continue;
+				}
 				resp_tuple raw_message = getKVS(req.cookies["sessionid"],
 						member, "chats");
 				if (kvsResponseStatusCode(raw_message) != 0)
 					continue;
-				members_polished.push_back(member);
+				members_polished.insert(member);
+				log("MEMBERS POLISHED: " + member);
 			}
 			std::string members_polished_str;
 			for(std::string m : members_polished) members_polished_str += m + ", ";
