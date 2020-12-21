@@ -36,10 +36,10 @@ volatile int l_balancer_index = 0, server_index = 1;
 volatile int session_id_counter = rand();
 sockaddr_in load_balancer_addr;
 
-/********************** Internal message stuff ******************/
+/********************** Internal message and chat stuff ******************/
 using server_addr_tuple = std::tuple<int, bool, std::string, std::string>;
 std::string INTERNAL_THREAD = "i", SMTP_THREAD = "s", HTTP_THREAD = "h";
-pthread_mutex_t modify_server_state, crashing, access_state_map;
+pthread_mutex_t modify_server_state, crashing, access_state_map, access_fifo_seq_num;
 struct server_state {
 	time_t last_modified = time(NULL);
 	std::string http_address = "";
@@ -51,14 +51,30 @@ std::vector<std::string> frontend_server_list;
 std::map<std::string, struct server_state> frontend_state_map;
 
 enum message_type {
-	INFO_REQ = 0, INFO_RESP = 1, STOP = 2, RESUME = 3, ACK = 4
+	INFO_REQ = 0, INFO_RESP = 1, STOP = 2, RESUME = 3, ACK = 4, CHAT=5
 };
 struct internal_message {
+	int sequence_number;
 	message_type type;
+	std::string sender, content, group, group_owner;
 	struct server_state state;
 } internal_message;
 
+struct internal_message_comparator {
+	bool operator()(const struct internal_message& a, const struct internal_message& b) const {
+		return a.sequence_number<b.sequence_number;
+	}
+};
+
 std::vector<sockaddr_in> frontend_internal_list;
+
+/********************* chat stuff **********************************/
+std::map<std::string, std::set<std::string>> group_to_clients;
+std::map<std::string, std::string> client_to_group;
+volatile int fifo_seq = 0;
+std::map<std::string, int> server_sequence_nums;
+std::map<std::string, std::deque<struct internal_message>> fifo_holdbackQ;
+std::map<std::string, std::map<std::string, std::string>> deliverable_messages;
 
 struct admin_console_cache {
 	bool initialized = false;
@@ -107,6 +123,56 @@ struct http_response {
 std::map<int, struct http_session> id_to_session;
 
 /******************************* End http data structures ******************************/
+
+///////////////////////////////////////////////////////////////////////////
+
+// Attributed to arthurafarias on Github: https://gist.github.com/arthurafarias/56fec2cd49a32f374c02d1df2b6c350f
+
+std::string decodeURIComponent(std::string encoded) {
+
+	std::string decoded = encoded;
+	std::smatch sm;
+	std::string haystack;
+
+	int dynamicLength = decoded.size() - 2;
+
+	if (decoded.size() < 3)
+		return decoded;
+
+	for (int i = 0; i < dynamicLength; i++) {
+
+		haystack = decoded.substr(i, 3);
+
+		if (std::regex_match(haystack, sm, std::regex("%[0-9A-F]{2}"))) {
+			haystack = haystack.replace(0, 1, "0x");
+			std::string rc = { (char) std::stoi(haystack, nullptr, 16) };
+			decoded = decoded.replace(decoded.begin() + i,
+					decoded.begin() + i + 3, rc);
+		}
+
+		dynamicLength = decoded.size() - 2;
+
+	}
+
+	return decoded;
+}
+
+std::string encodeURIComponent(std::string decoded) {
+
+	std::ostringstream oss;
+	std::regex r("[!'\\(\\)*-.0-9A-Za-z_~]");
+
+	for (char &c : decoded) {
+		if (std::regex_match((std::string ) { c }, r)) {
+			oss << c;
+		} else {
+			oss << "%" << std::uppercase << std::hex << (0xff & c);
+		}
+	}
+	return oss.str();
+}
+
+///////////////////////////////////////////////////////////////////////////
 
 /******************************* Start Util functions     ******************************/
 
@@ -259,246 +325,6 @@ std::string getAddrFromString(std::string fullServAddr) {
 	return trim(split(fullServAddr, ":")[0]);
 }
 
-/*********************** Internal Messaging Util function ***********************************/
-
-void incrementThreadCounter(std::string type) {
-	pthread_mutex_lock(&modify_server_state);
-	if (type.compare(INTERNAL_THREAD) == 0) {
-		this_server_state.internal_connections += 1;
-	} else if (type.compare(SMTP_THREAD) == 0) {
-		this_server_state.smtp_connections += 1;
-	} else if (type.compare(HTTP_THREAD) == 0) {
-		this_server_state.http_connections += 1;
-	}
-	this_server_state.num_threads += 1;
-	pthread_mutex_unlock(&modify_server_state);
-}
-
-void decrementThreadCounter(std::string type) {
-	pthread_mutex_lock(&modify_server_state);
-	if (type.compare(INTERNAL_THREAD) == 0) {
-		this_server_state.internal_connections -= 1;
-	} else if (type.compare(SMTP_THREAD) == 0) {
-		this_server_state.smtp_connections -= 1;
-	} else if (type.compare(HTTP_THREAD) == 0) {
-		this_server_state.http_connections -= 1;
-	}
-	this_server_state.num_threads -= 1;
-	pthread_mutex_unlock(&modify_server_state);
-}
-
-std::string getAddressFromSockaddr(sockaddr_in &addr) {
-	return std::string(inet_ntoa(addr.sin_addr)) + ":"
-			+ std::to_string(ntohs(addr.sin_port));
-}
-
-std::string getMessageFromInternalSocket(struct sockaddr_in &src) {
-	char buf[1001];
-	socklen_t srcSize = sizeof(src);
-	int rlen = recvfrom(internal_socket_fd, buf, sizeof(buf), 0,
-			(struct sockaddr*) &src, &srcSize);
-	buf[rlen] = 0;
-	std::string raw_message(buf);
-	if (!load_balancer)
-		log("Received " + raw_message + " from " + getAddressFromSockaddr(src));
-
-	return raw_message;
-}
-
-int send_message(std::string ret, sockaddr_in &dest, bool silent) {
-	int rlen = sendto(internal_socket_fd, ret.data(), ret.length(), 0,
-			(struct sockaddr*) &dest, sizeof(dest));
-	if (!silent)
-		log(
-				"Sent '" + ret + "' to " + getAddressFromSockaddr(dest)
-						+ " total bytes sent " + std::to_string(rlen));
-	return rlen;
-}
-
-std::string internalMessageToString(struct internal_message &message) {
-	std::string ret = std::to_string(message.type) + ",";
-	if (message.type == INFO_RESP) {
-		ret += message.state.http_address + ",";
-		ret += std::to_string(message.state.http_connections) + ",";
-		ret += std::to_string(message.state.smtp_connections) + ",";
-		ret += std::to_string(message.state.internal_connections) + ",";
-		ret += std::to_string(message.state.num_threads) + ",";
-	}
-	ret.pop_back();
-	return ret;
-}
-
-void log_server_state(struct server_state &state) {
-	std::string ret;
-	ret += "Http address: " + state.http_address + ",";
-	ret += "Last modified: " + std::to_string(state.last_modified) + ",";
-	ret += "Http conn num: " + std::to_string(state.http_connections) + ",";
-	ret += "Smtp conn num: " + std::to_string(state.smtp_connections) + ",";
-	ret += "Internal conn num: " + std::to_string(state.internal_connections)
-			+ ",";
-	ret += "Num threads: " + std::to_string(state.num_threads);
-	log(ret);
-}
-
-struct internal_message parseRawMessage(std::string &message) {
-	struct internal_message ret;
-	ret.type = message_type(stoi(message.substr(0, message.find(","))));
-	message.erase(0, message.find(",") + 1);
-	if (ret.type == INFO_RESP) {
-		ret.state.http_address = message.substr(0, message.find(","));
-		message.erase(0, message.find(",") + 1);
-		ret.state.http_connections = message_type(
-				stoi(message.substr(0, message.find(","))));
-		message.erase(0, message.find(",") + 1);
-		ret.state.smtp_connections = message_type(
-				stoi(message.substr(0, message.find(","))));
-		message.erase(0, message.find(",") + 1);
-		ret.state.internal_connections = message_type(
-				stoi(message.substr(0, message.find(","))));
-		message.erase(0, message.find(",") + 1);
-		ret.state.num_threads = message_type(
-				stoi(message.substr(0, message.find(","))));
-		message.erase(0, message.find(",") + 1);
-	}
-	return ret;
-}
-
-std::string prepareInternalMessage(message_type type) {
-	struct internal_message ret;
-	ret.type = type;
-	if (type == INFO_RESP) {
-		ret.state = this_server_state;
-	}
-	return internalMessageToString(ret);
-}
-
-bool amICrashing() {
-	pthread_mutex_lock(&crashing);
-	pthread_mutex_unlock(&crashing);
-	return false;
-}
-
-int sendStateTo(sockaddr_in &dest) {
-	std::string message = prepareInternalMessage(INFO_RESP);
-	int rlen = sendto(internal_socket_fd, message.data(), message.length(), 0,
-			(struct sockaddr*) &dest, sizeof(dest));
-	return rlen;
-}
-
-void storeServerState(struct server_state &state) {
-	pthread_mutex_lock(&access_state_map);
-	state.last_modified = time(NULL);
-	std::string http_addr = trim(state.http_address);
-	frontend_state_map[http_addr] = state;
-	pthread_mutex_unlock(&access_state_map);
-}
-
-void requstStateFromAllServers() {
-	std::string message = prepareInternalMessage(INFO_REQ);
-	for (sockaddr_in dest : frontend_internal_list) {
-		send_message(message, dest, false);
-	}
-}
-
-int sendStopMessage(int index) {
-	if (index == 0 || index == server_index
-			|| index >= frontend_internal_list.size())
-		return -1;
-	std::string message = prepareInternalMessage(STOP);
-	return send_message(message, frontend_internal_list[index], false)
-			- message.size();
-}
-
-int sendResumeMessage(int index) {
-	if (index == 0 || index == server_index
-			|| index >= frontend_internal_list.size())
-		return -1;
-	std::string message = prepareInternalMessage(RESUME);
-	return send_message(message, frontend_internal_list[index], false)
-			- message.size();
-}
-
-int getServerIndexFromAddr(std::string &addr) {
-	auto it = std::find(frontend_server_list.begin(),
-			frontend_server_list.end(), addr);
-	return (it == frontend_server_list.end()) ?
-			-1 : it - frontend_server_list.begin() + 1;
-}
-
-void resumeThisServer() {
-	log("Resuming");
-	pthread_mutex_unlock(&crashing);
-}
-
-void crashThisServer() {
-	log("Crashing");
-	pthread_mutex_lock(&crashing);
-	// wait for resumption
-	while (!shut_down) {
-		log("need to wait for RESUME");
-		sockaddr_in src;
-		std::string raw_message = getMessageFromInternalSocket(src);
-		struct internal_message message;
-		try {
-			message = parseRawMessage(raw_message);
-			if (message.type == RESUME) {
-				break;
-			} else {
-				log("Still waiting for RESUME message");
-				continue;
-			}
-		} catch (const std::invalid_argument &ia) {
-			log("Invalid argument: " + std::string(ia.what()));
-		}
-	}
-	if (shut_down)
-		exit(-1);
-	resumeThisServer();
-}
-
-void* heartbeat(void *arg) {
-	incrementThreadCounter(INTERNAL_THREAD);
-	while (!shut_down && !amICrashing()) {
-		sendStateTo(load_balancer_addr);
-		sleep(2);
-	}
-	decrementThreadCounter(INTERNAL_THREAD);
-	pthread_detach (pthread_self());pthread_exit
-	(NULL);
-}
-
-void* handleInternalConnection(void *arg) {
-	incrementThreadCounter(INTERNAL_THREAD);
-	sockaddr_in src;
-	std::string raw_message = getMessageFromInternalSocket(src);
-
-	struct internal_message message;
-	try {
-		message = parseRawMessage(raw_message);
-		switch (message.type) {
-		case INFO_REQ:
-			if (!load_balancer)
-				sendStateTo(src);
-			break;
-		case INFO_RESP:
-			storeServerState(message.state);
-			break;
-		case STOP:
-			crashThisServer();
-			break;
-		case RESUME:
-			resumeThisServer();
-			break;
-		}
-	} catch (const std::invalid_argument &ia) {
-		log("Invalid argument: " + std::string(ia.what()));
-	}
-
-	decrementThreadCounter(INTERNAL_THREAD);
-	pthread_detach (pthread_self());pthread_exit
-	(NULL);
-}
-
 /*********************** KVS Util function ***********************************/
 
 int kvsResponseStatusCode(resp_tuple resp) {
@@ -534,6 +360,7 @@ void buildClusterToBackendServerMapping() {
 }
 
 bool checkIfNodeIsAlive(server_tuple serverInfo) {
+	// connect to heartbeat thread of backend server and check if it's alive w/ shorter timeout
 	std::string targetServer = std::get < 0 > (serverInfo);
 	int masterPortNo = getPortNoFromString(kvMaster_addr);
 	std::string masterServAddress = getAddrFromString(kvMaster_addr);
@@ -871,6 +698,346 @@ void reviveServerKVS(std::string target) {
 		using err_t = std::tuple<std::string, std::string>;
 		auto err = e.get_error().as<err_t>();
 		log("UNHANDLED ERROR IN getAllNodesKVS TRY CATCH"); // TODO
+	}
+}
+
+/*********************** Internal Messaging Util function ***********************************/
+
+void incrementThreadCounter(std::string type) {
+	pthread_mutex_lock(&modify_server_state);
+	if (type.compare(INTERNAL_THREAD) == 0) {
+		this_server_state.internal_connections += 1;
+	} else if (type.compare(SMTP_THREAD) == 0) {
+		this_server_state.smtp_connections += 1;
+	} else if (type.compare(HTTP_THREAD) == 0) {
+		this_server_state.http_connections += 1;
+	}
+	this_server_state.num_threads += 1;
+	pthread_mutex_unlock(&modify_server_state);
+}
+
+void decrementThreadCounter(std::string type) {
+	pthread_mutex_lock(&modify_server_state);
+	if (type.compare(INTERNAL_THREAD) == 0) {
+		this_server_state.internal_connections -= 1;
+	} else if (type.compare(SMTP_THREAD) == 0) {
+		this_server_state.smtp_connections -= 1;
+	} else if (type.compare(HTTP_THREAD) == 0) {
+		this_server_state.http_connections -= 1;
+	}
+	this_server_state.num_threads -= 1;
+	pthread_mutex_unlock(&modify_server_state);
+}
+
+std::string getAddressFromSockaddr(sockaddr_in &addr) {
+	return std::string(inet_ntoa(addr.sin_addr)) + ":"
+			+ std::to_string(ntohs(addr.sin_port));
+}
+
+std::string getMessageFromInternalSocket(struct sockaddr_in &src) {
+	char buf[1001];
+	socklen_t srcSize = sizeof(src);
+	int rlen = recvfrom(internal_socket_fd, buf, sizeof(buf), 0,
+			(struct sockaddr*) &src, &srcSize);
+	buf[rlen] = 0;
+	std::string raw_message(buf);
+	if (!load_balancer)
+		log("Received " + raw_message + " from " + getAddressFromSockaddr(src));
+
+	return raw_message;
+}
+
+int send_message(std::string ret, sockaddr_in &dest, bool silent) {
+	int rlen = sendto(internal_socket_fd, ret.data(), ret.length(), 0,
+			(struct sockaddr*) &dest, sizeof(dest));
+	if (!silent)
+		log(
+				"Sent '" + ret + "' to " + getAddressFromSockaddr(dest)
+						+ " total bytes sent " + std::to_string(rlen));
+	return rlen;
+}
+
+std::string internalMessageToString(struct internal_message &message) {
+	std::string ret = std::to_string(message.type) + ",";
+	if (message.type == INFO_RESP) {
+		ret += message.state.http_address + ",";
+		ret += std::to_string(message.state.http_connections) + ",";
+		ret += std::to_string(message.state.smtp_connections) + ",";
+		ret += std::to_string(message.state.internal_connections) + ",";
+		ret += std::to_string(message.state.num_threads) + ",";
+	} else if(message.type == CHAT){
+		ret += std::to_string(message.sequence_number) + ",";
+		ret += message.sender + ",";
+		ret += message.group_owner + ",";
+		ret += message.group + "__chatboundary__";
+		ret += message.content + ",";
+	}
+	ret.pop_back();
+	return ret;
+}
+
+void log_server_state(struct server_state &state) {
+	std::string ret;
+	ret += "Http address: " + state.http_address + ",";
+	ret += "Last modified: " + std::to_string(state.last_modified) + ",";
+	ret += "Http conn num: " + std::to_string(state.http_connections) + ",";
+	ret += "Smtp conn num: " + std::to_string(state.smtp_connections) + ",";
+	ret += "Internal conn num: " + std::to_string(state.internal_connections)
+			+ ",";
+	ret += "Num threads: " + std::to_string(state.num_threads);
+	log(ret);
+}
+
+struct internal_message parseRawMessage(std::string &message) {
+	struct internal_message ret;
+	ret.type = message_type(stoi(message.substr(0, message.find(","))));
+	message.erase(0, message.find(",") + 1);
+	if (ret.type == INFO_RESP) {
+		ret.state.http_address = message.substr(0, message.find(","));
+		message.erase(0, message.find(",") + 1);
+		ret.state.http_connections = message_type(
+				stoi(message.substr(0, message.find(","))));
+		message.erase(0, message.find(",") + 1);
+		ret.state.smtp_connections = message_type(
+				stoi(message.substr(0, message.find(","))));
+		message.erase(0, message.find(",") + 1);
+		ret.state.internal_connections = message_type(
+				stoi(message.substr(0, message.find(","))));
+		message.erase(0, message.find(",") + 1);
+		ret.state.num_threads = message_type(
+				stoi(message.substr(0, message.find(","))));
+		message.erase(0, message.find(",") + 1);
+	} else if (ret.type == CHAT){
+		ret.sequence_number = stoi(message.substr(0, message.find(",")));
+		message.erase(0, message.find(",") + 1);
+		ret.sender = message.substr(0, message.find(","));
+		message.erase(0, message.find(",") + 1);
+		ret.group_owner = message.substr(0, message.find(","));
+		message.erase(0, message.find(",") + 1);
+		ret.group = message.substr(0, message.find("__chatboundary__"));
+		message.erase(0, message.find("__chatboundary__") + 16);
+		ret.content = message;
+	}
+	return ret;
+}
+
+std::string prepareInternalMessage(message_type type) {
+	struct internal_message ret;
+	ret.type = type;
+	if (type == INFO_RESP) {
+		ret.state = this_server_state;
+	}
+	return internalMessageToString(ret);
+}
+
+bool amICrashing() {
+	pthread_mutex_lock(&crashing);
+	pthread_mutex_unlock(&crashing);
+	return false;
+}
+
+int sendStateTo(sockaddr_in &dest) {
+	std::string message = prepareInternalMessage(INFO_RESP);
+	int rlen = sendto(internal_socket_fd, message.data(), message.length(), 0,
+			(struct sockaddr*) &dest, sizeof(dest));
+	return rlen;
+}
+
+void storeServerState(struct server_state &state) {
+	pthread_mutex_lock(&access_state_map);
+	state.last_modified = time(NULL);
+	std::string http_addr = trim(state.http_address);
+	frontend_state_map[http_addr] = state;
+	pthread_mutex_unlock(&access_state_map);
+}
+
+void requstStateFromAllServers() {
+	std::string message = prepareInternalMessage(INFO_REQ);
+	for (sockaddr_in dest : frontend_internal_list) {
+		send_message(message, dest, false);
+	}
+}
+
+int sendStopMessage(int index) {
+	if (index == 0 || index == server_index
+			|| index >= frontend_internal_list.size())
+		return -1;
+	std::string message = prepareInternalMessage(STOP);
+	return send_message(message, frontend_internal_list[index], false)
+			- message.size();
+}
+
+int sendResumeMessage(int index) {
+	if (index == 0 || index == server_index
+			|| index >= frontend_internal_list.size())
+		return -1;
+	std::string message = prepareInternalMessage(RESUME);
+	return send_message(message, frontend_internal_list[index], false)
+			- message.size();
+}
+
+int getServerIndexFromAddr(std::string &addr) {
+	auto it = std::find(frontend_server_list.begin(),
+			frontend_server_list.end(), addr);
+	return (it == frontend_server_list.end()) ?
+			-1 : it - frontend_server_list.begin() + 1;
+}
+
+void resumeThisServer() {
+	log("Resuming");
+	pthread_mutex_unlock(&crashing);
+}
+
+void crashThisServer() {
+	log("Crashing");
+	pthread_mutex_lock(&crashing);
+	// wait for resumption
+	while (!shut_down) {
+		log("need to wait for RESUME");
+		sockaddr_in src;
+		std::string raw_message = getMessageFromInternalSocket(src);
+		struct internal_message message;
+		try {
+			message = parseRawMessage(raw_message);
+			if (message.type == RESUME) {
+				break;
+			} else {
+				log("Still waiting for RESUME message");
+				continue;
+			}
+		} catch (const std::invalid_argument &ia) {
+//			log("Invalid argument: " + std::string(ia.what()));
+		}
+	}
+	if (shut_down)
+		exit(-1);
+	resumeThisServer();
+}
+
+void* heartbeat(void *arg) {
+	incrementThreadCounter(INTERNAL_THREAD);
+	while (!shut_down && !amICrashing()) {
+		sendStateTo(load_balancer_addr);
+		sleep(2);
+	}
+	decrementThreadCounter(INTERNAL_THREAD);
+	pthread_detach (pthread_self());pthread_exit
+	(NULL);
+}
+
+void handleHoldbackQ(struct internal_message &message, sockaddr_in &src){
+	std::string src_server = getAddressFromSockaddr(src);
+
+	log("GOT CHAT MESSAGE FROM : " + src_server + " WITH CONTENT: " + message.content);
+
+	if(server_sequence_nums.find(src_server) == server_sequence_nums.end())
+		server_sequence_nums[src_server] = 0;
+
+	/* Add message to the holdback q */
+	fifo_holdbackQ[src_server].push_back(message);
+	std::push_heap(fifo_holdbackQ[src_server].begin(),
+			fifo_holdbackQ[src_server].end(), internal_message_comparator());
+
+//	log("after pushback");
+//	log_heap(fifo_holdbackQ[broadcast_server]);
+
+	/* Obtain the seq number for message and seq number expected,  and
+	 * deliver while they match */
+	int expected_seq = -1;
+	int actual_seq = -1;
+	while(expected_seq == actual_seq && fifo_holdbackQ[src_server].size() > 0){
+		expected_seq = server_sequence_nums[src_server] + 1;
+		actual_seq = -(fifo_holdbackQ[src_server].front().sequence_number);
+		log("Expected " + std::to_string(expected_seq) + " for " + src_server +
+				" but actual was " + std::to_string(actual_seq) + "\n");
+		if(expected_seq == actual_seq){
+			struct internal_message deliverable_message = fifo_holdbackQ[src_server].front();
+			std::string my_message =  "<li>" + deliverable_message.sender + ": " + encodeURIComponent(deliverable_message.content) +"</li>";
+			resp_tuple raw_chatroom = getKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group);
+			std::string old_chat = kvsResponseMsg(raw_chatroom);
+			std::string new_chat = old_chat + my_message;
+
+			for(std::string member: group_to_clients[deliverable_message.group]){
+				deliverable_messages[member][deliverable_message.group] = new_chat;
+				log("NEW CHAT IS " + new_chat);
+			}
+			int resp_code = -1, timeout_count = 0;
+			while(resp_code != 0 && (timeout_count++) < 10){
+				raw_chatroom = getKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group);
+				old_chat = kvsResponseMsg(raw_chatroom);
+				new_chat = old_chat + my_message;
+				if(old_chat.find(my_message) != std::string::npos) break;
+				resp_tuple ret = cputKVS(deliverable_message.group_owner, deliverable_message.group_owner, deliverable_message.group, old_chat, new_chat);
+				resp_code = kvsResponseStatusCode(ret);
+				log("Try: " + std::to_string(timeout_count));
+				log("resp_code : " + std::to_string(resp_code));
+				log("Old chat: " + old_chat);
+				log("My message: " + my_message);
+				log("New chat: " + new_chat);
+			}
+
+			std::pop_heap(fifo_holdbackQ[src_server].begin(), fifo_holdbackQ[src_server].end(),
+									internal_message_comparator());
+			fifo_holdbackQ[src_server].pop_back();
+			server_sequence_nums[src_server] += 1;
+//			log("after pop back");
+//			log_heap(fifo_holdbackQ[broadcast_server]);
+		}
+	}
+//	log("after final pop back");
+//	log_heap(fifo_holdbackQ[broadcast_server]);
+}
+
+void* handleInternalConnection(void *arg) {
+	incrementThreadCounter(INTERNAL_THREAD);
+	sockaddr_in src;
+	std::string raw_message = getMessageFromInternalSocket(src);
+
+	struct internal_message message;
+	try {
+		message = parseRawMessage(raw_message);
+		switch (message.type) {
+		case INFO_REQ:
+			if (!load_balancer)
+				sendStateTo(src);
+			break;
+		case INFO_RESP:
+			storeServerState(message.state);
+			break;
+		case STOP:
+			crashThisServer();
+			break;
+		case RESUME:
+			resumeThisServer();
+			break;
+		case CHAT:
+			if(!load_balancer)
+				handleHoldbackQ(message, src);
+		}
+	} catch (const std::invalid_argument &ia) {
+		//log("Invalid argument: " + std::string(ia.what()));
+	}
+
+	decrementThreadCounter(INTERNAL_THREAD);
+	pthread_detach (pthread_self());pthread_exit
+	(NULL);
+}
+
+void chatMulticast(std::string sender, std::string message, std::string group_hash, std::string owner){
+	struct internal_message msg;
+	msg.content = message;
+	msg.sender = sender;
+	msg.group = group_hash;
+	msg.group_owner = owner;
+	pthread_mutex_lock(&access_fifo_seq_num);
+	msg.sequence_number = -(++fifo_seq);
+	pthread_mutex_unlock(&access_fifo_seq_num);
+	msg.type = CHAT;
+
+	std::string message_to_send = internalMessageToString(msg);
+	log("MULTICASTING MESSAGE: " + message_to_send);
+	for (sockaddr_in dest : frontend_internal_list) {
+		send_message(message_to_send, dest, false);
 	}
 }
 
@@ -2091,56 +2258,6 @@ std::string escape(std::string input) {
 	return output;
 }
 
-///////////////////////////////////////////////////////////////////////////
-
-// Attributed to arthurafarias on Github: https://gist.github.com/arthurafarias/56fec2cd49a32f374c02d1df2b6c350f
-
-std::string decodeURIComponent(std::string encoded) {
-
-	std::string decoded = encoded;
-	std::smatch sm;
-	std::string haystack;
-
-	int dynamicLength = decoded.size() - 2;
-
-	if (decoded.size() < 3)
-		return decoded;
-
-	for (int i = 0; i < dynamicLength; i++) {
-
-		haystack = decoded.substr(i, 3);
-
-		if (std::regex_match(haystack, sm, std::regex("%[0-9A-F]{2}"))) {
-			haystack = haystack.replace(0, 1, "0x");
-			std::string rc = { (char) std::stoi(haystack, nullptr, 16) };
-			decoded = decoded.replace(decoded.begin() + i,
-					decoded.begin() + i + 3, rc);
-		}
-
-		dynamicLength = decoded.size() - 2;
-
-	}
-
-	return decoded;
-}
-
-std::string encodeURIComponent(std::string decoded) {
-
-	std::ostringstream oss;
-	std::regex r("[!'\\(\\)*-.0-9A-Za-z_~]");
-
-	for (char &c : decoded) {
-		if (std::regex_match((std::string ) { c }, r)) {
-			oss << c;
-		} else {
-			oss << "%" << std::uppercase << std::hex << (0xff & c);
-		}
-	}
-	return oss.str();
-}
-
-///////////////////////////////////////////////////////////////////////////
-
 struct http_response processRequest(struct http_request &req) {
 	struct http_response resp;
 	log("Entering process request");
@@ -2150,35 +2267,27 @@ struct http_response processRequest(struct http_request &req) {
 	}
 
 	/* Check to see if I'm the load balancer and if this request needs to be redirected */
-	if (load_balancer && frontend_server_list.size() > 1
-			&& req.cookies.find("redirected") == req.cookies.end()) {
-		log("Load balancer redirecting request");
+	if (load_balancer && frontend_server_list.size() > 1) {
 		std::string redirect_server = "";
 		pthread_mutex_lock(&access_state_map);
-		int first_time = 0;
 		while (redirect_server.compare("") == 0
+				|| frontend_state_map.find(redirect_server) == frontend_state_map.end()
 				|| time(NULL)
-						- frontend_state_map[redirect_server].last_modified > 3) {
+						- frontend_state_map[redirect_server].last_modified > 3
+				|| redirect_server.compare(this_server_state.http_address) == 0) {
 			redirect_server = frontend_server_list[l_balancer_index];
-			if (first_time < 2) {
-				log("Redirect server: " + redirect_server);
-				log_server_state(frontend_state_map[redirect_server]);
-				first_time += 1;
-			}
 			l_balancer_index = (l_balancer_index + 1)
 					% frontend_server_list.size();
 		}
+		log("Redirect server: " + redirect_server);
+		log_server_state(frontend_state_map[redirect_server]);
 		pthread_mutex_unlock(&access_state_map);
 
-		if (redirect_server.compare(this_server_state.http_address) == 0) {
-			resp.cookies["redirected"] = "true";
-		} else {
-			resp.status_code = 307;
-			resp.status = "Temporary Redirect";
-			resp.headers["Location"] = "http://" + redirect_server + "/";
-			resp.cookies["redirected"] = "true";
-			return resp;
-		}
+		resp.status_code = 307;
+		resp.status = "Temporary Redirect";
+		resp.headers["Location"] = "http://" + redirect_server + "/";
+		resp.cookies["redirected"] = "true";
+		return resp;
 	}
 
 	if (req.cookies.find("username") == req.cookies.end()
@@ -2520,6 +2629,8 @@ struct http_response processRequest(struct http_request &req) {
 							"password", req.formData["password"]);
 					putKVS(resp.cookies["sessionid"], req.formData["username"],
 							"mailbox", "");
+					putKVS(resp.cookies["sessionid"], req.formData["username"],
+							"chats", "");
 					createRootDirForNewUser(req, resp.cookies["sessionid"]);
 				}
 			}
@@ -2553,7 +2664,7 @@ struct http_response processRequest(struct http_request &req) {
 							"<form action=\"/files/" + userRootDir
 							+ "\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-box-open\"></i><div class=\"button-text\">PennDrive</div></div></button></form>"
 									"<form action=\"/discuss\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-users\"></i><div class=\"button-text\">PennDiscuss</div></div></button></form>"
-
+									"<form action=\"/chat\" method=\"POST\"> <button type=\"submit\" class=\"btn btn-success\"><div class=\"button-content\"><i class=\"button-icon fas fa-mail-bulk\"></i><div class=\"button-text\">PennChat</div></div></button></form>"
 									"</div></div></body></html>";
 			resp.headers["Content-length"] = std::to_string(
 					resp.content.size());
@@ -3764,6 +3875,258 @@ struct http_response processRequest(struct http_request &req) {
 			resp.status = "Temporary Redirect";
 			resp.headers["Location"] = "/";
 		}
+	} else if (req.filepath.compare(0, 5, "/chat") == 0){
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+			resp_tuple getResp = getKVS(req.cookies["sessionid"],
+					req.cookies["username"], "chats");
+			std::string getRespMsg = kvsResponseMsg(getResp);
+			std::stringstream ss(getRespMsg);
+			std::string chatroom;
+			std::string display = "";
+			if (getRespMsg != "") {
+				display += "<ul>";
+				while (std::getline(ss, chatroom, '\n')) {
+					auto tokens = split(chatroom, "\t");
+					std::string chatname = tokens.at(0), owner = tokens.at(1), chathash = tokens.at(2);
+					display+="<li><a href=\"/joinchat/" + owner + "/" + chathash + "\">"+ chatname +"</a></li>";
+					group_to_clients[chathash].insert(req.cookies["username"]);
+				}
+				display += "</ul>";
+			}
+			if (display == "") {
+				display +=
+						"<ul style=\"border-top: 1px solid black; padding:15px; margin: 0;\">No chat rooms yet!</ul>";
+			}
+			display +=
+					"<ul style=\"border-top: 1px solid black; padding:0px; margin: 0;\"></ul>";
+			resp.content =
+					"<head><meta charset=\"UTF-8\"></head>"
+							"<html><body "
+							"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+							"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/dashboard\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Dashboard\" /></form>"
+							"<form action=\"/createchat\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Create Chat Room\"/>"
+							"<label for=\"Members\">Members</label><input required type=\"text\" name=\"members\"/>"
+							"</form></div>" "<div style=\"padding-left: 15px;padding-bottom: 5px;padding-top: 10px; display:flex; flex-direction: row;\">"
+							"</div>" + display + "</body></html>";
+			resp.headers["Content-length"] = std::to_string(
+					resp.content.size());
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare(0, 11, "/createchat") == 0){
+		if (req.cookies.find("username") != req.cookies.end()) {
+			// Get stuff from form
+			std::string owner = req.cookies["username"];
+			std::string members_raw = owner + "; " + decodeURIComponent(req.formData["members"]);
+			std::replace( members_raw.begin(), members_raw.end(), '+', ' ');
+			std::deque<std::string> members = split(members_raw , ";");
+			std::string chathash = generateStringHash(req.formData["members"] + std::to_string(time(NULL)));
+
+			// Add the chatbox to owners row
+			putKVS(req.cookies["sessionid"], owner, chathash, "");
+
+			for(std::string m: members){
+				std::string member = trim(m);
+				std::string cont = members_raw + "\t" + owner + "\t" + chathash + "\n";
+
+				std::string my_message =  cont;
+				std::string old_message = "";
+				int resp_code = -1, timeout_count = 0;
+				while(resp_code != 0 && (timeout_count++) < 10){
+					resp_tuple raw_message = getKVS(req.cookies["sessionid"], member, "chats");
+					old_message = kvsResponseMsg(raw_message);
+					std::string new_message = old_message + my_message;
+					if(old_message.find(my_message) != std::string::npos) break;
+					resp_tuple ret = cputKVS(req.cookies["sessionid"], member, "chats", old_message, new_message);
+					resp_code = kvsResponseStatusCode(ret);
+				}
+				group_to_clients[chathash].insert(member);
+			}
+
+			resp.status = "Temporary Redirect";
+			resp.status_code = 307;
+			resp.headers["Location"] = "/joinchat/" + owner + "/" + chathash;
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare(0, 9, "/joinchat") == 0){
+		if (req.cookies.find("username") != req.cookies.end()) {
+			resp.status_code = 200;
+			resp.status = "OK";
+			resp.headers["Content-type"] = "text/html";
+
+			// Get chatroom from KVS
+			auto tokens = split(req.filepath, "/");
+			std::string chathash = tokens.back(); tokens.pop_back();
+			std::string owner = trim(tokens.back()); tokens.pop_back();
+
+			// check if user belongs
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
+			if(group_to_clients.find(chathash) != group_to_clients.end() &&
+					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+				log("valid user for group " + chathash);
+			} else if(kvsResponseStatusCode(check_raw) != 0 ||
+					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+				log("Not valid user for group " + chathash);
+				resp.status = "Temporary Redirect";
+				resp.status_code = 307;
+				resp.headers["Location"] = "/chat";
+			}
+			resp_tuple chatroom_raw = getKVS(req.cookies["sessionid"], owner, chathash);
+			if(kvsResponseStatusCode(chatroom_raw) != 0){
+				resp.status = "Temporary Redirect";
+				resp.status_code = 307;
+				resp.headers["Location"] = "/chat";
+				return resp;
+			}
+
+			client_to_group[req.cookies["username"]] = chathash;
+			std::string chatroom = kvsResponseMsg(chatroom_raw);
+			std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
+			//deliverable_messages[req.cookies["username"]][chathash] = chatroom;
+			//std::replace(chatroom.begin(), chatroom.end(), '+', ' ');
+
+			resp.content =
+								"<head><meta charset=\"UTF-8\"></head>"
+										"<html><body "
+										"style=\"display:flex;flex-direction:column;height:100%;padding:10px;\">"
+										"<div style=\"display:flex; flex-direction: row;\"><form style=\"padding-left:15px; padding-right:15px; margin-bottom:18px;\" action=\"/chat\" method=\"POST\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Chat\" /></form>"
+										"<form action=\"/leavechat/"+ owner + "/" + chathash + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Leave Chat\"/></form>"
+										"</div><ul id=\"message-body\">" + chatroom + "</ul>"
+										"<form action=\"/sendchatmessage/"+ owner + "/" + chathash + "\" method=\"POST\" style=\"margin-bottom:18px;\"> <input style=\"line-height:24px;\" type = \"submit\" value=\"Send\"/>"
+										"<label for=\"message\">Type something</label><input required type=\"text\" name=\"message\"/>"
+										"</form><script type=\"text/javascript\" src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js\"></script>"
+								"<script type=\"text/javascript\" src=\"https://drive.google.com/uc?export=view&id=1WYBufNkkfQD734AhDtBWZ7sSux-RuXZl\"></script></body></html>";
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare(0, 16, "/sendchatmessage") == 0){
+		if (req.cookies.find("username") != req.cookies.end()) {
+			// change this to javascript friendly route
+			resp.status = "Temporary Redirect";
+			resp.status_code = 307;
+
+			// Get chatroom from KVS
+			std::string message = req.formData["message"];
+			auto tokens = split(req.filepath, "/");
+			std::string chathash = tokens.back(); tokens.pop_back();
+			std::string owner = trim(tokens.back()); tokens.pop_back();
+			// check if user belongs
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
+			if(group_to_clients.find(chathash) != group_to_clients.end() &&
+					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+				log("valid user for group " + chathash);
+			} else if(kvsResponseStatusCode(check_raw) != 0 ||
+					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+				log("Not valid user for group " + chathash);
+				resp.status = "Temporary Redirect";
+				resp.status_code = 307;
+				resp.headers["Location"] = "/chat";
+			}
+			resp.headers["Location"] = "/joinchat/" + owner + "/" + chathash;
+
+			chatMulticast(req.cookies["username"], message, chathash, owner);
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare(0, 10, "/leavechat") == 0){
+		if (req.cookies.find("username") != req.cookies.end()) {
+			auto tokens = split(req.filepath, "/");
+			std::string chathash = tokens.back(); tokens.pop_back();
+			std::string owner = trim(tokens.back()); tokens.pop_back();
+			/// check if user belongs
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
+			if(group_to_clients.find(chathash) != group_to_clients.end() &&
+					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+				log("valid user for group " + chathash);
+			} else if(kvsResponseStatusCode(check_raw) != 0 ||
+					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+				log("Not valid user for group " + chathash);
+				resp.status = "Temporary Redirect";
+				resp.status_code = 307;
+				resp.headers["Location"] = "/chat";
+			}
+
+			resp_tuple getResp = getKVS(req.cookies["sessionid"],
+								req.cookies["username"], "chats");
+			std::string getRespMsg = kvsResponseMsg(getResp);
+			std::stringstream ss(getRespMsg);
+			std::string chatroom;
+			std::string new_chats = "";
+			if (getRespMsg != "") {
+				while (std::getline(ss, chatroom, '\n')) {
+					if(chatroom.find(chathash) != std::string::npos) continue;
+					new_chats+=chatroom;
+				}
+				putKVS(req.cookies["sessionid"],
+						req.cookies["username"], "chats", new_chats);
+			}
+			group_to_clients[chathash].erase(req.cookies["username"]);
+			client_to_group.erase(req.cookies["username"]);
+			chatMulticast(req.cookies["username"], req.cookies["username"] + "+left+the+group", chathash, owner);
+			resp.status = "Temporary Redirect";
+			resp.status_code = 307;
+			resp.headers["Location"] = "/chat";
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
+	} else if (req.filepath.compare(0, 18, "/updatechatmessage") == 0){
+		if (req.cookies.find("username") != req.cookies.end()) {
+			log("HERE UPDATE CHAT MESSAGE");
+			resp.status = "OK";
+			resp.status_code = 200;
+			resp.content = "";
+			std::string user = req.cookies["username"];
+			auto tokens = split(req.filepath, "/");
+			std::string chathash = tokens.back(); tokens.pop_back();
+			std::string owner = trim(tokens.back()); tokens.pop_back();
+			// check if user belongs
+			resp_tuple check_raw = getKVS(req.cookies["sessionid"], req.cookies["username"], "chats");
+			if(group_to_clients.find(chathash) != group_to_clients.end() &&
+					group_to_clients[chathash].find(req.cookies["username"]) != group_to_clients[chathash].end()){
+				log("valid user for group " + chathash);
+			} else if(kvsResponseStatusCode(check_raw) != 0 ||
+					kvsResponseMsg(check_raw).find(chathash) == std::string::npos){
+				log("Not valid user for group " + chathash);
+				resp.status = "Temporary Redirect";
+				resp.status_code = 307;
+				resp.headers["Location"] = "/chat";
+			}
+
+			if(deliverable_messages.find(user) != deliverable_messages.end()
+					&& deliverable_messages[user].find(chathash) != deliverable_messages[user].end()){
+				log("Update chat message hit: " + deliverable_messages[user][chathash]);
+				resp.content = deliverable_messages[user][chathash];
+			} else {
+				log("No luck! Getting from KVS now");
+				resp_tuple ret = getKVS(req.cookies["sessionid"], owner, chathash);
+				if(kvsResponseStatusCode(ret) == 0){
+					deliverable_messages[user][chathash] = kvsResponseMsg(ret);
+					resp.content = deliverable_messages[user][chathash];
+					log("Found: " + deliverable_messages[user][chathash]);
+				}
+			}
+			std::replace(resp.content.begin(), resp.content.end(), '+', ' ');
+			resp.headers["Content-type"] = "text/plain";
+			resp.headers["Content-length"] = std::to_string(resp.content.size());
+		} else {
+			resp.status_code = 307;
+			resp.status = "Temporary Redirect";
+			resp.headers["Location"] = "/";
+		}
 	} else {
 		log(std::to_string(__LINE__));
 		if (req.cookies.find("username") != req.cookies.end()) {
@@ -4346,6 +4709,8 @@ int main(int argc, char *argv[]) {
 		log("Couldn't initialize mutex for crashing");
 	if (pthread_mutex_init(&access_state_map, NULL) != 0)
 		log("Couldn't initialize mutex for access_state_map");
+	if (pthread_mutex_init(&access_fifo_seq_num, NULL) != 0)
+			log("Couldn't initialize mutex for access_state_map");
 
 	/* Parse command line args */
 	int c, port_no = 10000, smtp_port_no = 35000, internal_port_no = 40000;
@@ -4477,6 +4842,7 @@ int main(int argc, char *argv[]) {
 				std::stoi(load_balancer_address[1]));
 		load_balancer_addr.sin_addr.s_addr = inet_addr(
 				load_balancer_address[0].data());
+		if(load_balancer) this_server_state.http_address = split(trim(std::string(buffer)), ",").at(0);
 		frontend_internal_list.push_back(load_balancer_addr);
 		int i = 1;
 		while (fgets(buffer, 300, f)) {
