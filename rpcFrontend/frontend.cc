@@ -915,7 +915,7 @@ void crashThisServer() {
 				continue;
 			}
 		} catch (const std::invalid_argument &ia) {
-			log("Invalid argument: " + std::string(ia.what()));
+//			log("Invalid argument: " + std::string(ia.what()));
 		}
 	}
 	if (shut_down)
@@ -1018,7 +1018,7 @@ void* handleInternalConnection(void *arg) {
 				handleHoldbackQ(message, src);
 		}
 	} catch (const std::invalid_argument &ia) {
-		log("Invalid argument: " + std::string(ia.what()));
+		//log("Invalid argument: " + std::string(ia.what()));
 	}
 
 	decrementThreadCounter(INTERNAL_THREAD);
@@ -2072,35 +2072,27 @@ struct http_response processRequest(struct http_request &req) {
 	}
 
 	/* Check to see if I'm the load balancer and if this request needs to be redirected */
-	if (load_balancer && frontend_server_list.size() > 1
-			&& req.cookies.find("redirected") == req.cookies.end()) {
+	if (load_balancer && frontend_server_list.size() > 1) {
 		std::string redirect_server = "";
 		pthread_mutex_lock(&access_state_map);
-		int first_time = 0;
 		while (redirect_server.compare("") == 0
+				|| frontend_state_map.find(redirect_server) == frontend_state_map.end()
 				|| time(NULL)
 						- frontend_state_map[redirect_server].last_modified > 3
 				|| redirect_server.compare(this_server_state.http_address) == 0) {
 			redirect_server = frontend_server_list[l_balancer_index];
-			if (first_time < 2) {
-				log("Redirect server: " + redirect_server);
-				log_server_state(frontend_state_map[redirect_server]);
-				first_time += 1;
-			}
 			l_balancer_index = (l_balancer_index + 1)
 					% frontend_server_list.size();
 		}
+		log("Redirect server: " + redirect_server);
+		log_server_state(frontend_state_map[redirect_server]);
 		pthread_mutex_unlock(&access_state_map);
 
-		if (redirect_server.compare(this_server_state.http_address) == 0) {
-			resp.cookies["redirected"] = "true";
-		} else {
-			resp.status_code = 307;
-			resp.status = "Temporary Redirect";
-			resp.headers["Location"] = "http://" + redirect_server + "/";
-			resp.cookies["redirected"] = "true";
-			return resp;
-		}
+		resp.status_code = 307;
+		resp.status = "Temporary Redirect";
+		resp.headers["Location"] = "http://" + redirect_server + "/";
+		resp.cookies["redirected"] = "true";
+		return resp;
 	}
 
 	if (req.cookies.find("username") == req.cookies.end()
