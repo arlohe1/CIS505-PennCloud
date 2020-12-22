@@ -1,0 +1,120 @@
+@import url("https://fonts.googleapis.com/css?family=Poppins");
+html, body {
+  margin: 0;
+  position: relative;
+  height: 100%;
+  background-color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Poppins", sans-serif; /*""Fira Sans", Helvetica, Arial, sans-serif;*/
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+form {
+    margin: 0;
+}
+
+.nav {
+    max-height: 8vh;
+    background-color: #4f4e56;
+    display:flex;
+    flex-direction: row;
+    flex:1;
+    justify-content: flex-start;
+}
+
+.total-wrapper {
+    display: flex; 
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.nav button[type="submit"] {
+background-color: transparent; 
+  border: none;
+  border-radius: 10px;
+  padding: 0;
+  vertical-align: center;
+  cursor: pointer;
+    font-weight: bold;
+    font-family: "Poppins", sans-serif;
+    font-size: 30px;
+    color: rgba(255, 209, 102, 1);
+      margin: 0 10px;
+    padding: 0px 10px;
+    outline: none;
+
+}
+
+.nav-right button[type="submit"] {
+background-color: transparent; 
+  border: none;
+  color: rgba(255, 209, 102, 1);
+  font-weight: bold;
+  border-radius: 10px;
+  padding: 5px 10px;
+  vertical-align: center;
+  font-size: 16px;
+  cursor: pointer;
+  margin: 10px;
+      outline: none;
+}
+
+.main-content button[type="submit"] {
+  background-color: Transparent;
+  border: none;
+  color:  rgba(255, 209, 102, 1); /*#2081c3;*/
+  font-family: "Poppins", sans-serif;
+  padding: 16px 48px;
+  text-decoration: none;
+  margin: 4px 2px;
+  cursor: pointer;
+  outline:none;
+  width: 400px;
+}
+
+.main-content {
+    display:flex;
+    flex-direction:column;
+    width:100vw;
+    height:92vh;
+    overflow: hidden;
+    align-items:center;
+    justify-content:center;
+}
+
+
+.nav-title {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    margin: auto 45px;
+    flex: 1;
+}
+
+.nav-right {
+    display: flex;
+    flex-direction: row;
+    margin: auto 45px;
+    align-items: center;
+}
+
+.button-icon {
+    font-size: 80px;
+}
+
+.button-text {
+    font-size: 40px;
+}
+
+
+
+.row-1, .row-2 {
+    display: flex;
+    flex-direction: row;
+    padding: 40px;
+}
