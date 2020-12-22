@@ -71,16 +71,16 @@ Project setup instructions:
   3) Run make serverfiles in T20/rpcBackend. This command clears all data for all backend servers and creates new
   directories for 12 backend kvServers (up to 4 clusters) and 3 paxosServers.
   4) In T20/rpcBackend, start the masterNode for kvServers via the following command:
-     $ ./masterNode -v configFile
+     $ ./masterNode -v <config file>
 
-     The -v option is used to enable logs. The given configFile is used to indicate the addresses of the masterNode (1st
-     line) and the addresses of the kvServers (subsequent lines, with two ports per server - one for the "heartbeat
-     thread" and one for the "kvServer" thread).
+     The -v option is used to enable logs. The given configFiles (configFile_1cluster, configFile_2clusters, etc.) are
+     used to indicate the addresses of the masterNode (1st line) and the addresses of the kvServers (subsequent lines,
+     with two ports per server - one for the "heartbeat thread" and one for the "kvServer" thread).
 
   5) In T20/rpcBackend, start the masterNode for paxosServers via the following command:
-     $ ./masterNode -v paxosConfig
+     $ ./masterNode -v <paxos config file>
 
-     The -v option is used to enable logs. The given configFile is used to indicate the addresses of the masterNode (1st
+     The -v option is used to enable logs. The given paxosConfig file is used to indicate the addresses of the masterNode (1st
      line) and the addresses of the paxosServers (subsequent lines, with two ports per server - one for the "heartbeat
      thread" and one for the "paxosServer" thread). Every 3 lines (after the first line) indicates a new cluster. Our
      implementation supports at most 4 clusters. 
@@ -88,9 +88,9 @@ Project setup instructions:
      properly (allow access to all data).
 
   6) In T20/rpcBackend, start kvServers (at least one per cluster ideally) via the following command:
-     $ ./kvServer -v configFile <index>
+     $ ./kvServer -v <config file> <index>
 
-     The -v option is used to enable logs. The given configFile is used to indicate the addresses of the masterNode and
+     The -v option is used to enable logs. The given config files are used to indicate the addresses of the masterNode and
      addresses of the kvServers. The index argument should be a number that indicates the address that this particular
      kvServer should use (minimum: 1, maximum: # of kvServer entries in the configFile).
 
