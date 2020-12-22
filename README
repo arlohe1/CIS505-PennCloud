@@ -33,8 +33,14 @@ Did you complete any extra-credit tasks? If so, which ones?
     other users. All users on PennCloud have access to all forums made on the application. On the backend, PennDiscuss
     uses the Paxos consensus algorithm to maintain a consistent append-only ledger of agreed-upon operations.
     PennDiscuss relies on a separate cluster of paxosServers to provide this service.
-  - PennChat. 
-  - Deployment on EC2.
+  - PennChat. PennChat is a persistent instant messaging service where users can create chatrooms with one or more members and chat
+    with the users in rooms. Users see messages sent to the room by other members of the room in FIFO ordering and can 
+    respond in real time. On the server side, PennChat uses multicast within front end servers for speed and efficiency, but uses
+    the KV store to save messages for fault tolerance.
+  - Deployment on EC2. We use Amazon AWS's EC2 infrastructure to deploy PennCloud. We have multiple EC2 instances that communicate
+    with each other and run both the front end and back end servers with load balancer and master node. We used t2.micro instances
+    to deploy our server for scalabilty at a reasonable price. Since our servers are address-agnostic PennCloud is easily deployable
+    to multiple machines.
 
 Did you personally write _all_ the code you are submitting
 (other than code from the course web page)?
