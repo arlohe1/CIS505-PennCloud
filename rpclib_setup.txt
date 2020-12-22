@@ -1,0 +1,20 @@
+This file outlines how to setup the RPCLib library to run our PennCloud project.
+
+1) Clone rpclib via https in the root dir (~/) of your computer. (https://github.com/rpclib/rpclib)
+2) cd ~/rpclib
+3) mkdir build
+4) cmake -DCMAKE_INSTALL_PREFIX=output
+5) make install
+6) cd build
+7) cmake ..
+8) cd ..
+9) cmake --build .
+
+The ~/rpclib/output directory should contain the include/ and lib/ directories now.
+
+10) cd into our submission directory (T20/)
+11) run make in T20/rpcFrontend/ and in T20/rpcBackend/
+
+
+If everything was set up correctly, you should see a "frontend" binary in T20/rpcFrontend and the binaries "masterNode",
+"kvServer", "paxosServer", "testClient", and "paxosServer" in T20/rpcBackend/
